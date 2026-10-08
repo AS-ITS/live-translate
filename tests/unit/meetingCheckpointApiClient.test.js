@@ -113,6 +113,17 @@ test('meeting checkpoint API client executes lifecycle v2 commands and heartbeat
   assert.equal(calls[1].url, '/api/meetings/meeting-1/recording/lease/heartbeat');
 });
 
+test('meeting checkpoint API client marks a timed out lifecycle mutation as unknown outcome', async () => {
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('aborted')));
+    }),
+    lifecycleTimeoutMs: 1
+  });
+  const request = client.executeRecordingCommand({ meetingId: 'meeting-1', command: 'rollover', operationId: 'operation-1', expectedLifecycleVersion: 1 });
+  await assert.rejects(request, (error) => error.code === 'request_timeout' && error.outcomeUnknown === true);
+});
+
 test('meeting checkpoint API client updates a segment checkpoint', async () => {
   const calls = [];
   const client = createMeetingCheckpointApiClient({

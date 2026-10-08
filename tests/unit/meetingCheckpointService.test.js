@@ -189,7 +189,13 @@ test('checkpoint updates an existing cue when a later merged payload only extend
   await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: checkpoint({ finalCues: [mergedCue] }) });
 
   const result = await service.getCheckpoint({ meetingId: meeting.id, segmentId: segment.id });
-  assert.deepEqual(result.checkpoint.finalCues, [mergedCue]);
+  assert.deepEqual(result.checkpoint.finalCues, [{
+    ...mergedCue,
+    sourceStatus: 'finalized',
+    translationStatus: 'finalized',
+    sourceVersion: 1,
+    translationVersion: 1
+  }]);
 });
 
 test('checkpoint rejects conflicting idempotency keys and duplicate stream sequences', async () => {

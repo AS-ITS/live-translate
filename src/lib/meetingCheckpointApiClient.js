@@ -1,19 +1,33 @@
 import { authenticatedFetch } from './accessToken.js';
 import { meetingLifecycleWriteHeaders } from './meetingLifecycleWriteFence.js';
+import { fetchWithTimeout } from './requestTimeout.js';
 
-export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch, baseUrl = '', authorizationHeaders = {} } = {}) {
+export function createMeetingCheckpointApiClient({
+  fetchImpl = globalThis.fetch,
+  baseUrl = '',
+  authorizationHeaders = {},
+  requestTimeoutMs = 5_000,
+  lifecycleTimeoutMs = 10_000,
+  timeoutOptions = {}
+} = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('meeting checkpoint API client requires fetchImpl to be a function.');
   fetchImpl = authenticatedFetch(fetchImpl);
+  const request = (url, options, operation, timeoutMs = requestTimeoutMs) => fetchWithTimeout(
+    fetchImpl,
+    url,
+    options,
+    { timeoutMs, operation, ...timeoutOptions }
+  );
 
   async function postRecordingHeartbeat({ meetingId, path, leaseId, fenceToken }) {
     assertNonEmptyString(meetingId, 'meetingId');
     assertNonEmptyString(leaseId, 'leaseId');
     if (!Number.isSafeInteger(fenceToken) || fenceToken < 0) throw new TypeError('fenceToken must be a non-negative integer.');
-    const response = await fetchImpl(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/${path}`), {
+    const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/${path}`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
       body: JSON.stringify({ leaseId, fenceToken })
-    });
+    }, path);
     await assertOkResponse(response, { operation: path });
     return parseJsonResponse(response);
   }
@@ -46,10 +60,10 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
 
     async listSegments({ meetingId } = {}) {
       assertNonEmptyString(meetingId, 'meetingId');
-      const response = await fetchImpl(buildUrl(
+      const response = await request(buildUrl(
         baseUrl,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments`
-      ), { method: 'GET' });
+      ), { method: 'GET' }, 'list-segments');
       await assertOkResponse(response);
       return parseSegmentsResponse(response);
     },
@@ -108,11 +122,11 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         throw new TypeError('command is not supported.');
       }
       const path = `/api/meetings/${encodeURIComponent(meetingId)}/recording/${command}`;
-      const response = await fetchImpl(buildUrl(baseUrl, path), {
+      const response = await request(buildUrl(baseUrl, path), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
         body: JSON.stringify(body)
-      });
+      }, `recording-${command}`, lifecycleTimeoutMs);
       try {
         await assertOkResponse(response, { operation: `recording-${command}` });
       } catch (error) {
@@ -150,7 +164,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
           hasBody: Object.hasOwn(options, 'body')
         });
       }
-      const response = await fetchImpl(url, options);
+      const response = await request(url, options, 'get-checkpoint');
       try {
         await assertOkResponse(response, { operation: 'get-checkpoint' });
       } catch (error) {
@@ -178,7 +192,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         if (Object.hasOwn(input, field)) body[field] = input[field];
       }
       if (Object.hasOwn(input, 'cueCheckpoint')) body.cueCheckpoint = input.cueCheckpoint;
-      const response = await fetchImpl(buildUrl(
+      const response = await request(buildUrl(
         baseUrl,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/checkpoint`
       ), {
@@ -191,7 +205,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         body: JSON.stringify({
           ...body
         })
-      });
+      }, 'update-checkpoint');
       try {
         await assertOkResponse(response, { operation: 'update-checkpoint' });
       } catch (error) {
@@ -210,7 +224,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       assertNonEmptyString(nextLiveSessionId, 'nextLiveSessionId');
       if (!checkpoint || typeof checkpoint !== 'object') throw new TypeError('checkpoint must be an object.');
 
-      const response = await fetchImpl(buildUrl(
+      const response = await request(buildUrl(
         baseUrl,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/rollover`
       ), {
@@ -221,7 +235,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
           checkpoint,
           nextLiveSessionId
         })
-      });
+      }, 'rollover-segment', lifecycleTimeoutMs);
       await assertOkResponse(response, { operation: 'rollover-segment' });
       return parseRolloverResponse(response);
     },
@@ -249,7 +263,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       if (outcome !== 'interrupted' && outcome !== 'failed') throw new TypeError('outcome must be interrupted or failed.');
       if (!checkpoint || typeof checkpoint !== 'object') throw new TypeError('checkpoint must be an object.');
 
-      const response = await fetchImpl(buildUrl(
+      const response = await request(buildUrl(
         baseUrl,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/recover`
       ), {
@@ -263,7 +277,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
           failureCategory,
           outcome
         })
-      });
+      }, 'recover-segment', lifecycleTimeoutMs);
       try {
         await assertOkResponse(response, { operation: 'recover-segment' });
       } catch (error) {

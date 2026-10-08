@@ -32,6 +32,7 @@ import { applyCueRefinementExecutionStates, markCuesCompletedByRefinedSubtitleCu
 import { effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from '../lib/cueContent.js';
 import { liveCueLatencyTracker } from '../lib/liveCueLatency.js';
 import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
+import { waitForDurabilityPromises } from '../lib/durabilityBarrier.js';
 import {
   buildFinalizePatch,
   finalizeActiveSessionRecord
@@ -159,6 +160,7 @@ export function App() {
   const [selectedMeetingGlossaryIds, setSelectedMeetingGlossaryIds] = useState([]);
   const [privateMeetingGlossaryEntries, setPrivateMeetingGlossaryEntries] = useState([]);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
+  const [segmentRolloverStatus, setSegmentRolloverStatus] = useState('idle');
   const [meetingCheckpointErrorMessage, setMeetingCheckpointErrorMessage] = useState('');
   const [shouldRecordInputAudio, setShouldRecordInputAudio] = useState(false);
   const [recordingState, setRecordingState] = useState({
@@ -435,8 +437,14 @@ const activeMeetingCheckpointRef = useRef(null);
     segmentSwitch: {
       intervalMs: configuredSegmentSwitchIntervalMs(),
       onStatusChange: (nextStatus) => {
-        if (nextStatus === 'switching') setMeetingCheckpointStatus('switching');
-        if (nextStatus === 'switched') setMeetingCheckpointStatus('switched');
+        if (nextStatus === 'switching') {
+          setSegmentRolloverStatus('switching');
+          setMeetingCheckpointStatus('switching');
+        }
+        if (nextStatus === 'switched') {
+          setSegmentRolloverStatus('healthy');
+          setMeetingCheckpointStatus('switched');
+        }
       },
       onError: reportSegmentSwitchError
     },
@@ -453,6 +461,7 @@ const activeMeetingCheckpointRef = useRef(null);
       recordingState,
       translatedAudioState,
       meetingCheckpointStatus,
+      segmentRolloverStatus,
       meetingViewStats,
       resumeDraft,
       controlLeaseSnapshot,
@@ -1165,6 +1174,21 @@ const activeMeetingCheckpointRef = useRef(null);
           setStatusLabelOverride('正在連線，已暫存音訊');
         }
       },
+      onInputBufferOverflow: (diagnostic) => {
+        if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
+        setMeetingCheckpointStatus('error');
+        setMeetingCheckpointErrorMessage('Provider 暫存音訊已達上限；原始錄音仍保留，但這段音訊可能無法由 Gemini 產生字幕。');
+        recordLivePipelineTrace({
+          stage: 'PCM_BUFFER_CAPACITY_EXCEEDED',
+          meetingId: meetingId || null,
+          sessionId: activeSessionRecordIdRef.current,
+          segmentId: diagnostic.segmentId,
+          providerEpoch: diagnostic.providerEpoch,
+          audioTurnId: diagnostic.audioTurnId,
+          queueDepth: session.pendingInputAudioChunks.length,
+          reason: diagnostic.code
+        });
+      },
       onProviderReady: () => {
         if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
         setLiveErrorCode('');
@@ -1322,6 +1346,7 @@ const activeMeetingCheckpointRef = useRef(null);
       cause: error?.cause?.name || null
     });
     setStatusLabelOverride('分段切換失敗，錄音持續中');
+    setSegmentRolloverStatus('recovery-pending');
     setMeetingCheckpointStatus('error');
     setMeetingCheckpointErrorMessage('分段切換暫時失敗；麥克風、即時字幕與本機錄音仍持續。請保留此頁面以便後續重試。');
   }
@@ -1650,10 +1675,24 @@ const activeMeetingCheckpointRef = useRef(null);
         eventSequence: queued.length
       });
     }
-    cloudResults.push(...await Promise.allSettled(queued));
+    const barrier = await waitForDurabilityPromises(queued, { timeoutMs: 5_000 });
+    cloudResults.push(...barrier.settlements);
+    if (barrier.timedOut) {
+      recordLivePipelineTrace({
+        stage: 'DURABLE_BARRIER_TIMEOUT',
+        meetingId: meetingCheckpoint?.meetingId,
+        sessionId,
+        segmentId: meetingCheckpoint?.segmentId,
+        persistenceState: 'local-durable-cloud-pending',
+        queueDepth: queued.length,
+        inFlight: barrier.pendingCount,
+        reason: 'cue_publish_timeout'
+      });
+    }
     return {
       localSaved: true,
-      cloudSynced: cloudResults.every((result) => result.status === 'fulfilled')
+      cloudSynced: !barrier.timedOut && cloudResults.every((result) => result.status === 'fulfilled'),
+      pendingCount: barrier.pendingCount
     };
   }
 
@@ -2705,8 +2744,21 @@ const activeMeetingCheckpointRef = useRef(null);
                 <span>麥克風：{liveAudioPreference?.inputDeviceLabel || '尚未確認'}</span>
                 <span>揚聲器：{liveAudioPreference?.outputDeviceLabel || '瀏覽器預設揚聲器'}</span>
               </div>
-              <p className="device-note">
-                字幕分享：{webRtcConnectionLabel(webRtcDevice.value, { device: true })}
+              <p className="device-note" data-testid="recording-health">
+                錄音：{['listening', 'switching-segment', 'reconnecting'].includes(liveController.status)
+                  ? '持續中'
+                  : liveController.status === 'paused' ? '已暫停' : '未進行'}
+              </p>
+              <p className="device-note" data-testid="segment-health">
+                分段：{segmentRolloverStatus === 'switching'
+                  ? '切換中'
+                  : segmentRolloverStatus === 'recovery-pending' ? '切換失敗，保留恢復狀態' : '目前段落正常'}
+              </p>
+              <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`} data-testid="persistence-health">
+                雲端保存：{meetingCheckpointStatusLabel(meetingCheckpointStatus)}
+              </p>
+              <p className="device-note" data-testid="viewer-health">
+                Viewer：{webRtcConnectionLabel(webRtcDevice.value, { device: true })}
                 {webRtcDevice.value === 'failed' ? (
                   <button className="button detail-button" type="button" onClick={webRtcDevice.retry}>重試</button>
                 ) : null}

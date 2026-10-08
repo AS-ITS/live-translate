@@ -1,5 +1,4 @@
 const DEFAULT_TRACE_LIMIT = 20_000;
-const MAX_TEXT_LENGTH = 512;
 const MAX_ID_LENGTH = 256;
 const TRUNCATION_MARKER = '...[truncated]';
 
@@ -33,7 +32,7 @@ function bounded(value, maxLength) {
 }
 
 function safeId(value) { return bounded(value, MAX_ID_LENGTH); }
-function safeText(value) { return bounded(value, MAX_TEXT_LENGTH) || ''; }
+function textLength(value) { return typeof value === 'string' ? value.length : 0; }
 
 export function createLivePipelineTrace({
   enabled = false,
@@ -146,12 +145,12 @@ export function createLivePipelineTrace({
       generationComplete: Boolean(input.generationComplete),
       providerTurnIndex: input.providerTurnIndex ?? null,
       turnIdentitySource: safeId(input.turnIdentitySource),
-      sourceText: safeText(input.sourceText),
-      translationText: safeText(input.translationText),
-      beforeSourceText: safeText(input.beforeSourceText),
-      afterSourceText: safeText(input.afterSourceText),
-      beforeTranslationText: safeText(input.beforeTranslationText),
-      afterTranslationText: safeText(input.afterTranslationText),
+      sourceTextLength: textLength(input.sourceText),
+      translationTextLength: textLength(input.translationText),
+      beforeSourceTextLength: textLength(input.beforeSourceText),
+      afterSourceTextLength: textLength(input.afterSourceText),
+      beforeTranslationTextLength: textLength(input.beforeTranslationText),
+      afterTranslationTextLength: textLength(input.afterTranslationText),
       cueAction,
       pcmSequence: input.pcmSequence ?? null,
       pcmBytes: input.pcmBytes ?? null,
@@ -161,7 +160,13 @@ export function createLivePipelineTrace({
       transportResult: safeId(input.transportResult),
       httpStatus: Number.isInteger(input.httpStatus) ? input.httpStatus : null,
       serverErrorCode: safeId(input.serverErrorCode),
-      errorCode: safeId(input.errorCode || input.serverErrorCode)
+      errorCode: safeId(input.errorCode || input.serverErrorCode),
+      durationMs: Number.isFinite(input.durationMs) ? Math.max(0, input.durationMs) : null,
+      queueDepth: Number.isInteger(input.queueDepth) ? Math.max(0, input.queueDepth) : null,
+      inFlight: Number.isInteger(input.inFlight) ? Math.max(0, input.inFlight) : null,
+      retryAttempt: Number.isInteger(input.retryAttempt) ? Math.max(0, input.retryAttempt) : null,
+      rolloverGeneration: Number.isInteger(input.rolloverGeneration) ? Math.max(0, input.rolloverGeneration) : null,
+      authoritativeSegmentId: safeId(input.authoritativeSegmentId)
     });
     entries.push(entry);
     if (entries.length > maxEntries) entries.splice(0, entries.length - maxEntries);

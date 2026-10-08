@@ -59,3 +59,21 @@ test('meeting cue API client keeps status when error response is not JSON', asyn
     }
   );
 });
+
+test('meeting cue API client bounds pending publishes and marks mutation outcome unknown', async () => {
+  let timeoutCallback;
+  const client = createMeetingCueApiClient({
+    fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('aborted')));
+    }),
+    requestTimeoutMs: 5,
+    timeoutOptions: {
+      setTimeoutFn(callback) { timeoutCallback = callback; return callback; },
+      clearTimeoutFn() {}
+    }
+  });
+  const request = client.publish({ meetingId: 'meeting-1', segmentId: 'segment-1', sessionId: 'session-1', cue: { cueId: 'cue-1' } });
+  await Promise.resolve();
+  timeoutCallback();
+  await assert.rejects(request, (error) => error.code === 'request_timeout' && error.outcomeUnknown === true);
+});

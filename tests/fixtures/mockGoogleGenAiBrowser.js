@@ -25,6 +25,12 @@ export class GoogleGenAI {
           sentClientContent: [],
           sendRealtimeInput(input) {
             this.sentInputs.push(input);
+            if (input?.audioStreamEnd === true || input?.activityEnd) {
+              setTimeout(() => request.callbacks?.onmessage?.({
+                eventId: `mock-provider-boundary-${this.sentInputs.length}`,
+                serverContent: { turnComplete: true, generationComplete: true }
+              }), 0);
+            }
           },
           sendClientContent(content) {
             this.sentClientContent.push(content);

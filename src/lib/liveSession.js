@@ -71,6 +71,9 @@ export class LiveTranslateSession {
     firstPcmTimeoutMs = LIVE_SETUP_TIMEOUT_MS,
     startupStartedAt = null,
     onStartupMilestone,
+    onInputBufferOverflow,
+    maxPendingInputAudioBytes = MAX_PRE_ROLL_BYTES,
+    maxPendingInputAudioChunks = MAX_PENDING_INPUT_AUDIO_CHUNKS,
     mode = 'translation'
   }) {
     this.mode = mode;
@@ -114,6 +117,9 @@ export class LiveTranslateSession {
     this.firstPcmTimeoutMs = firstPcmTimeoutMs;
     this.startupStartedAt = Number.isFinite(startupStartedAt) ? startupStartedAt : Date.now();
     this.onStartupMilestone = onStartupMilestone;
+    this.onInputBufferOverflow = onInputBufferOverflow;
+    this.maxPendingInputAudioBytes = Math.max(1, Math.floor(maxPendingInputAudioBytes));
+    this.maxPendingInputAudioChunks = Math.max(1, Math.floor(maxPendingInputAudioChunks));
     this.startupTimings = {};
     if (Number.isFinite(startupStartedAt)) {
       this.startupTimings.start_click = { at: startupStartedAt, durationMs: 0 };
@@ -127,6 +133,9 @@ export class LiveTranslateSession {
     this.activeCaptureGraphGeneration = null;
     this.firstPcmChunkSent = false;
     this.eventSequence = 0;
+    this.providerBoundarySequence = 0;
+    this.lastProviderEventAt = 0;
+    this.providerTransition = null;
     this.traceSequence = 0;
     this.providerFirstServerEventSeen = false;
     this.audioCallbackCount = 0;
@@ -908,8 +917,8 @@ export class LiveTranslateSession {
       pcmCaptureTimestampMs: record.timestamp
     });
     while (
-      this.pendingInputAudioChunks.length >= MAX_PENDING_INPUT_AUDIO_CHUNKS
-      || this.pendingInputAudioBytes + bytes.byteLength > MAX_PRE_ROLL_BYTES
+      this.pendingInputAudioChunks.length >= this.maxPendingInputAudioChunks
+      || this.pendingInputAudioBytes + bytes.byteLength > this.maxPendingInputAudioBytes
     ) {
       const dropped = this.pendingInputAudioChunks.shift();
       if (!dropped) break;
@@ -919,6 +928,7 @@ export class LiveTranslateSession {
         droppedBytes: dropped.bytes.byteLength,
         bufferedBytes: this.pendingInputAudioBytes
       });
+      this.reportInputBufferOverflow(dropped);
     }
     this.pendingInputAudioChunks.push(record);
     this.pendingInputAudioBytes += bytes.byteLength;
@@ -977,8 +987,8 @@ export class LiveTranslateSession {
   queuePendingInputAudioRecord(record) {
     const bytes = record.bytes;
     while (
-      this.pendingInputAudioChunks.length >= MAX_PENDING_INPUT_AUDIO_CHUNKS
-      || this.pendingInputAudioBytes + bytes.byteLength > MAX_PRE_ROLL_BYTES
+      this.pendingInputAudioChunks.length >= this.maxPendingInputAudioChunks
+      || this.pendingInputAudioBytes + bytes.byteLength > this.maxPendingInputAudioBytes
     ) {
       const dropped = this.pendingInputAudioChunks.shift();
       if (!dropped) break;
@@ -988,6 +998,7 @@ export class LiveTranslateSession {
         droppedBytes: dropped.bytes.byteLength,
         bufferedBytes: this.pendingInputAudioBytes
       });
+      this.reportInputBufferOverflow(dropped);
     }
     this.pendingInputAudioChunks.push(record);
     this.pendingInputAudioBytes += bytes.byteLength;
@@ -1202,6 +1213,7 @@ export class LiveTranslateSession {
       this.logLiveEvent('stale.callback.ignored', { kind: 'message', connectionEpoch: epoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
       return;
     }
+    this.lastProviderEventAt = Date.now();
     this.tracePipeline('PROVIDER_EVENT', {
       eventId: providerMessageId(message),
       providerEventId: providerMessageId(message),
@@ -1599,6 +1611,7 @@ export class LiveTranslateSession {
       this.activeRetranslationCueId = null;
     }
 
+    if (acceptsBoundary) this.providerBoundarySequence += 1;
     this.logLiveEvent('message.processed', {
       stateAfter: this.transcriptBoundaryState()
     });
@@ -1767,6 +1780,87 @@ export class LiveTranslateSession {
     for (const chunk of this.chunker.flush()) {
       this.sendInputAudioChunk(chunk, this.connectionEpoch);
     }
+  }
+
+  async beginProviderTransition({ maxWaitMs = 3000, quietPeriodMs = 150, pollIntervalMs = 10 } = {}) {
+    if (this.closed) return { boundaryObserved: false, reason: 'session_closed' };
+    if (this.providerTransition) return this.providerTransition.promise;
+
+    const transition = {
+      providerEpoch: this.providerEpoch,
+      segmentId: this.segmentId,
+      audioTurnId: this.audioTurnId,
+      boundarySequence: this.providerBoundarySequence,
+      startedAt: Date.now()
+    };
+    this.providerTransition = transition;
+
+    if (typeof this.chunker?.flush === 'function') {
+      for (const chunk of this.chunker.flush()) {
+        this.sendInputAudioChunk(chunk, this.connectionEpoch, { force: true });
+      }
+    }
+    this.inputSendingEnabled = false;
+    this.preRollDraining = true;
+    const payload = this.inputTurnMode === 'manual' ? { activityEnd: {} } : { audioStreamEnd: true };
+    const method = this.inputTurnMode === 'manual' ? 'activityEnd' : 'audioStreamEnd';
+    this.sendProviderInput(payload, method, { inputEnd: true });
+
+    transition.promise = new Promise((resolve) => {
+      const check = () => {
+        const elapsedMs = Date.now() - transition.startedAt;
+        const boundaryObserved = this.providerBoundarySequence > transition.boundarySequence;
+        const quiet = Date.now() - this.lastProviderEventAt >= quietPeriodMs;
+        const pendingAcceptedEvent = Boolean(this.pendingInputTranscript || this.pendingOutputTranscript);
+        if ((boundaryObserved && quiet && !pendingAcceptedEvent) || elapsedMs >= maxWaitMs || this.closed) {
+          if (!boundaryObserved || pendingAcceptedEvent) this.flushPendingTranscripts({ localFinalize: true });
+          resolve({
+            boundaryObserved,
+            timedOut: elapsedMs >= maxWaitMs,
+            providerEpoch: transition.providerEpoch,
+            segmentId: transition.segmentId,
+            audioTurnId: transition.audioTurnId,
+            eventSequence: this.eventSequence,
+            bufferedBytes: this.pendingInputAudioBytes
+          });
+          return;
+        }
+        globalThis.setTimeout(check, Math.max(1, pollIntervalMs));
+      };
+      check();
+    }).finally(() => {
+      if (this.providerTransition === transition) this.providerTransition = null;
+    });
+    return transition.promise;
+  }
+
+  cancelProviderTransition() {
+    if (this.closed) return false;
+    this.preRollDraining = false;
+    this.inputSendingEnabled = true;
+    return this.drainPreRoll(this.connectionEpoch);
+  }
+
+  reportInputBufferOverflow(dropped) {
+    const diagnostic = Object.freeze({
+      code: 'provider_input_buffer_overflow',
+      providerEpoch: this.providerEpoch,
+      segmentId: this.segmentId,
+      audioTurnId: dropped?.audioTurnId || this.audioTurnId,
+      droppedSequence: dropped?.sequence ?? null,
+      droppedBytes: dropped?.bytes?.byteLength || 0,
+      bufferedBytes: this.pendingInputAudioBytes,
+      maxBufferedBytes: this.maxPendingInputAudioBytes,
+      timestamp: nowIso()
+    });
+    this.tracePipeline('PCM_BUFFER_CAPACITY_EXCEEDED', {
+      audioTurnId: diagnostic.audioTurnId,
+      pcmSequence: diagnostic.droppedSequence,
+      pcmBytes: diagnostic.droppedBytes,
+      queueDepth: this.pendingInputAudioChunks.length,
+      reason: diagnostic.code
+    });
+    this.onInputBufferOverflow?.(diagnostic);
   }
 
   finalizeInputTurn() {

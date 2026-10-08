@@ -51,5 +51,11 @@ test('checkpoint treats persisted cue metadata normalization as idempotent', asy
   });
 
   const result = await service.getCheckpoint({ meetingId: meeting.id, segmentId: segment.id });
-  assert.deepEqual(result.checkpoint.finalCues, [cue]);
+  assert.deepEqual(result.checkpoint.finalCues, [{
+    ...cue,
+    sourceStatus: 'finalized',
+    translationStatus: 'finalized',
+    sourceVersion: 1,
+    translationVersion: 1
+  }]);
 });

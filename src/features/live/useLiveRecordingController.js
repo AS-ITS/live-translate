@@ -16,6 +16,7 @@ import { createSessionSnapshotSyncCoordinator } from '../../lib/sessionSnapshotS
 import { checkpointChunksForTranscriptItems, createMeetingCheckpointSyncCoordinator } from '../../lib/meetingCheckpointSyncCoordinator.js';
 import { createReconnectController } from '../../lib/reconnectController.js';
 import { createSegmentSwitchOrchestrator } from '../../lib/segmentSwitchOrchestrator.js';
+import { createRolloverRecoveryCoordinator } from '../../lib/rolloverRecoveryCoordinator.js';
 import { selectedMeetingGlossaryEntries } from '../../lib/meetingGlossary.js';
 import { appendNewFinalTranscriptItems, buildSessionRecordInput, createActiveSessionRecord } from '../../lib/sessionRecordLifecycle.js';
 import { clearMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
@@ -729,14 +730,14 @@ export function useLiveRecordingController({
       lifecycle.livenessTimer = null;
     };
 
-    const executeMeetingLifecycleCommand = async (command, payload = {}) => {
+    const executeMeetingLifecycleCommand = async (command, payload = {}, identity = {}) => {
       const lifecycle = meetingLifecycleRef.current;
       if (!lifecycle) return null;
       const result = await recovery.meetingCheckpointApiClientRef.current.executeRecordingCommand({
         meetingId: lifecycle.meetingId,
         command,
-        operationId: nextOperationId(command),
-        expectedLifecycleVersion: lifecycle.lifecycleVersion,
+        operationId: identity.operationId || nextOperationId(command),
+        expectedLifecycleVersion: identity.expectedLifecycleVersion ?? lifecycle.lifecycleVersion,
         leaseId: lifecycle.leaseId,
         fenceToken: lifecycle.fenceToken,
         ...payload
@@ -1642,6 +1643,7 @@ export function useLiveRecordingController({
       if (!releaseTransition) return;
 
       let rolloverStage = 'prepare';
+      let rolloverCommandCommitted = false;
       try {
         recordLivePipelineTrace({
           stage: 'SESSION_ROLLOVER_START',
@@ -1652,16 +1654,27 @@ export function useLiveRecordingController({
           providerEpoch: previousSession.providerEpoch
         });
         recovery.reconnectController().cancel();
-        recovery.suspendLiveSessionCallbacks();
         recovery.setError('');
         recovery.setStatusLabelOverride('切換下一段中');
         recovery.setStatus('switching-segment');
         const nextLiveSessionId = recovery.generateLiveSessionId();
 
-      await recovery.finalizePendingTranscriptItemsForStop();
-      cueController.flushSubtitleCues('segment-rollover');
-      await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
-      if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
+        rolloverStage = 'provider-drain';
+        const drain = await previousSession.beginProviderTransition?.({ maxWaitMs: 3_000 });
+        recordLivePipelineTrace({
+          stage: 'PROVIDER_TRANSITION_DRAINED',
+          meetingId: meetingCheckpoint.meetingId,
+          oldSegmentId: meetingCheckpoint.segmentId,
+          providerEpoch: drain?.providerEpoch ?? previousSession.providerEpoch,
+          audioTurnId: drain?.audioTurnId,
+          eventSequence: drain?.eventSequence,
+          queueDepth: previousSession.pendingInputAudioChunks?.length,
+          reason: drain?.timedOut ? 'bounded_timeout' : 'provider_boundary'
+        });
+        await recovery.finalizePendingTranscriptItemsForStop();
+        cueController.flushSubtitleCues('segment-rollover');
+        await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
+        if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
 
         rolloverStage = 'checkpoint';
         const flushed = await checkpointController.flushMeetingCheckpointSync();
@@ -1670,24 +1683,84 @@ export function useLiveRecordingController({
           recovery.setMeetingCheckpointErrorMessage?.('長會議同步暫時失敗，錄音與本機字幕仍會繼續，未同步資料會保留重試。');
         }
     if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
-    recovery.archiveActiveTranscriptSegment();
 
         rolloverStage = 'rollover-command';
-        const rollover = meetingLifecycleRef.current
-        ? await executeMeetingLifecycleCommand('rollover')
-        : await recovery.meetingCheckpointApiClientRef.current.rolloverSegment({
+        const lifecycle = meetingLifecycleRef.current;
+        const operationId = lifecycle
+          ? nextOperationId('rollover')
+          : `rollover:${meetingCheckpoint.segmentId}:${previousSession.liveSessionId}`;
+        const lifecycleIdentity = lifecycle
+          ? { operationId, expectedLifecycleVersion: lifecycle.lifecycleVersion }
+          : null;
+        const legacyPayload = {
           meetingId: meetingCheckpoint.meetingId,
           segmentId: meetingCheckpoint.segmentId,
-          idempotencyKey: `rollover:${meetingCheckpoint.segmentId}:${previousSession.liveSessionId}`,
+          idempotencyKey: operationId,
           checkpoint: {
             idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:rollover`,
             durableChunks: [],
             pendingPartial: null
           },
           nextLiveSessionId
+        };
+        const operation = {
+          operationId,
+          payload: lifecycle
+            ? {
+                meetingId: lifecycle.meetingId,
+                command: 'rollover',
+                expectedLifecycleVersion: lifecycleIdentity.expectedLifecycleVersion,
+                leaseId: lifecycle.leaseId,
+                fenceToken: lifecycle.fenceToken,
+                nextLiveSessionId
+              }
+            : legacyPayload
+        };
+        const rolloverCoordinator = createRolloverRecoveryCoordinator({
+          execute: () => lifecycle
+            ? executeMeetingLifecycleCommand('rollover', { nextLiveSessionId }, lifecycleIdentity)
+            : recovery.meetingCheckpointApiClientRef.current.rolloverSegment(legacyPayload),
+          reconcile: async () => {
+            const authoritative = await recovery.meetingCheckpointApiClientRef.current.listSegments({ meetingId: meetingCheckpoint.meetingId });
+            const committedSegment = authoritative.segments.find((segment) => (
+              segment.id !== meetingCheckpoint.segmentId
+              && segment.status === 'active'
+              && (!Number.isSafeInteger(meetingCheckpoint.segmentSequence)
+                || segment.sequence === meetingCheckpoint.segmentSequence + 1)
+            ));
+            if (committedSegment) {
+              if (!lifecycle) {
+                return { status: 'committed', result: { segment: committedSegment }, authoritativeSegment: committedSegment };
+              }
+              // The lifecycle RPC is idempotent by operationId and returns the stored
+              // response. Replaying it here retrieves the authoritative lease/session
+              // after a lost ACK; it does not create another Segment.
+              const result = await executeMeetingLifecycleCommand('rollover', { nextLiveSessionId }, lifecycleIdentity);
+              return { status: 'committed', result, authoritativeSegment: result.segment };
+            }
+            const sourceSegment = authoritative.segments.find((segment) => segment.id === meetingCheckpoint.segmentId);
+            return sourceSegment?.status === 'active'
+              ? { status: 'source-active', authoritativeSegment: sourceSegment }
+              : { status: 'conflict', authoritativeSegment: sourceSegment || null };
+          },
+          onStateChange: (rolloverState) => recordLivePipelineTrace({
+            stage: 'SESSION_ROLLOVER_RECOVERY',
+            meetingId: meetingCheckpoint.meetingId,
+            oldSegmentId: meetingCheckpoint.segmentId,
+            operationId,
+            rolloverGeneration: rolloverState.attempt,
+            retryAttempt: rolloverState.attempt,
+            authoritativeSegmentId: rolloverState.authoritativeSegment?.id,
+            reason: rolloverState.status,
+            httpStatus: rolloverState.lastError?.status,
+            serverErrorCode: rolloverState.lastError?.code
+          })
         });
+        const rollover = await rolloverCoordinator.run(operation);
+        rolloverCommandCommitted = true;
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
+      recovery.archiveActiveTranscriptSegment();
       const nextMeetingCheckpoint = { meetingId: meetingCheckpoint.meetingId, segmentId: rollover.segment.id, segmentSequence: rollover.segment.sequence };
       recordLivePipelineTrace({
         stage: 'SESSION_CREATED',
@@ -1744,9 +1817,10 @@ export function useLiveRecordingController({
         reason: 'rollover_continued'
       });
       } catch (cause) {
+        if (!rolloverCommandCommitted) previousSession.cancelProviderTransition?.();
         recovery.activateLiveSessionCallbacks(previousSession.callbackGeneration);
         recovery.sessionRef.current = previousSession;
-        recovery.setStatus('listening');
+        recovery.setStatus(rolloverCommandCommitted ? 'reconnecting' : 'listening');
         recordLivePipelineTrace({
           stage: 'RECORDING_PIPELINE_STATE',
           meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
@@ -1811,6 +1885,7 @@ export function useLiveRecordingController({
     recordingState: state.recordingState,
     translatedAudioState: state.translatedAudioState,
     meetingCheckpointStatus: state.meetingCheckpointStatus ?? 'idle',
+    segmentRolloverStatus: state.segmentRolloverStatus ?? 'idle',
     meetingViewStats: state.meetingViewStats ?? { archivedSegmentCount: 0, loadedSegmentCount: 0 },
     resumeDraft: state.resumeDraft ?? null,
     controlLeaseSnapshot: state.controlLeaseSnapshot ?? null,

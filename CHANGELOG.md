@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修正長會議 rollover 失敗後永久停用排程與 transition callback 丟失：新增 bounded reconciliation/retry（同一 operationId 與 immutable payload）、語意邊界 Provider drain、有界 PCM overflow 警示及 Cue durability timeout。timeout 先視為結果未知並查詢 authoritative Segment；不重播 OPFS 歷史 PCM 至 Gemini，避免字幕重複／錯序。錄音、分段、雲端保存與 Viewer 狀態分離，rollover／checkpoint 失敗不拆除健康 WebRTC DataChannel，且不清除既有 IndexedDB／OPFS 會議資料。
+
 - Viewer 全螢幕在 Fullscreen API 缺席或拒絕時改用 fixed、dynamic viewport height 與 safe-area inset 的 CSS presentation mode，進入／退出不會 remount fullscreen shell，並保留 reconnect、字幕捲動及原文／翻譯顯示狀態。原生全螢幕拒絕提示現在可手動關閉、5 秒自動消失，重複嘗試與 component unmount 會清理舊 timer。
 
 - Viewer bounded transport recovery exhausted 後會進入 `recovery_failed`，保留既有字幕、閱讀位置、顯示偏好與 fullscreen，並在頁內顯示「重新整理頁面」按鈕；系統不會自動 reload，只有使用者點擊才刷新，底層 transport 若自行恢復則回到 connected 並隱藏提示。

@@ -75,6 +75,26 @@ test('segment switch orchestrator cancels pending switches and reports failures'
   await failing.triggerNow();
 
   assert.deepEqual(errors, ['switch failed']);
+  assert.equal(timers.length, 3);
+});
+
+test('segment switch orchestrator remains scheduled after a failed rollover', async () => {
+  const timers = createFakeTimers();
+  let attempts = 0;
+  const orchestrator = createSegmentSwitchOrchestrator({
+    intervalMs: 10,
+    setTimeoutFn: timers.setTimeout,
+    clearTimeoutFn: timers.clearTimeout,
+    switchSegment: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('temporary failure');
+    }
+  });
+
+  orchestrator.start();
+  await timers.advanceBy(10);
+  await timers.advanceBy(10);
+  assert.equal(attempts, 2);
 });
 
 test('normalizeSegmentIntervalMs caps the production interval at 15 minutes', () => {

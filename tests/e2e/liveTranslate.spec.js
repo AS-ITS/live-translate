@@ -2544,6 +2544,17 @@ test('lifecycle v2 rollover survives unrelated session PATCH outage and keeps pr
   const commands = [];
   const segmentPatchRequests = [];
   let activeSequence = 0;
+  let rolloverFailures = 0;
+  await page.route(`**/api/meetings/${MOCK_MEETING_ID}/segments`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        meetingId: MOCK_MEETING_ID,
+        segments: [{ id: MOCK_SEGMENT_ID(activeSequence + 1), sequence: activeSequence, status: 'active' }]
+      })
+    });
+  });
   await page.route(`**/api/meetings/${MOCK_MEETING_ID}/recording/**`, async (route) => {
     const command = new URL(route.request().url()).pathname.split('/').at(-1);
     if (command === 'heartbeat') {
@@ -2551,7 +2562,8 @@ test('lifecycle v2 rollover survives unrelated session PATCH outage and keeps pr
       return;
     }
     commands.push(command);
-    if (command === 'rollover' && activeSequence === 6) {
+    if (command === 'rollover' && activeSequence === 6 && rolloverFailures === 0) {
+      rolloverFailures += 1;
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'supabase_request_failed', requestId: 'failed-rollover-request' } }) });
       return;
     }
@@ -2600,13 +2612,14 @@ test('lifecycle v2 rollover survives unrelated session PATCH outage and keeps pr
   await expect(finalCueRows(page)).toHaveCount(6);
   await expect.poll(() => new Set(checkpointRequests.cueRequests.map(({ segmentId }) => segmentId)).size).toBe(6);
   await expect(page.getByText('after rollover 6 translation')).toBeVisible();
-  await expect.poll(() => commands.filter((item) => item === 'rollover').length).toBe(7);
-  await expect(page.getByRole('button', { name: '繼續', exact: true })).toBeVisible();
+  await expect.poll(() => commands.filter((item) => item === 'rollover').length).toBe(8);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBeGreaterThanOrEqual(8);
+  await expect(page.getByRole('button', { name: '繼續', exact: true })).toHaveCount(0);
   await expect(page.getByText('正在準備會議…')).toHaveCount(0);
-  await page.getByRole('button', { name: '繼續', exact: true }).click();
-  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(1);
   await emitMicrophoneAudio(page);
-  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.getByRole('button', { name: '詳細狀態' }).click();
+  await expect(page.getByTestId('recording-health')).toContainText('持續中');
+  await expect(page.getByTestId('segment-health')).toContainText('目前段落正常');
   await expect(page.getByText('切換失敗')).toHaveCount(0);
 });
 
@@ -2748,7 +2761,9 @@ test('checkpoint sync failure keeps the live session active and shows retryable 
   await emitFinalTranscript(page, 'sync failure source', 'sync failure translation');
 
   await expect(page.getByText('會議模式：保存失敗，等待重試')).toBeVisible({ timeout: 6500 });
-  await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '詳細狀態' }).click();
+  await expect(page.getByTestId('recording-health')).toContainText('持續中');
+  await expect(page.getByTestId('segment-health')).toContainText('目前段落正常');
   await expect(page.locator('.error-message')).toContainText('長會議同步暫時失敗');
 });
 
@@ -2768,23 +2783,24 @@ test('cue HTTP 403 after rollover degrades cloud persistence without stopping re
   await expect.poll(() => requests.rolloverRequests.length, { timeout: 7000 }).toBe(1);
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(2);
   await emitMicrophoneAudio(page);
-  await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '詳細狀態' }).click();
+  await expect(page.getByTestId('recording-health')).toContainText('持續中');
+  await expect(page.getByTestId('segment-health')).toContainText('目前段落正常');
 
   await emitFinalTranscript(page, 'segment B first source', 'segment B first translation', { waitMs: 100 });
   await expect.poll(() => requests.cueRequests.some((request) => request.segmentId === MOCK_SEGMENT_ID(2))).toBe(true);
-  await expect(page.getByText('字幕已保存在本機，但雲端同步失敗。結束時會再重試。')).toBeVisible();
-  await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible({ timeout: 1000 });
+  await expect(page.getByRole('alert')).toContainText('字幕已保存在本機，但雲端同步失敗。結束時會再重試。');
+  await expect(page.getByTestId('recording-health')).toContainText('持續中');
 
   await emitFinalTranscript(page, 'segment B continues locally', 'segment B local translation', { waitMs: 100 });
   await expect(page.getByText('segment B continues locally')).toBeVisible();
-  await expect.poll(() => page.evaluate(liveResourceDiagnostics)).toEqual({
-    micTrackCount: 2,
-    activeMicTrackCount: 1,
-    audioContextCount: 2,
-    openAudioContextCount: 1,
-    liveSessionCount: 2,
-    openLiveSessionCount: 1
-  });
+  const resources = await page.evaluate(liveResourceDiagnostics);
+  expect(resources.micTrackCount).toBe(1);
+  expect(resources.activeMicTrackCount).toBe(1);
+  expect(resources.audioContextCount).toBe(1);
+  expect(resources.openAudioContextCount).toBe(1);
+  expect(resources.liveSessionCount).toBeGreaterThanOrEqual(2);
+  expect(resources.openLiveSessionCount).toBe(1);
 });
 
 test('stop error banner stays above the live workspace', async ({ page }) => {

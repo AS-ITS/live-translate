@@ -1821,10 +1821,14 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
   }
 
   if (req.method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path))) {
+    const lifecycleDiagnostic = { meetingId: null, command: null, operationId: null, sessionId: null, segmentId: null };
     try {
       if (!meetingLifecycleService) throw createHttpError('cloud_capability_unavailable');
       const route = parseMeetingLifecyclePath(path);
+      lifecycleDiagnostic.meetingId = route.meetingId;
+      lifecycleDiagnostic.command = route.action;
       const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
+      lifecycleDiagnostic.operationId = body?.operationId || null;
       const principal = await resolveMeetingLifecyclePrincipal({
         req,
         meetingId: route.meetingId,
@@ -1867,12 +1871,25 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         fenceToken: body?.fenceToken,
         payload
       });
+      lifecycleDiagnostic.sessionId = result?.session?.id || null;
+      lifecycleDiagnostic.segmentId = result?.segment?.id || null;
       statusCode = ['start', 'resume', 'rollover', 'recover', 'takeover'].includes(route.action) ? 201 : 200;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : (statusCode >= 400 ? 'warn' : 'info'),
+        event: 'meeting_lifecycle_command',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        ...lifecycleDiagnostic
+      });
     }
     return;
   }

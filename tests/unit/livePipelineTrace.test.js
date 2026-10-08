@@ -47,11 +47,13 @@ test('development pipeline trace records bounded structured turn entries', () =>
   assert.deepEqual(trace.get(), []);
 });
 
-test('trace bounds text fields and isolates logger failures', () => {
+test('trace records text lengths without retaining transcript content and isolates logger failures', () => {
   const trace = createLivePipelineTrace({ enabled: true, logger: () => { throw new Error('sink down'); } });
   const entry = trace.record({ stage: 'TRANSCRIPT_NORMALIZED', sourceText: 'x'.repeat(2000), translationText: 'y'.repeat(2000), reason: 'z'.repeat(2000) });
-  assert.match(entry.sourceText, /\.\.\.\[truncated\]$/u);
-  assert.match(entry.translationText, /\.\.\.\[truncated\]$/u);
+  assert.equal(entry.sourceTextLength, 2000);
+  assert.equal(entry.translationTextLength, 2000);
+  assert.equal(Object.hasOwn(entry, 'sourceText'), false);
+  assert.equal(Object.hasOwn(entry, 'translationText'), false);
   assert.match(entry.reason, /\.\.\.\[truncated\]$/u);
   assert.doesNotThrow(() => trace.record({ stage: 'CUE_UPDATED', cueId: 'cue-1' }));
 });
@@ -239,7 +241,7 @@ test('trace does not infer logical-turn identity from Cue identity', () => {
   assert.equal(entry.audioTurnId, null);
 });
 
-test('trace export preserves bounded sequence and before/after transcript evidence', () => {
+test('trace export preserves bounded sequence and before/after transcript lengths', () => {
   const trace = createLivePipelineTrace({ enabled: true, limit: 2, logger: () => {} });
   trace.record({ stage: 'TRANSCRIPT_NORMALIZED', eventSequence: 7, sourceText: '這一句' });
   trace.record({
@@ -254,15 +256,16 @@ test('trace export preserves bounded sequence and before/after transcript eviden
 
   const entries = trace.get();
   assert.deepEqual(entries.map((entry) => entry.traceSequence), [2, 3]);
-  assert.equal(entries[0].beforeSourceText, '這一句');
-  assert.equal(entries[0].afterSourceText, '這一句不能消失。');
-  assert.equal(entries[0].beforeTranslationText, 'this sentence');
-  assert.equal(entries[0].afterTranslationText, 'this sentence cannot disappear');
+  assert.equal(entries[0].beforeSourceTextLength, '這一句'.length);
+  assert.equal(entries[0].afterSourceTextLength, '這一句不能消失。'.length);
+  assert.equal(entries[0].beforeTranslationTextLength, 'this sentence'.length);
+  assert.equal(entries[0].afterTranslationTextLength, 'this sentence cannot disappear'.length);
 
   const exported = JSON.parse(trace.exportJson());
   assert.equal(exported.entryCount, 2);
   assert.deepEqual(exported.entries, entries);
   assert.equal(JSON.stringify(exported).includes('undefined'), false);
+  assert.equal(JSON.stringify(exported).includes('this sentence'), false);
 });
 
 test('trace preserves bounded local terminal replay provenance', () => {

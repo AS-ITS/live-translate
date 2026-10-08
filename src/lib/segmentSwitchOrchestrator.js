@@ -59,9 +59,9 @@ export function createSegmentSwitchOrchestrator({
       return true;
     } catch (error) {
       if (active && expectedGeneration === generation) {
-        active = false;
         onStatusChange?.('error');
         onError?.(error);
+        schedule(expectedGeneration);
       }
       return false;
     } finally {

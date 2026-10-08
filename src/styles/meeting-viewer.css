@@ -62,6 +62,7 @@
 
 .meeting-viewer-page .viewer-connection-status.is-invalid,
 .meeting-viewer-page .viewer-connection-status.is-stopped,
+.meeting-viewer-page .viewer-connection-status.is-recovery_failed,
 .meeting-viewer-page .viewer-connection-status.is-failed {
   border-color: rgb(180 35 24 / 22%);
   color: var(--color-danger);
@@ -69,6 +70,7 @@
 
 .meeting-viewer-page .viewer-connection-status.is-invalid .viewer-status-dot,
 .meeting-viewer-page .viewer-connection-status.is-stopped .viewer-status-dot,
+.meeting-viewer-page .viewer-connection-status.is-recovery_failed .viewer-status-dot,
 .meeting-viewer-page .viewer-connection-status.is-failed .viewer-status-dot {
   background: var(--color-danger);
   box-shadow: 0 0 0 4px rgb(180 35 24 / 10%);
@@ -136,6 +138,17 @@
   color: #fff;
 }
 
+.meeting-viewer-page .viewer-fullscreen-toggle {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.meeting-viewer-page .viewer-fullscreen-toggle:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
 .meeting-viewer-page .viewer-follow-latest {
   border-color: var(--color-primary);
   background: var(--color-primary);
@@ -152,6 +165,34 @@
 .meeting-viewer-page .viewer-error,
 .meeting-viewer-page .viewer-loading {
   margin: 0;
+}
+
+.meeting-viewer-page .viewer-reconnecting-detail {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.meeting-viewer-page .viewer-recovery-failed {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid rgb(180 35 24 / 28%);
+  border-radius: var(--radius-lg);
+  background: rgb(255 244 242 / 96%);
+  color: var(--color-danger);
+}
+
+.meeting-viewer-page .viewer-recovery-failed p {
+  margin: 0;
+  color: var(--color-text);
+}
+
+.meeting-viewer-page .viewer-reload-button {
+  background: var(--color-danger);
+  color: #fff;
 }
 
 .meeting-viewer-page .viewer-cue-panel {
@@ -320,6 +361,10 @@
   .meeting-viewer-page .viewer-retry-button {
     flex: 0 1 auto;
     min-width: 0;
+    padding-inline: var(--space-2);
+  }
+  .meeting-viewer-page .viewer-fullscreen-toggle {
+    flex: 0 1 auto;
     padding-inline: var(--space-2);
   }
 }

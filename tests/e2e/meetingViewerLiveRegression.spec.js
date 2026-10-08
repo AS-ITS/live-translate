@@ -90,3 +90,228 @@ test('Viewer keeps receiving and following cues when earlier live cues lack segm
     [...node.querySelectorAll('.viewer-cue-row')].at(-1)?.dataset.cueId)).toBe('new-G');
   await expect(viewerHeader).toHaveAttribute('data-reconnect-marker', 'stable');
 });
+
+test('Viewer keeps fullscreen presentation state across DataChannel generation recovery', async ({ page }) => {
+  await page.addInitScript(() => {
+    class MockEventSource extends EventTarget {
+      constructor() {
+        super();
+        queueMicrotask(() => this.onopen?.(new Event('open')));
+      }
+      close() { this.readyState = 2; }
+    }
+
+    class MockDataChannel {
+      constructor() {
+        this.readyState = 'connecting';
+        this.listeners = new Map();
+        this.sent = [];
+      }
+      addEventListener(type, handler) {
+        if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+        this.listeners.get(type).add(handler);
+      }
+      emit(type, event = new Event(type)) {
+        this.listeners.get(type)?.forEach((handler) => handler(event));
+        this[`on${type}`]?.(event);
+      }
+      open() {
+        this.readyState = 'open';
+        this.emit('open');
+      }
+      send(value) { this.sent.push(JSON.parse(value)); }
+      receive(value) {
+        this.emit('message', new MessageEvent('message', { data: JSON.stringify(value) }));
+      }
+      close() {
+        if (this.readyState === 'closed') return;
+        this.readyState = 'closed';
+        this.emit('close');
+      }
+    }
+
+    window.__viewerChannels = [];
+    window.EventSource = MockEventSource;
+    window.RTCPeerConnection = class MockViewerPeerConnection {
+      constructor() {
+        this.connectionState = 'connected';
+        this.iceConnectionState = 'connected';
+        this.signalingState = 'stable';
+        this.localDescription = null;
+        this.remoteDescription = null;
+      }
+      async setRemoteDescription(description) {
+        this.remoteDescription = description;
+        const channel = new MockDataChannel();
+        window.__viewerChannels.push(channel);
+        queueMicrotask(() => {
+          this.ondatachannel?.({ channel });
+          channel.open();
+        });
+      }
+      async createAnswer() { return { type: 'answer', sdp: 'mock-answer' }; }
+      async setLocalDescription(description) { this.localDescription = description; }
+      async addIceCandidate() {}
+      async getStats() { return new Map(); }
+      close() { this.connectionState = 'closed'; }
+    };
+    window.__closeViewerChannel = () => window.__viewerChannels.at(-1)?.close();
+    window.__receiveViewerPacket = (packet) => window.__viewerChannels.at(-1)?.receive(packet);
+  });
+
+  const signaling = { participantId: '', negotiationId: '', offeredNegotiations: new Set(), sequence: 0 };
+  await page.route(/\/api\/shared-meetings\/code\/FULLSCREEN(?:\?.*)?$/, (route) => route.fulfill({
+    json: {
+      meeting: { id: 'meeting-fullscreen', name: '全螢幕重連測試', status: 'active' },
+      cues: [{ cueId: 'cue-1', segmentId: 'segment-1', segmentSequence: 1, sequence: 1,
+        sourceText: '初始原文', translatedText: 'Initial translation', sourceVersion: 1, translationVersion: 1 }],
+      cursor: { eventId: 1, cueSequence: 1 },
+    },
+  }));
+  await page.route('**/api/webrtc/meeting-fullscreen/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('/join')) {
+      await route.fulfill({ json: { ttlMs: 60_000, iceServers: [] } });
+      return;
+    }
+    if (request.method() === 'POST' && url.pathname.endsWith('/signal')) {
+      const body = request.postDataJSON();
+      if (body.type === 'viewer-ready') {
+        signaling.participantId = body.participantId;
+        signaling.negotiationId = body.negotiationId;
+      }
+      await route.fulfill({ json: { accepted: true, sequence: ++signaling.sequence } });
+      return;
+    }
+    if (request.method() === 'GET' && url.pathname.endsWith('/signal')) {
+      const shouldOffer = signaling.negotiationId
+        && !signaling.offeredNegotiations.has(signaling.negotiationId);
+      const messages = shouldOffer ? [{
+        sequence: ++signaling.sequence,
+        participantId: 'recorder-1',
+        targetParticipantId: signaling.participantId,
+        negotiationId: signaling.negotiationId,
+        type: 'offer',
+        payload: { type: 'offer', sdp: `mock-offer-${signaling.sequence}` },
+      }] : [];
+      if (shouldOffer) signaling.offeredNegotiations.add(signaling.negotiationId);
+      await route.fulfill({ json: { messages, after: signaling.sequence } });
+      return;
+    }
+    await route.fulfill({ json: { left: true } });
+  });
+
+  await page.goto('/#viewer?code=FULLSCREEN');
+  const shell = page.getByTestId('viewer-fullscreen-shell');
+  const viewport = page.getByTestId('meeting-viewer-cue-viewport');
+  await expect.poll(() => page.evaluate(() => window.__viewerChannels.length)).toBe(1);
+  await shell.evaluate((node) => { node.dataset.fullscreenBoundary = 'stable'; });
+
+  await page.getByTestId('viewer-fullscreen-toggle').click();
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.dataset.testid)).toBe('viewer-fullscreen-shell');
+  await page.getByTestId('viewer-source-toggle').click();
+  await expect(page.getByTestId('viewer-source-toggle')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('viewer-translation-toggle')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('img', { name: 'Viewer 分享連結 QR Code' })).toBeVisible();
+
+  await page.evaluate(() => window.__closeViewerChannel());
+  await expect.poll(() => page.evaluate(() => window.__viewerChannels.length), { timeout: 5_000 }).toBe(2);
+  await expect.poll(() => page.evaluate(() => window.__viewerChannels.at(-1)?.sent.some((packet) => packet.type === 'replay.request'))).toBe(true);
+  await page.evaluate(() => window.__receiveViewerPacket({
+    protocol: 'subtitle-webrtc/v1', type: 'replay.response', meetingId: 'meeting-fullscreen',
+    sourceId: 'recorder-source', requestId: 'replay-2', fromSequence: 1, toSequence: 2,
+    events: [{ protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-fullscreen',
+      sourceId: 'recorder-source', sequence: 2, cue: { cueId: 'cue-2', segmentId: 'segment-1',
+        segmentSequence: 1, sequence: 2, sourceText: '重連原文', translatedText: 'Recovered translation',
+        sourceVersion: 1, translationVersion: 1 } }],
+  }));
+  await page.evaluate(() => window.__receiveViewerPacket({
+    protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-fullscreen',
+    sourceId: 'recorder-source', sequence: 3, cue: { cueId: 'cue-3', segmentId: 'segment-1',
+      segmentSequence: 1, sequence: 3, sourceText: '最新原文', translatedText: 'Latest translation',
+      sourceVersion: 1, translationVersion: 1 },
+  }));
+
+  await expect(viewport.locator('[data-cue-id="cue-3"]')).toContainText('Latest translation');
+  await expect(shell).toHaveAttribute('data-fullscreen-boundary', 'stable');
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.dataset.testid)).toBe('viewer-fullscreen-shell');
+  await expect(page.getByTestId('viewer-source-toggle')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('viewer-translation-toggle')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('img', { name: 'Viewer 分享連結 QR Code' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Viewer 分享連結' })).toHaveAttribute('href', /#viewer\?code=FULLSCREEN$/);
+});
+
+test('Viewer shows recovery failure in fullscreen and reloads only after the user clicks', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'RTCPeerConnection', { configurable: true, value: undefined });
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = (callback, delay = 0, ...args) => nativeSetTimeout(callback, delay >= 1_000 ? 0 : delay, ...args);
+    class MockEventSource extends EventTarget {
+      static instances = [];
+      constructor() {
+        super();
+        MockEventSource.instances.push(this);
+        queueMicrotask(() => this.onopen?.(new Event('open')));
+      }
+      close() { this.readyState = 2; }
+    }
+    window.EventSource = MockEventSource;
+    window.__failViewerTransport = () => MockEventSource.instances.at(-1)?.onerror?.(new Event('error'));
+    window.__recoverViewerTransport = () => MockEventSource.instances.at(-1)?.onopen?.(new Event('open'));
+  });
+
+  let snapshotRequests = 0;
+  let navigationRequests = 0;
+  page.on('request', (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigationRequests += 1;
+  });
+  await page.route(/\/api\/shared-meetings\/code\/RECOVERY-FAILED(?:\?.*)?$/, async (route) => {
+    snapshotRequests += 1;
+    if (snapshotRequests > 1) {
+      await route.fulfill({ status: 503, json: { error: { code: 'cloud_capability_unavailable' } } });
+      return;
+    }
+    await route.fulfill({ json: {
+      meeting: { id: 'meeting-recovery-failed', name: 'Recovery failure regression' },
+      cues: [{
+        cueId: 'cue-preserved', segmentId: 'segment-1', segmentSequence: 1, sequence: 1,
+        sourceText: '保留的舊字幕', translatedText: 'Preserved subtitle', sourceVersion: 1, translationVersion: 1,
+      }],
+      cursor: { eventId: 1, cueSequence: 1 },
+      pagination: { hasMore: false, nextCursor: null },
+    } });
+  });
+
+  await page.goto('/#viewer?code=RECOVERY-FAILED');
+  const shell = page.getByTestId('viewer-fullscreen-shell');
+  const preservedCue = page.locator('[data-cue-id="cue-preserved"]');
+  await expect(preservedCue).toContainText('保留的舊字幕');
+  await page.getByTestId('viewer-source-toggle').click();
+  await page.getByTestId('viewer-fullscreen-toggle').click();
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.dataset.testid)).toBe('viewer-fullscreen-shell');
+
+  await page.evaluate(() => window.__failViewerTransport());
+  const failurePanel = page.getByTestId('viewer-recovery-failed');
+  await expect(failurePanel).toContainText('即時字幕連線異常');
+  await expect(failurePanel).toContainText('無法自動恢復即時字幕連線，請重新整理頁面後重新連線。');
+  const reloadButton = failurePanel.getByRole('button', { name: '重新整理頁面' });
+  await expect(reloadButton).toBeVisible();
+  await expect(preservedCue).toContainText('Preserved subtitle');
+  await expect(page.getByTestId('viewer-source-toggle')).toHaveAttribute('aria-pressed', 'false');
+  await expect(shell).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.dataset.testid)).toBe('viewer-fullscreen-shell');
+  expect(navigationRequests).toBe(1);
+
+  await page.evaluate(() => window.__recoverViewerTransport());
+  await expect(page.getByTestId('viewer-recovery-failed')).toHaveCount(0);
+  await expect(page.getByRole('status')).toContainText('已連線');
+  await page.evaluate(() => window.__failViewerTransport());
+  await expect(failurePanel).toBeVisible();
+
+  await Promise.all([
+    page.waitForNavigation(),
+    reloadButton.click(),
+  ]);
+  expect(navigationRequests).toBe(2);
+});

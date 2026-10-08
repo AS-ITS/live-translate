@@ -88,6 +88,8 @@ export function webRtcConnectionLabel(value, { device = false } = {}) {
     restored: '已恢復連線',
     invalid: '分享已失效',
     stopped: '會議已停止',
+    disconnected: '已中斷連線',
+    recovery_failed: '即時字幕連線異常',
     failed: '無法連線',
   };
   return labels[value] || labels.failed;

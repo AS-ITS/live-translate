@@ -55,6 +55,8 @@ lease model, or security model.
 
 Live Recorder 與 Viewer 共用同一套原文／翻譯顯示切換規則。兩個按鈕始終可操作；若使用者隱藏目前唯一可見的字幕，系統會同步顯示另一側，確保原文與翻譯不會同時隱藏。
 
+Viewer 全螢幕是 presentation-only state。穩定的 `viewer-fullscreen-shell` 包含 Header、QR 與字幕內容，WebRTC transport generation、PeerConnection、DataChannel、replay 或 snapshot 更新不得替換或重新掛載此 DOM。全螢幕狀態以 `document.fullscreenElement` 為準並由 `fullscreenchange` 同步 UI；reconnect 不得重設全螢幕、原文／翻譯顯示偏好或字幕 auto-follow／scroll state。
+
 ### Meeting Management home
 
 The home route displays only the Meeting Management list. The left-side feature
@@ -294,8 +296,12 @@ a five-second grace period; the Device then attempts ICE restart and rebuilds
 the peer if recovery does not complete within ten seconds. Full reconnect uses
 at most six attempts with jittered exponential delays capped at ten seconds.
 Snapshot, Realtime, and SSE recovery classify stopped, revoked, and unauthorized
-shares as terminal. Transient snapshot failures retry without clearing Cues;
-retry exhaustion exposes a manual “重新連線” action.
+shares as terminal. Transient snapshot failures retry without clearing Cues.
+WebRTC recovery uses at most six attempts; exhausted WebRTC or fallback recovery
+enters `recovery_failed`, preserves Cues, scroll position, subtitle visibility,
+and fullscreen state, then shows an inline “重新整理頁面” action. The Viewer
+never reloads automatically. A later healthy PeerConnection, ICE state, and open
+DataChannel may return `recovery_failed` to `connected` before the user reloads.
 
 DataChannel snapshot and replay envelopes may include `sourceId`. A Viewer asks
 the same source to replay after its last received transport sequence. A changed

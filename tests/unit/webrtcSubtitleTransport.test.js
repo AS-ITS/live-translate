@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createWebRtcSignalingClient } from '../../src/webrtc/signalingClient.js';
-import { candidatePairEvidence, createWebRtcSubtitleTransport } from '../../src/webrtc/subtitleTransport.js';
+import { candidatePairEvidence, createWebRtcSubtitleTransport, MAX_RECOVERY_ATTEMPTS } from '../../src/webrtc/subtitleTransport.js';
 import { configureLivePipelineTrace, livePipelineTrace } from '../../src/lib/livePipelineTrace.js';
 
 class FakeDataChannel {
@@ -241,6 +241,7 @@ test('Viewer closed DataChannel rebuilds peer, opens replacement, and requests r
   assert.equal(firstPeer.closed, true);
   assert.equal(replacementChannel.sent.at(-1).type, 'replay.request');
   assert.equal(statuses.at(-1).value, 'restored');
+  assert.equal(statuses.some((status) => status.value === 'recovery_failed'), false);
   await transport.stop();
 });
 
@@ -785,8 +786,8 @@ test('transport stops after six bounded reconnect attempts', async () => {
     await flush();
   }
   assert.equal(joins, 7);
-  assert.equal(statuses.at(-1).value, 'failed');
-  assert.equal(statuses.at(-1).attempts, 6);
+  assert.equal(statuses.at(-1).value, 'recovery_failed');
+  assert.equal(statuses.at(-1).attemptCount, 6);
   await transport.stop();
 });
 
@@ -895,6 +896,109 @@ test('Viewer signaling sends only the selected share credential and exposes safe
     && error.message === '分享已失效。'
     && !error.message.includes('secret-token-never-log')
   ));
+});
+
+test('Viewer retry exhaustion enters recovery_failed and records RECOVERY_EXHAUSTED', async () => {
+  FakePeerConnection.instances = [];
+  configureLivePipelineTrace(true);
+  livePipelineTrace.clear();
+  const timers = [];
+  const statuses = [];
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'viewer', participantId: 'viewer-exhausted', credential: { shareToken: 'token' },
+    fetchImpl: async (url) => {
+      if (url.endsWith('/join')) return response(503, { error: { code: 'cloud_capability_unavailable' } });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { messages: [], after: 0 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    now: () => 123_456,
+    random: () => 0.5,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false, executed: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+    onStatus: (status) => statuses.push(status),
+  });
+
+  transport.start();
+  await flush(); await flush();
+  for (let attempt = 0; attempt < MAX_RECOVERY_ATTEMPTS; attempt += 1) {
+    const retry = timers.find((timer) => !timer.cleared && !timer.executed);
+    assert.ok(retry, `missing recovery timer for attempt ${attempt + 1}`);
+    retry.executed = true;
+    retry.cleared = true;
+    await retry.fn();
+    await flush(); await flush();
+  }
+
+  const failure = statuses.at(-1);
+  assert.equal(failure.value, 'recovery_failed');
+  assert.equal(failure.attemptCount, MAX_RECOVERY_ATTEMPTS);
+  assert.equal(timers.filter((timer) => !timer.cleared && !timer.executed).length, 0);
+  const exhausted = livePipelineTrace.get({ stage: 'WEBRTC_TRANSPORT_RECOVERY' })
+    .find((entry) => entry.eventType === 'RECOVERY_EXHAUSTED');
+  await transport.stop();
+  configureLivePipelineTrace(false);
+  assert.equal(Number.isInteger(exhausted.generation) && exhausted.generation > 0, true);
+  assert.deepEqual({
+    meetingId: exhausted.meetingId,
+    viewerId: exhausted.viewerId,
+    attemptCount: exhausted.attemptCount,
+    reason: exhausted.reason,
+    connectionState: exhausted.connectionState,
+    iceConnectionState: exhausted.iceConnectionState,
+    dataChannelState: exhausted.dataChannelState,
+    timestamp: exhausted.timestamp,
+  }, {
+    meetingId: 'meeting-1',
+    viewerId: 'viewer-exhausted',
+    attemptCount: MAX_RECOVERY_ATTEMPTS,
+    reason: 'retry_exhausted',
+    connectionState: null,
+    iceConnectionState: null,
+    dataChannelState: null,
+    timestamp: 123_456,
+  });
+});
+
+test('transient Viewer signaling 503 does not fail a healthy DataChannel', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  const statuses = [];
+  let joins = 0;
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'viewer', participantId: 'viewer-transient-503', credential: { shareToken: 'token' },
+    fetchImpl: async (url) => {
+      if (url.endsWith('/join')) {
+        joins += 1;
+        if (joins === 2) return response(503, { error: { code: 'cloud_capability_unavailable' } });
+        return response(200, { ttlMs: 12_000, iceServers: [] });
+      }
+      if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 1 });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { messages: [], after: 0 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    random: () => 0.5,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+    onStatus: (status) => statuses.push(status.value),
+  });
+
+  transport.start();
+  await flush(); await flush();
+  const peer = FakePeerConnection.instances[0];
+  const channel = new FakeDataChannel(peer);
+  peer.ondatachannel({ channel });
+  channel.open();
+  const heartbeat = timers.find((timer) => timer.ms === 6_000 && !timer.cleared);
+  assert.ok(heartbeat);
+  await heartbeat.fn();
+  await flush();
+
+  assert.equal(channel.readyState, 'open');
+  assert.equal(statuses.includes('recovery_failed'), false);
+  assert.equal(statuses.at(-1), 'connected');
+  await transport.stop();
 });
 
 test('candidate evidence exposes selected pair metadata without signaling credentials', () => {

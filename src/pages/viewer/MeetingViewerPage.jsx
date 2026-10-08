@@ -40,8 +40,20 @@ export function MeetingViewerPage({ token, code }) {
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [shareConnection, setShareConnection] = useState({ value: 'connecting' });
   const [retryVersion, setRetryVersion] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState('');
+  const fullscreenShellRef = useRef(null);
   const estimatedRowHeight = 64;
   const shareUrl = useMemo(() => canonicalViewerShareUrl({ code, token }), [code, token]);
+
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setIsFullscreen(document.fullscreenElement === fullscreenShellRef.current);
+    };
+    syncFullscreenState();
+    document.addEventListener('fullscreenchange', syncFullscreenState);
+    return () => document.removeEventListener('fullscreenchange', syncFullscreenState);
+  }, []);
 
   useEffect(() => {
     writeSubtitleVisibilityPreference(VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY, visibility);
@@ -124,6 +136,11 @@ export function MeetingViewerPage({ token, code }) {
         if (everConnected && (!['connected', 'restored'].includes(previous) || value === 'restored')) showRestoredConnection();
         else setShareConnection({ value: 'connected' });
         everConnected = true;
+        setError('');
+        return;
+      }
+      if (value === 'recovery_failed') {
+        setShareConnection({ ...next, value: 'recovery_failed' });
         setError('');
         return;
       }
@@ -553,14 +570,27 @@ export function MeetingViewerPage({ token, code }) {
     setIsFollowingLatest(true);
   }
 
+  async function toggleFullscreen() {
+    const shell = fullscreenShellRef.current;
+    if (!shell) return;
+    setFullscreenError('');
+    try {
+      if (document.fullscreenElement === shell) await document.exitFullscreen();
+      else await shell.requestFullscreen();
+    } catch {
+      setFullscreenError('無法切換全螢幕，請確認瀏覽器允許全螢幕顯示。');
+    }
+  }
+
   return (
     <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title={detail?.meeting?.name || '即時字幕'} subtitle="即時字幕" showHeader={false}>
-      <ViewerShareHeader meetingTitle={detail?.meeting?.name || '即時字幕'} shareUrl={shareUrl} />
-      <div className="viewer-main">
+      <div ref={fullscreenShellRef} className="viewer-fullscreen-shell" data-testid="viewer-fullscreen-shell">
+        <ViewerShareHeader meetingTitle={detail?.meeting?.name || '即時字幕'} shareUrl={shareUrl} />
+        <div className="viewer-main">
         <div className="viewer-toolbar">
           <div className={`viewer-connection-status is-${shareConnection.value}`} role="status" aria-live="polite">
             <span className="viewer-status-dot" aria-hidden="true" />
-            <span>{webRtcConnectionLabel(shareConnection.value)}</span>
+            <span>{viewerConnectionLabel(shareConnection.value)}</span>
           </div>
           <div className="viewer-toolbar-actions">
             {detail ? (
@@ -573,8 +603,18 @@ export function MeetingViewerPage({ token, code }) {
             {shareConnection.value === 'failed' ? (
               <button className="button detail-button viewer-retry-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重新連線</button>
             ) : null}
+            <button className="button detail-button viewer-fullscreen-toggle" type="button" aria-pressed={isFullscreen} data-testid="viewer-fullscreen-toggle" onClick={() => void toggleFullscreen()}>{isFullscreen ? '結束全螢幕' : '全螢幕'}</button>
           </div>
         </div>
+        {fullscreenError ? <p className="error-message viewer-error" role="alert">{fullscreenError}</p> : null}
+        {shareConnection.value === 'reconnecting' ? <p className="viewer-reconnecting-detail">正在嘗試恢復即時字幕連線</p> : null}
+        {shareConnection.value === 'recovery_failed' ? (
+          <div className="viewer-recovery-failed" role="alert" data-testid="viewer-recovery-failed">
+            <strong>🔴 即時字幕連線異常</strong>
+            <p>無法自動恢復即時字幕連線，請重新整理頁面後重新連線。</p>
+            <button className="button viewer-reload-button" type="button" onClick={() => window.location.reload()}>重新整理頁面</button>
+          </div>
+        ) : null}
         {error ? <p className="error-message viewer-error" role="alert">{error}</p> : null}
         {!detail && !error ? <p className="history-empty viewer-loading">正在載入會議字幕…</p> : null}
         {detail ? (
@@ -605,9 +645,17 @@ export function MeetingViewerPage({ token, code }) {
             </>}
           </section>
         ) : null}
+        </div>
       </div>
     </PublicSessionLayout>
   );
+}
+
+function viewerConnectionLabel(value) {
+  if (value === 'connected' || value === 'restored') return `🟢 ${webRtcConnectionLabel(value)}`;
+  if (value === 'reconnecting') return '🟠 正在重新連線…';
+  if (value === 'recovery_failed') return '🔴 即時字幕連線異常';
+  return webRtcConnectionLabel(value);
 }
 
 function isCueListAtLatestPosition(list) { return list.scrollHeight - list.scrollTop - list.clientHeight < 24; }

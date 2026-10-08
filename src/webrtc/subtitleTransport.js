@@ -3,6 +3,7 @@ import { createWebRtcSignalingClient } from './signalingClient.js';
 import { recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
 
 const RETRY_DELAYS_MS = Object.freeze([1_000, 2_000, 4_000, 8_000, 10_000, 10_000]);
+export const MAX_RECOVERY_ATTEMPTS = RETRY_DELAYS_MS.length;
 const DISCONNECTED_GRACE_MS = 5_000;
 const ICE_RESTART_TIMEOUT_MS = 10_000;
 const NEGOTIATION_TIMEOUT_MS = 12_000;
@@ -771,6 +772,12 @@ export function createWebRtcSubtitleTransport({
 
   function scheduleReconnect(reason = 'transport_interrupted', { immediate = false } = {}) {
     if (stopped || reconnectTimer) return;
+    const recoveryContext = active;
+    const lastTransportState = {
+      connectionState: recoveryContext?.pc?.connectionState,
+      iceConnectionState: recoveryContext?.pc?.iceConnectionState,
+      dataChannelState: recoveryContext?.channel?.readyState,
+    };
     hadOutage = true;
     connectionEpoch += 1;
     const scheduledEpoch = connectionEpoch;
@@ -785,8 +792,18 @@ export function createWebRtcSubtitleTransport({
       status('reconnecting', { reason: 'network_offline', attempt: retryAttempt });
       return;
     }
-    if (retryAttempt >= RETRY_DELAYS_MS.length) {
-      status('failed', { reason: 'retry_exhausted', attempts: retryAttempt });
+    if (retryAttempt >= MAX_RECOVERY_ATTEMPTS) {
+      const recoveryDetails = {
+        epoch: scheduledEpoch,
+        generation: scheduledEpoch,
+        viewerId: role === 'viewer' ? participantId : null,
+        attemptCount: retryAttempt,
+        reason: 'retry_exhausted',
+        ...lastTransportState,
+        timestamp: now(),
+      };
+      recoveryTrace('RECOVERY_EXHAUSTED', recoveryContext, recoveryDetails);
+      status('recovery_failed', recoveryDetails);
       return;
     }
     const attempt = retryAttempt + 1;

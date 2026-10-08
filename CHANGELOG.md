@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Viewer bounded transport recovery exhausted 後會進入 `recovery_failed`，保留既有字幕、閱讀位置、顯示偏好與 fullscreen，並在頁內顯示「重新整理頁面」按鈕；系統不會自動 reload，只有使用者點擊才刷新，底層 transport 若自行恢復則回到 connected 並隱藏提示。
+- Viewer 新增穩定 presentation boundary 的 Browser Fullscreen；WebRTC DataChannel generation 重建、replay/snapshot 與 reconnect 不會替換 fullscreen target，並保留原文／翻譯顯示與字幕 auto-follow/scroll state。Viewer Header 與內嵌 QR 位於同一 fullscreen element，重連後仍可見與操作；未修改 signaling/reconnect protocol。
+
 - 修正 Viewer 長時間連線後 WebRTC recovery 卡死：Redis signaling cursor 現在隨 participant heartbeat 保持單調，避免新 `viewer-ready` 落到 Recorder 舊 `after` cursor 之前；Viewer `connected` 改以健康 PeerConnection／ICE／open DataChannel 為準，加入 10 秒 ping/pong、25 秒 liveness timeout、5 秒 disconnect grace、generation-bound timer、bounded peer rebuild，以及 DataChannel reopen 後自動 replay/snapshot。Recorder signaling 503 仍不拆健康 peer，狀態另帶 signaling health、peer count 與 healthy peer count。
 
 - 修正 Live Meeting 字典命中後被 Gemini 當成附加提示的問題：translation Cue 在進入 canonical state 前會先套用 authoritative replacement；完整 source 命中時只保留一次指定 target，句中命中會先移除已知舊翻譯 alias 再去重，同一 `cueId` 的 partial、final 與 refinement 不再累加普通翻譯或重複 target。

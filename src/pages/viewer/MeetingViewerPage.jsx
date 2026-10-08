@@ -105,11 +105,16 @@ export function MeetingViewerPage({ token, code }) {
     let realtimeController = null;
     let restoredTimer = null;
     let sseReconnectTimer = null;
+    let lifecycleRefreshTimer = null;
+    let lifecycleRefreshInFlight = false;
     let sseReconnectAttempts = 0;
     let fallbackEpoch = 0;
     let sseEpoch = 0;
     let terminal = false;
     let everConnected = false;
+    let recordingState = 'waiting';
+    let fallbackStarted = false;
+    const useRealtime = meetingViewerRealtimeEnabled();
     const channelStates = { webRtc: 'idle', fallback: 'connecting' };
     const snapshotController = new AbortController();
     setShareConnection({ value: 'connecting' });
@@ -120,6 +125,8 @@ export function MeetingViewerPage({ token, code }) {
       restoredTimer = null;
       if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
       sseReconnectTimer = null;
+      if (lifecycleRefreshTimer) clearTimeout(lifecycleRefreshTimer);
+      lifecycleRefreshTimer = null;
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
       void realtimeController?.stop();
@@ -141,6 +148,12 @@ export function MeetingViewerPage({ token, code }) {
 
     function setChannelState(channel, next, message = '') {
       if (cancelled || terminal) return;
+      if (recordingState === 'paused' || recordingState === 'waiting') {
+        channelStates[channel] = next.value;
+        setShareConnection({ value: 'waiting' });
+        setError('');
+        return;
+      }
       const previous = resolveViewerTransportState({ ...channelStates, webRtcRequired: webRtcStarted, everConnected });
       channelStates[channel] = next.value;
       const value = resolveViewerTransportState({ ...channelStates, webRtcRequired: webRtcStarted, everConnected });
@@ -231,6 +244,7 @@ export function MeetingViewerPage({ token, code }) {
             if (restoredTimer) clearTimeout(restoredTimer);
             restoredTimer = null;
             setChannelState('webRtc', next);
+            if (next.value === 'reconnecting' || next.value === 'disconnected') refreshLifecycleSnapshot();
           },
           onError: () => {},
         });
@@ -239,6 +253,56 @@ export function MeetingViewerPage({ token, code }) {
       } catch {
         setChannelState('webRtc', { value: 'failed' });
       }
+    }
+
+    function stopWebRtcForPause() {
+      const transport = webRtcTransport;
+      webRtcTransport = null;
+      webRtcStarted = false;
+      channelStates.webRtc = 'idle';
+      delete window.__liveTranslateWebRtcGetStats;
+      void transport?.stop();
+    }
+
+    function scheduleLifecycleRefresh() {
+      if (cancelled || terminal || lifecycleRefreshTimer) return;
+      lifecycleRefreshTimer = setTimeout(() => {
+        lifecycleRefreshTimer = null;
+        refreshLifecycleSnapshot();
+      }, 2_000);
+    }
+
+    function refreshLifecycleSnapshot() {
+      if (cancelled || terminal || lifecycleRefreshInFlight) return;
+      lifecycleRefreshInFlight = true;
+      void fetchSnapshot()
+        .catch(handleSnapshotError)
+        .finally(() => { lifecycleRefreshInFlight = false; });
+    }
+
+    function applyRecordingLifecycle(value) {
+      recordingState = value?.recordingState || (
+        ['completed', 'failed'].includes(value?.meeting?.status) ? 'ended'
+          : value?.meeting?.status === 'created' ? 'waiting' : 'active'
+      );
+      if (recordingState === 'ended') {
+        terminal = true;
+        setShareConnection({ value: 'stopped' });
+        setError('會議已結束。');
+        stopConnections();
+        return;
+      }
+      if (recordingState === 'paused' || recordingState === 'waiting') {
+        stopWebRtcForPause();
+        setShareConnection({ value: 'waiting' });
+        setError('');
+        scheduleLifecycleRefresh();
+        return;
+      }
+      if (lifecycleRefreshTimer) clearTimeout(lifecycleRefreshTimer);
+      lifecycleRefreshTimer = null;
+      startWebRtc(value?.meeting?.id || value?.meetingId);
+      ensureFallbackStarted(value);
     }
 
     async function fetchSnapshot(before = null, expectedEpoch = fallbackEpoch) {
@@ -260,7 +324,7 @@ export function MeetingViewerPage({ token, code }) {
       detailRef.current = merged;
       configureLivePipelineElapsedContext({ meetingStartedAt: merged?.meeting?.startedAt });
       setDetail(merged);
-      startWebRtc(value.meeting?.id || value.meetingId);
+      applyRecordingLifecycle(value);
       if (retried && sseConnected) setChannelState('fallback', { value: 'restored' });
       return merged;
     }
@@ -333,6 +397,10 @@ export function MeetingViewerPage({ token, code }) {
     let sseConnected = false;
     function scheduleSseReconnect() {
       if (cancelled || terminal || sseReconnectTimer) return;
+      if (recordingState === 'paused' || recordingState === 'waiting') {
+        scheduleLifecycleRefresh();
+        return;
+      }
       const delays = [1_000, 2_000, 4_000, 8_000, 10_000, 10_000];
       if (sseReconnectAttempts >= delays.length) {
         setChannelState('fallback', { value: 'failed' }, '多次重新連線後仍無法取得即時字幕。');
@@ -342,13 +410,12 @@ export function MeetingViewerPage({ token, code }) {
       sseReconnectTimer = setTimeout(() => {
         sseReconnectTimer = null;
         void fetchSnapshot()
-          .then((value) => { if (value && !terminal && !cancelled) connectEvents(value.cursor?.eventId || 0); })
           .catch(handleSnapshotError);
       }, delay);
     }
 
     function connectEvents(afterEventId = detailRef.current?.cursor?.eventId || 0) {
-      if (cancelled || terminal) return;
+      if (cancelled || terminal || recordingState === 'paused' || recordingState === 'waiting') return;
       eventSourceRef.current?.close();
       const epoch = ++sseEpoch;
       const events = new EventSource(`${basePath}/events?after=${encodeURIComponent(afterEventId)}`);
@@ -389,12 +456,21 @@ export function MeetingViewerPage({ token, code }) {
       events.onerror = () => {
         if (!cancelled && !terminal && epoch === sseEpoch) {
           events.close();
+          fallbackStarted = false;
           setChannelState('fallback', { value: 'reconnecting' });
           scheduleSseReconnect();
         }
       };
     }
-    if (meetingViewerRealtimeEnabled()) {
+
+    function ensureFallbackStarted(value) {
+      if (fallbackStarted || cancelled || terminal) return;
+      fallbackStarted = true;
+      if (useRealtime) void realtimeController?.start();
+      else connectEvents(value?.cursor?.eventId || 0);
+    }
+
+    if (useRealtime) {
       let snapshotReady = false;
       let bufferedEvents = [];
       let realtimeSubscribed = false;
@@ -433,13 +509,9 @@ export function MeetingViewerPage({ token, code }) {
           else setChannelState('fallback', { value: 'reconnecting' });
         }
       });
-      void fetchSnapshot()
-        .then(() => realtimeController.start())
-        .catch(handleSnapshotError);
+      void fetchSnapshot().catch(handleSnapshotError);
     } else {
-      void fetchSnapshot().then((value) => connectEvents(value?.cursor?.eventId || 0)).catch((value) => {
-        handleSnapshotError(value);
-      });
+      void fetchSnapshot().catch(handleSnapshotError);
     }
     return () => {
       cancelled = true;

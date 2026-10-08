@@ -74,9 +74,10 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
   };
 }
 
-export function mapMeetingToViewerDTO({ meeting, cues = [], hasMore = false, nextCursor = null, limit = cues.length } = {}) {
+export function mapMeetingToViewerDTO({ meeting, recordingState = 'waiting', cues = [], hasMore = false, nextCursor = null, limit = cues.length } = {}) {
   return {
     meeting: mapMeetingToHistoryListItem({ meeting, segments: [] }),
+    recordingState,
     cues: [...cues].sort((left, right) => (
       (Number(left?.segmentSequence) || 0) - (Number(right?.segmentSequence) || 0) ||
       (Number(left?.sequence) || 0) - (Number(right?.sequence) || 0) ||

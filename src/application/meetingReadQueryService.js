@@ -86,13 +86,14 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
       const meeting = await meetingRepository.getMeeting(normalizedMeetingId);
       if (!meeting) return null;
       if (isMeetingContentExpired(meeting)) throw meetingContentExpiredError();
+      const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId, meeting.ownerUserId);
+      const recordingState = viewerRecordingState(meeting, segments);
 
       if (typeof meetingRepository.getMeetingViewerPage === 'function') {
         const page = await meetingRepository.getMeetingViewerPage(normalizedMeetingId, { before, limit });
-        return mapMeetingToViewerDTO({ meeting, limit, ...page });
+        return mapMeetingToViewerDTO({ meeting, recordingState, limit, ...page });
       }
 
-      const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId);
       const sequenceBySegmentId = new Map(segments.map((segment) => [segment.id, segment.sequence]));
       const cues = finalCuesFromSegments(segments)
         .map((cue) => ({ ...cue, segmentSequence: sequenceBySegmentId.get(cue.segmentId) ?? 0 }))
@@ -105,6 +106,7 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
       const oldest = visibleCues[0];
       return mapMeetingToViewerDTO({
         meeting,
+        recordingState,
         cues: visibleCues,
         hasMore,
         limit,
@@ -112,6 +114,14 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
       });
     }
   });
+}
+
+export function viewerRecordingState(meeting, segments = []) {
+  if (['completed', 'failed'].includes(meeting?.status)) return 'ended';
+  if (meeting?.status === 'interrupted') return 'recovering';
+  if (segments.some((segment) => segment?.status === 'active')) return 'active';
+  if (meeting?.status === 'active') return 'paused';
+  return 'waiting';
 }
 
 async function listCloudAudioArtifacts(service, meetingId) {

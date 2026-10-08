@@ -1147,6 +1147,7 @@ export function useLiveRecordingController({
       recovery.suppressReconnectErrorRef.current = false;
       recovery.cancelLiveCueIdleTimers?.();
       recovery.setStatusLabelOverride('');
+      recovery.setStatus('stopping');
       const reconnectingSession = recovery.reconnectSessionRef.current;
       recovery.reconnectSessionRef.current = null;
       await audioController.pauseRawAudioRecording();

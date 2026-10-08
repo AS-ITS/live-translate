@@ -133,6 +133,11 @@ by default. The response includes `pagination.hasMore` and an opaque
 `pagination.nextCursor`; pass that value as `?before=<cursor>` to load the
 previous page. `limit` may be set from 1 through 100.
 
+The response also includes authoritative `recordingState`: `waiting`, `active`,
+`paused`, `recovering`, or `ended`. Viewer clients treat only `ended` (or a
+terminal share/API error) as Meeting termination. `paused` and `waiting` use
+bounded lifecycle polling and do not consume WebRTC recovery attempts.
+
 Viewer reads use one bounded joined Cue query in cloud mode. They do not load
 all Segments or expose Meeting glossary, private settings, audio metadata, or
 live session identifiers. Cursor pages are merged by `cueId` and ordered by

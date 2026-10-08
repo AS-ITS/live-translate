@@ -2455,7 +2455,7 @@ test('pause and resume drains first speech from the replacement pre-roll', async
   await expect(page.locator('.live-meeting-status').getByText('已暫停', { exact: true })).toBeVisible();
 
   await page.evaluate(() => { window.__mockLiveConnectDelayMs = 1000; });
-  await page.getByRole('button', { name: '繼續錄製' }).click();
+  await page.getByRole('button', { name: '繼續', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(2);
   await emitMicrophoneAudio(page);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(2);

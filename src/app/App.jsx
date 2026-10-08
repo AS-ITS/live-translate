@@ -291,7 +291,8 @@ const activeMeetingCheckpointRef = useRef(null);
     status === 'connecting' ||
     status === 'listening' ||
     status === 'reconnecting' ||
-    status === 'switching-segment';
+    status === 'switching-segment' ||
+    status === 'stopping';
   const controlsLocked = isActive || status === 'paused' || meetingCheckpointStatus === 'ending' || Boolean(controlLeaseSnapshot && !hasSessionControl);
   const isNavigationLocked = isActive;
   const liveController = useLiveRecordingController({

@@ -373,6 +373,14 @@ window.__liveTranslateDebug.getTurnTrace(audioTurnId)
 window.__liveTranslateDebug.clearPipelineTrace()
 ```
 
+## 12. Local Raw Translation Comparison
+
+The raw translation comparison diagnostic is available only in local development or builds explicitly compiled with `LIVE_TRANSLATE_DIAGNOSTICS=true`. It stays disabled until manually enabled through `window.__liveTranslateDebug`.
+
+Each provider event is recorded under one normalized event identity so provider raw source and translation can be compared with normalized, glossary-corrected, and Cue canonical translations. The Cue stage only observes the existing reducer result; it does not change Cue association, snapshot selection, merge behavior, or revision timing.
+
+Records are allow-listed, kept only in browser memory, capped at 500 entries, and expire after 15 minutes. The diagnostic sends no network request and writes no server log or persistent storage. Disabling it clears all retained text. Production builds do not expose the API unless diagnostics were explicitly enabled at build time.
+
 The browser reads only `{ livePipelineTraceEnabled }` from
 `/api/runtime-config`; it never reads the server environment directly. The trace
 covers microphone input, PCM capture/send, provider events, normalized

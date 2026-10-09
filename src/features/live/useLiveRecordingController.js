@@ -12,6 +12,8 @@ import { missingNumericIntegrity } from '../../lib/numericIntegrity.js';
 import { enqueueLiveCueEvent } from '../../lib/liveCueEventQueue.js';
 import { applyGlossaryCorrectionsToCueState } from '../../lib/glossaryReplacement.js';
 import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
+import { effectiveTranslationForCue } from '../../lib/cueContent.js';
+import { translationComparisonDiagnostics } from '../../lib/translationComparisonDiagnostics.js';
 import { createSessionSnapshotSyncCoordinator } from '../../lib/sessionSnapshotSyncCoordinator.js';
 import { checkpointChunksForTranscriptItems, createMeetingCheckpointSyncCoordinator } from '../../lib/meetingCheckpointSyncCoordinator.js';
 import { createReconnectController } from '../../lib/reconnectController.js';
@@ -1987,6 +1989,42 @@ export function recordCueTransitionTrace({ cue, event = {}, previous, next, cueA
       : [];
   const matchedCue = matchedIds.length === 1 ? nextCues.get(matchedIds[0]) : null;
   const previousMatchedCue = matchedCue?.cueId ? previousCues.get(matchedCue.cueId) : null;
+  if (event.translationComparisonEventId) {
+    const canonicalTranslation = matchedCue ? effectiveTranslationForCue(matchedCue) : null;
+    const previousCanonicalTranslation = previousMatchedCue
+      ? effectiveTranslationForCue(previousMatchedCue)
+      : null;
+    translationComparisonDiagnostics.record({
+      stage: 'cue_canonical',
+      eventIdentity: event.translationComparisonEventId,
+      meetingId: event.meetingId,
+      segmentId: matchedCue?.segmentId || event.segmentId || cue.getSegmentId?.() || null,
+      cueId: matchedCue?.cueId || null,
+      cueSequence: matchedCue?.sequence,
+      audioTurnId: event.audioTurnId || matchedCue?.audioTurnId || null,
+      providerEpoch: event.providerEpoch,
+      providerEventSequence: event.eventSequence,
+      providerEventId: event.providerEventId,
+      normalizedEventId: event.eventId,
+      turnKey: event.turnKey || matchedCue?.turnKey || null,
+      associationStatus: matchedIds.length === 1
+        ? 'matched'
+        : matchedIds.length > 1
+          ? 'ambiguous'
+          : 'unmatched',
+      sourceVersion: matchedCue?.sourceVersion,
+      translationVersion: matchedCue?.translationVersion,
+      previousCanonicalTranslation,
+      canonicalTranslation,
+      authoritativeSnapshotApplied: Boolean(
+        previousMatchedCue
+        && event.stream === 'translation'
+        && event.isFinal
+        && event.textMergeMode === 'snapshot'
+        && previousCanonicalTranslation !== canonicalTranslation
+      )
+    });
+  }
   const traceFields = {
     recordingId: matchedCue?.sessionId || cue.getSessionId?.() || null,
     segmentId: matchedCue?.segmentId || event.segmentId || cue.getSegmentId?.() || null,

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 新增僅限本機或明確 diagnostic build 的 Raw Translation Comparison：以同一 provider event identity 串接 raw source／raw translation、normalized、glossary-corrected 與 Cue canonical 階段，記錄 revision/version、authoritative snapshot 與 token-loss 訊號。資料只存瀏覽器記憶體，最多 500 筆、15 分鐘到期，可手動匯出、清除及關閉；不改 Cue association、merge policy 或翻譯行為。
 - 修正 Glossary occurrence canonicalization：來源詞改採 longest-match、non-overlapping 計數；只有完全由字典 spans 組成的來源才安全補足 target 次數，混合句保留 provider 原譯並標記 `correction_uncertain`。Live Cue 分開追蹤 provider raw translation 與 corrected translation，partial／final／late-final correction 均由 raw translation 重算。
 
 - 修正 Recorder Stop→Continue 後 Viewer 被錯誤標記為會議結束並進入永久重連：Pause cleanup 不再發送 `meeting.stopped` 或撤銷 signaling，Viewer snapshot 新增 authoritative `recordingState`，暫停時顯示等待且不消耗六次 transport recovery，Continue 後自動重建原 Meeting 的 Viewer transport；真正 End Meeting 維持 terminal 與不可重開語意。

@@ -3100,6 +3100,44 @@ test('live meeting dictionary canonicalizes an exact-source provider append on o
   await expect(cue).toHaveAttribute('data-cue-id', /.+/);
 });
 
+test('local translation comparison diagnostics export and clear raw-to-canonical stages', async ({ page }) => {
+  page.liveGlossaryEntries = [
+    { source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }
+  ];
+  await gotoMockMeetingLive(page, { meetingStatus: 'active' });
+  await expectLiveStartPreconditions(page);
+  await mockLiveSessionCreateApi(page);
+  await expect.poll(() => page.evaluate(() => (
+    typeof window.__liveTranslateDebug?.enableTranslationComparison
+  ))).toBe('function');
+  await page.evaluate(() => window.__liveTranslateDebug.enableTranslationComparison());
+
+  await page.getByRole('button', { name: /^(開始錄製|繼續錄製)$/u }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await emitFinalTranscript(page, '你好', 'Hello.');
+  await expect(finalCueRows(page)).toHaveCount(1);
+
+  const exported = await page.evaluate(() => JSON.parse(
+    window.__liveTranslateDebug.exportTranslationComparisons()
+  ));
+  const translation = exported.records.find((record) => record.stream === 'translation');
+  expect(exported.schemaVersion).toBe('translation-comparison/v1');
+  expect(translation.providerRawSource).toBe('你好');
+  expect(translation.providerRawTranslation).toBe('Hello.');
+  expect(translation.normalizedTranslation).toBe('Hello.');
+  expect(translation.glossaryCorrectedTranslation).toBe('su3cl3.');
+  expect(translation.canonicalTranslation).toBe('su3cl3.');
+  expect(translation.cueId).toBeTruthy();
+  expect(translation.audioTurnId).toBeTruthy();
+  expect(translation.translationVersion).toBeGreaterThan(0);
+  expect(translation.stages).toEqual(['provider_normalized', 'cue_canonical']);
+
+  await page.evaluate(() => window.__liveTranslateDebug.clearTranslationComparisons());
+  expect(await page.evaluate(() => window.__liveTranslateDebug.getTranslationComparisons())).toEqual([]);
+  await page.evaluate(() => window.__liveTranslateDebug.disableTranslationComparison());
+});
+
 test('glossary edits do not rewrite the current active Segment', async ({ page }) => {
   let entries = [];
 

@@ -17,6 +17,7 @@ import { createLatencyHistogram, percentileFromLatencyHistogram, recordLatency }
 import { liveCueLatencyTracker } from './liveCueLatency.js';
 import { livePipelineTrace, recordLivePipelineTrace, updateLivePipelineSessionStartedAt } from './livePipelineTrace.js';
 import { clearLiveCredential, getLiveCredential } from './liveCredentialHolder.js';
+import { translationComparisonDiagnostics } from './translationComparisonDiagnostics.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
@@ -1385,6 +1386,10 @@ export class LiveTranslateSession {
       retranslationCueId: isRetranslationResponse ? retranslationCueId : null
     });
     for (const rawEvent of normalizedEvents) {
+      const providerRawSource = content.inputTranscription?.text
+        ?? content.interimInputTranscription?.text
+        ?? null;
+      const providerRawTranslation = content.outputTranscription?.text ?? null;
       const event = rawEvent.stream === 'translation'
         ? (() => {
           const correction = glossaryCorrectionForSource({
@@ -1395,12 +1400,43 @@ export class LiveTranslateSession {
           }, this.liveGlossaryEntries);
           return {
             ...rawEvent,
+            meetingId: this.meetingId,
             text: correction.translatedText,
             providerRawText: rawEvent.text,
-            glossaryCorrectionStatus: correction.status
+            glossaryCorrectionStatus: correction.status,
+            translationComparisonEventId: rawEvent.eventId
           };
         })()
-        : rawEvent;
+        : {
+          ...rawEvent,
+          meetingId: this.meetingId,
+          translationComparisonEventId: rawEvent.eventId
+        };
+      if (rawEvent.stream) {
+        translationComparisonDiagnostics.record({
+          stage: 'provider_normalized',
+          eventIdentity: rawEvent.eventId,
+          meetingId: this.meetingId,
+          segmentId: rawEvent.segmentId,
+          audioTurnId: rawEvent.audioTurnId,
+          providerEpoch: rawEvent.providerEpoch,
+          providerEventSequence: rawEvent.eventSequence,
+          providerEventId: rawEvent.providerEventId,
+          normalizedEventId: rawEvent.eventId,
+          turnKey: rawEvent.turnKey,
+          stream: rawEvent.stream,
+          status: rawEvent.isFinal ? 'final' : 'partial',
+          isFinal: rawEvent.isFinal,
+          isLateFinal: Boolean(rawEvent.isFinal && rawEvent.isLateTranscript),
+          providerRawSource,
+          providerRawTranslation,
+          ...(rawEvent.stream === 'translation' ? {
+            normalizedTranslation: rawEvent.text,
+            glossaryCorrectedTranslation: event.text,
+            glossaryCorrectionStatus: event.glossaryCorrectionStatus
+          } : {})
+        });
+      }
       liveCueLatencyTracker.linkAudioTurn({
         fromAudioTurnId: this.audioTurnId,
         toAudioTurnId: event.audioTurnId
@@ -2553,10 +2589,28 @@ export function exposeLiveTranslateDebug() {
       delete window.__liveTranslateDebug.getTurnTrace;
       delete window.__liveTranslateDebug.clearPipelineTrace;
       delete window.__liveTranslateDebug.exportPipelineTrace;
+      delete window.__liveTranslateDebug.enableTranslationComparison;
+      delete window.__liveTranslateDebug.getTranslationComparisons;
+      delete window.__liveTranslateDebug.exportTranslationComparisons;
+      delete window.__liveTranslateDebug.clearTranslationComparisons;
+      delete window.__liveTranslateDebug.disableTranslationComparison;
     }
     return;
   }
   window.__liveTranslateDebug = window.__liveTranslateDebug || {};
+  if (LIVE_DIAGNOSTICS_ENABLED && translationComparisonDiagnostics.isAllowed()) {
+    window.__liveTranslateDebug.enableTranslationComparison = () => translationComparisonDiagnostics.enable();
+    window.__liveTranslateDebug.getTranslationComparisons = (filter = {}) => translationComparisonDiagnostics.get(filter);
+    window.__liveTranslateDebug.exportTranslationComparisons = () => translationComparisonDiagnostics.exportJson();
+    window.__liveTranslateDebug.clearTranslationComparisons = () => translationComparisonDiagnostics.clear();
+    window.__liveTranslateDebug.disableTranslationComparison = () => translationComparisonDiagnostics.disable();
+  } else {
+    delete window.__liveTranslateDebug.enableTranslationComparison;
+    delete window.__liveTranslateDebug.getTranslationComparisons;
+    delete window.__liveTranslateDebug.exportTranslationComparisons;
+    delete window.__liveTranslateDebug.clearTranslationComparisons;
+    delete window.__liveTranslateDebug.disableTranslationComparison;
+  }
   if (pipelineTraceEnabled) {
     window.__liveTranslateDebug.getPipelineTrace = (filter = {}) => livePipelineTrace.get(filter);
     window.__liveTranslateDebug.getTurnTrace = (audioTurnId) => livePipelineTrace.getTurn(audioTurnId);

@@ -769,6 +769,25 @@ These tests verify the 30-minute deadline read model, stable `410` expiry
 contract, v1 read compatibility with v2 legacy-column write suppression, and
 best-effort purge metrics. They do not call Gemini or remote Supabase.
 
+## Local raw translation comparison
+
+Use only a local development build, or a diagnostic test build explicitly compiled with `LIVE_TRANSLATE_DIAGNOSTICS=true`. In browser DevTools:
+
+```js
+window.__liveTranslateDebug.enableTranslationComparison()
+window.__liveTranslateDebug.getTranslationComparisons()
+const json = window.__liveTranslateDebug.exportTranslationComparisons()
+copy(json)
+window.__liveTranslateDebug.clearTranslationComparisons()
+window.__liveTranslateDebug.disableTranslationComparison()
+```
+
+Reloading also clears the in-memory records. Use a non-Production meeting, synthetic speech, and an explicitly authorized test Gemini key. Never use Production meetings, Production keys, sensitive recordings, or real confidential subtitles.
+
+The controlled manual matrix must cover: (1) repeated words, `你好你好你好。`; (2) numbers, `車子 123。`; (3) the long sentence `現在正在進行會議測試，請確認每一句翻譯是否完整。`; (4) at least 30 seconds of continuous speech; (5) pause then continue; (6) glossary enabled and disabled; and (7) partial plus late-final revision.
+
+For each event, inspect identity fields, provider raw/normalized/glossary-corrected/canonical text, source and translation versions, final/late-final status, authoritative snapshot application, and revision analysis. Source coverage remains `unverified` unless independent alignment evidence exists; neither the longer nor shorter translation is automatically correct.
+
 ## Spoken turn trace and real-microphone acceptance
 
 Automated coverage must use the mock Gemini adapter. For a local or Vercel

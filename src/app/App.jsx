@@ -271,12 +271,11 @@ const activeMeetingCheckpointRef = useRef(null);
     if (previousSessionStatusRef.current === status) return;
     recordLivePipelineTrace({
       stage: 'SESSION_STATE_CHANGED',
-      meetingId: routeMeetingId,
-      sessionId: activeSessionRecordIdRef.current,
-      segmentId: activeMeetingCheckpointRef.current?.segmentId,
+      ...currentLiveTraceIdentity(),
       recorderEpoch: liveSessionCallbackGenerationRef.current.generation,
       eventType: `${previousSessionStatusRef.current}->${status}`,
-      realtimeState: status
+      realtimeState: status,
+      recordingState: status
     });
     previousSessionStatusRef.current = status;
   }, [routeMeetingId, status]);
@@ -437,7 +436,16 @@ const activeMeetingCheckpointRef = useRef(null);
     },
     segmentSwitch: {
       intervalMs: configuredSegmentSwitchIntervalMs(),
-      onStatusChange: (nextStatus) => {
+      onStatusChange: (nextStatus, details = {}) => {
+        if (nextStatus === 'scheduled') {
+          recordLivePipelineTrace({
+            stage: 'ROLLOVER_SCHEDULED',
+            ...currentLiveTraceIdentity(),
+            rolloverGeneration: details.rolloverGeneration,
+            durationMs: details.delayMs,
+            reason: 'segment_interval'
+          });
+        }
         if (nextStatus === 'switching') {
           setSegmentRolloverStatus('switching');
           setMeetingCheckpointStatus('switching');
@@ -931,21 +939,33 @@ const activeMeetingCheckpointRef = useRef(null);
       });
   }, [page, status, locationVersion]);
 
-  useEffect(() => () => {
-    invalidateLiveSessionCallbacks();
-    liveController.recovery.cancel();
-    const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
-    sessionRef.current = null;
-    reconnectSessionRef.current = null;
-    liveController.checkpoint.cancel();
-    if (refinementRateLimitTimerRef.current) window.clearTimeout(refinementRateLimitTimerRef.current);
-    refinementRateLimitTimerRef.current = null;
-    liveController.audio.cancelAudioUploadRetries();
-    liveController.segmentSwitch.cancel();
-    for (const session of sessions) {
-      void stopSessionSafely(session);
-    }
-    void Promise.resolve(liveController.audio.cleanup()).catch(() => {});
+  useEffect(() => {
+    recordLivePipelineTrace({ stage: 'LIVE_COMPONENT_MOUNTED', ...currentLiveTraceIdentity() });
+    return () => {
+      const traceIdentity = currentLiveTraceIdentity();
+      recordLivePipelineTrace({ stage: 'LIVE_COMPONENT_UNMOUNTED', ...traceIdentity });
+      if (traceIdentity.recorderSessionId || sessionRef.current) {
+        recordLivePipelineTrace({
+          stage: 'RECORDING_STATE_RESET',
+          ...traceIdentity,
+          reason: 'live_component_unmounted'
+        });
+      }
+      invalidateLiveSessionCallbacks();
+      liveController.recovery.cancel();
+      const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
+      sessionRef.current = null;
+      reconnectSessionRef.current = null;
+      liveController.checkpoint.cancel();
+      if (refinementRateLimitTimerRef.current) window.clearTimeout(refinementRateLimitTimerRef.current);
+      refinementRateLimitTimerRef.current = null;
+      liveController.audio.cancelAudioUploadRetries();
+      liveController.segmentSwitch.cancel();
+      for (const activeSession of sessions) {
+        void stopSessionSafely(activeSession);
+      }
+      void Promise.resolve(liveController.audio.cleanup()).catch(() => {});
+    };
   }, []);
 
   useEffect(() => {
@@ -1144,6 +1164,7 @@ const activeMeetingCheckpointRef = useRef(null);
       liveSessionId,
       connectionEpoch: callbackGeneration.generation,
       sessionId: activeSessionRecordIdRef.current,
+      recordingId: sessionRepositoryRef.current.getSessionRecord(activeSessionRecordIdRef.current)?.sessionRecord?.recordingId || null,
       meetingId: meetingId || null,
       segmentId: segmentId || liveSessionId,
       startupStartedAt,
@@ -1334,6 +1355,22 @@ const activeMeetingCheckpointRef = useRef(null);
   function configuredSegmentSwitchIntervalMs() {
     const testIntervalMs = import.meta.env?.DEV ? window.__liveTranslateSegmentSwitchIntervalMs : undefined;
     return Number.isFinite(testIntervalMs) && testIntervalMs > 0 ? testIntervalMs : SEGMENT_SWITCH_INTERVAL_MS;
+  }
+
+  function currentLiveTraceIdentity() {
+    const recorderSessionId = activeSessionRecordIdRef.current;
+    const record = recorderSessionId
+      ? sessionRepositoryRef.current.getSessionRecord(recorderSessionId)?.sessionRecord
+      : null;
+    return {
+      meetingId: activeMeetingCheckpointRef.current?.meetingId || routeMeetingId || null,
+      recordingId: record?.recordingId || null,
+      segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
+      sessionId: recorderSessionId || null,
+      recorderSessionId: recorderSessionId || null,
+      geminiSessionId: sessionRef.current?.liveSessionId || null,
+      recordingState: statusRef.current || null
+    };
   }
 
   function reportSegmentSwitchError(error) {

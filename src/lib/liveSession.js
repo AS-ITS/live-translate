@@ -59,6 +59,7 @@ export class LiveTranslateSession {
     onConnectionFailure,
     liveGlossaryEntries = [],
     meetingId = null,
+    recordingId = null,
     liveSessionId = null,
     sessionId = null,
     segmentId = null,
@@ -99,6 +100,7 @@ export class LiveTranslateSession {
     this.onConnectionFailure = onConnectionFailure;
     this.liveGlossaryEntries = liveGlossaryEntries;
     this.meetingId = meetingId;
+    this.recordingId = recordingId;
     this.liveSessionId = liveSessionId;
     this.sessionId = sessionId;
     this.segmentId = segmentId;
@@ -466,6 +468,7 @@ export class LiveTranslateSession {
   } = {}) {
     if (this.closed) return false;
     if (this.providerReconnectInProgress) return this.providerReconnectInProgress;
+    const previousLiveSessionId = this.liveSessionId;
     const startsNewSegment = segmentId !== this.segmentId
       || Boolean(liveSessionId && this.liveSessionId && liveSessionId !== this.liveSessionId);
     const startsNewProviderRollover = Boolean(liveSessionId && this.liveSessionId && liveSessionId !== this.liveSessionId);
@@ -504,11 +507,31 @@ export class LiveTranslateSession {
       const previousSession = this.session;
       this.session = null;
       this.providerEpoch += 1;
+      this.tracePipeline('PROVIDER_SESSION_CLOSING', {
+        geminiSessionId: previousLiveSessionId,
+        oldSessionId: previousLiveSessionId,
+        newSessionId: this.liveSessionId,
+        reason: startsNewProviderRollover ? 'rollover' : 'provider_reconnect'
+      });
       try { previousSession?.close?.(); } catch { /* best effort */ }
       if (this.closed) return false;
+      this.tracePipeline('PROVIDER_SESSION_CREATING', {
+        geminiSessionId: this.liveSessionId,
+        oldSessionId: previousLiveSessionId,
+        newSessionId: this.liveSessionId,
+        reason: startsNewProviderRollover ? 'rollover' : 'provider_reconnect'
+      });
       this.tracePipeline('PROVIDER_RECONNECT', { reason: 'provider_epoch_advanced' });
       const result = await this.connectProvider({ forceRefresh });
-      if (result) this.providerReconnectAttempts = 0;
+      if (result) {
+        this.providerReconnectAttempts = 0;
+        this.tracePipeline('PROVIDER_SESSION_READY', {
+          geminiSessionId: this.liveSessionId,
+          oldSessionId: previousLiveSessionId,
+          newSessionId: this.liveSessionId,
+          reason: startsNewProviderRollover ? 'rollover' : 'provider_reconnect'
+        });
+      }
       else this.providerReconnectAttempts += 1;
       return result;
     }).finally(() => { this.providerReconnectInProgress = null; });
@@ -2118,7 +2141,11 @@ export class LiveTranslateSession {
   tracePipeline(stage, details = {}) {
     return recordLivePipelineTrace({
       stage,
-      recordingId: this.sessionId || this.liveSessionId,
+      meetingId: this.meetingId,
+      recordingId: this.recordingId,
+      sessionId: this.sessionId,
+      recorderSessionId: this.sessionId,
+      geminiSessionId: this.liveSessionId,
       segmentId: this.segmentId,
       connectionEpoch: this.connectionEpoch,
       captureEpoch: this.activeCaptureGraphGeneration,

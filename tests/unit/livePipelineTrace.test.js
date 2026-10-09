@@ -143,6 +143,37 @@ test('runtime opt-in enables trace independently of build mode and disabling dis
   assert.deepEqual(trace.get(), []);
 });
 
+test('auth and rollover lifecycle traces keep explicit non-secret identities', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  trace.record({
+    stage: 'AUTH_STATE_CHANGED',
+    meetingId: 'meeting-1',
+    recordingId: 'recording-1',
+    recorderSessionId: 'recorder-session-1',
+    geminiSessionId: 'gemini-session-2',
+    segmentId: 'segment-2',
+    rolloverGeneration: 3,
+    authEvent: 'TOKEN_REFRESHED',
+    recordingState: 'switching-segment',
+    httpStatus: 200,
+    errorCode: null,
+    reason: 'same-user',
+    accessToken: 'must-not-be-recorded'
+  });
+
+  const [entry] = trace.get();
+  assert.equal(entry.meetingId, 'meeting-1');
+  assert.equal(entry.recordingId, 'recording-1');
+  assert.equal(entry.recorderSessionId, 'recorder-session-1');
+  assert.equal(entry.geminiSessionId, 'gemini-session-2');
+  assert.equal(entry.segmentId, 'segment-2');
+  assert.equal(entry.rolloverGeneration, 3);
+  assert.equal(entry.authEvent, 'TOKEN_REFRESHED');
+  assert.equal(entry.recordingState, 'switching-segment');
+  assert.equal(entry.reason, 'same-user');
+  assert.equal(Object.hasOwn(entry, 'accessToken'), false);
+});
+
 test('trace allowlist excludes secrets and PCM audio content', () => {
   const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
   trace.record({

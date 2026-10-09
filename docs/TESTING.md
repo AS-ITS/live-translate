@@ -446,6 +446,25 @@ node --test tests/unit/meetingCheckpointService.test.js
 node --test tests/unit/segmentSwitchOrchestrator.test.js
 ```
 
+Run the focused Auth/rollover isolation regression without a real Supabase or
+Gemini request:
+
+```bash
+node --test tests/unit/authState.test.js tests/unit/accessToken.test.js \
+  tests/unit/livePipelineTrace.test.js tests/unit/segmentSwitchOrchestrator.test.js \
+  tests/unit/rolloverRecoveryCoordinator.test.js tests/unit/liveSessionProviderTransition.test.js
+
+npx playwright test --config tests/e2e/playwright.config.js \
+  tests/e2e/liveTranslate.spec.js \
+  -g "lifecycle v2 rollover survives|keeps Recorder mounted when one-sided cues|real auth sign-out revokes|auth-invalid profile revalidation|newer same-user auth state"
+```
+
+The accelerated rollover case injects same-user `TOKEN_REFRESHED` while the
+rollover request is in flight. It must preserve the mounted recorder, audio
+capture, replacement Gemini session, canonical Cue persistence, and Viewer
+DataChannel publication. Explicit `SIGNED_OUT` and `auth_invalid` cases must
+still stop microphone capture and unmount the protected App.
+
 Current unit coverage:
 
 - Cue UI timecode formatting, sequence sorting, cueId upsert, single partial

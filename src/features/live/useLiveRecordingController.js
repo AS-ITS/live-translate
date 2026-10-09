@@ -1635,7 +1635,7 @@ export function useLiveRecordingController({
         resumeInFlightRef.current = false;
       }
     },
-    async switchMeetingSegment() {
+    async switchMeetingSegment({ generation: rolloverGeneration } = {}) {
       const meetingCheckpoint = recovery.activeMeetingCheckpointRef.current;
       const previousSession = recovery.sessionRef.current;
       if (!meetingCheckpoint || !previousSession || recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
@@ -1651,8 +1651,12 @@ export function useLiveRecordingController({
         recordLivePipelineTrace({
           stage: 'SESSION_ROLLOVER_START',
           meetingId: meetingCheckpoint.meetingId,
+          recorderSessionId: recovery.activeSessionRecordIdRef.current,
+          geminiSessionId: previousSession.liveSessionId,
           oldSessionId: recovery.activeSessionRecordIdRef.current,
           oldSegmentId: meetingCheckpoint.segmentId,
+          rolloverGeneration,
+          recordingState: 'switching-segment',
           captureEpoch: previousSession.captureEpoch,
           providerEpoch: previousSession.providerEpoch
         });
@@ -1761,6 +1765,17 @@ export function useLiveRecordingController({
         });
         const rollover = await rolloverCoordinator.run(operation);
         rolloverCommandCommitted = true;
+        recordLivePipelineTrace({
+          stage: 'ROLLOVER_COMMITTED',
+          meetingId: meetingCheckpoint.meetingId,
+          recorderSessionId: recovery.activeSessionRecordIdRef.current,
+          geminiSessionId: nextLiveSessionId,
+          oldSegmentId: meetingCheckpoint.segmentId,
+          newSegmentId: rollover.segment.id,
+          rolloverGeneration,
+          recordingState: 'switching-segment',
+          reason: 'authoritative_segment_committed'
+        });
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
       recovery.archiveActiveTranscriptSegment();
@@ -1820,6 +1835,18 @@ export function useLiveRecordingController({
         reason: 'rollover_continued'
       });
       } catch (cause) {
+        recordLivePipelineTrace({
+          stage: 'ROLLOVER_FAILED',
+          meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+          recorderSessionId: recovery.activeSessionRecordIdRef.current,
+          geminiSessionId: previousSession.liveSessionId,
+          segmentId: recovery.activeMeetingCheckpointRef.current?.segmentId,
+          rolloverGeneration,
+          recordingState: rolloverCommandCommitted ? 'reconnecting' : 'listening',
+          httpStatus: cause?.status,
+          errorCode: cause?.code,
+          reason: rolloverStage
+        });
         if (!rolloverCommandCommitted) previousSession.cancelProviderTransition?.();
         recovery.activateLiveSessionCallbacks(previousSession.callbackGeneration);
         recovery.sessionRef.current = previousSession;

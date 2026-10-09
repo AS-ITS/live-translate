@@ -35,7 +35,7 @@ test('segment switch orchestrator triggers scheduled segment switches', async ()
   await orchestrator.triggerNow();
 
   assert.equal(switches, 1);
-  assert.deepEqual(statuses, ['switching', 'switched']);
+  assert.deepEqual(statuses, ['scheduled', 'switching', 'switched', 'scheduled']);
   assert.equal(timers.length, 2);
 });
 

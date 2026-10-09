@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { installE2EAuth } from './authBootstrap.js';
+import { emitE2EAuthState, installE2EAuth } from './authBootstrap.js';
 import { readFile } from 'node:fs/promises';
 
 const MOCK_MEETING_ID = '11111111-1111-4111-8111-111111111111';
@@ -2407,6 +2407,11 @@ test('keeps Recorder mounted when one-sided cues receive late DataChannel update
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
   await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitE2EAuthState(page, 'SIGNED_IN', {
+    access_token: 'e2e-duplicate-sign-in-token',
+    expires_at: Math.floor(Date.now() / 1000) + 3600
+  });
+  await expect(page.getByText('正在檢查登入狀態…')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.__mockSubtitlePackets.some((packet) => packet.type === 'snapshot'))).toBe(true);
   await emitFinalTranscript(page, '正常原文 1', 'normal translation 1', { waitMs: 50 });
   await page.evaluate(() => {
@@ -2440,6 +2445,92 @@ test('keeps Recorder mounted when one-sided cues receive late DataChannel update
   expect(cuePackets.some((packet) => packet.cue?.rawSource && !packet.cue?.translatedText)).toBe(true);
   expect(cuePackets.some((packet) => packet.cue?.translatedText && !packet.cue?.rawSource)).toBe(true);
   expect(cuePackets.some((packet) => packet.cue?.cueId === 'normal-browser-2' && packet.cue?.rawSource === '正常原文 2')).toBe(true);
+  const authTrace = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  expect(authTrace.some((entry) => entry.stage === 'AUTH_STATE_CHANGED'
+    && entry.authEvent === 'SIGNED_IN'
+    && entry.reason === 'same-user')).toBe(true);
+  expect(authTrace.some((entry) => entry.stage === 'LIVE_COMPONENT_UNMOUNTED')).toBe(false);
+});
+
+test('real auth sign-out revokes recording and stops audio capture', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitE2EAuthState(page, 'SIGNED_OUT', null);
+
+  await expect(page.getByRole('heading', { name: '歡迎回來' })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
+  const authTrace = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  expect(authTrace.some((entry) => entry.stage === 'AUTH_STATE_CHANGED'
+    && entry.authEvent === 'SIGNED_OUT')).toBe(true);
+  expect(authTrace.some((entry) => entry.stage === 'LIVE_COMPONENT_UNMOUNTED')).toBe(true);
+  expect(authTrace.some((entry) => entry.stage === 'RECORDING_STATE_RESET')).toBe(true);
+});
+
+test('auth-invalid profile revalidation safely signs out an active recorder', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.unroute('**/api/profile');
+  await page.route('**/api/profile', (route) => route.fulfill({
+    status: 401,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: { code: 'auth_invalid' } })
+  }));
+  await emitE2EAuthState(page, 'TOKEN_REFRESHED', {
+    access_token: 'e2e-invalid-access-token'
+  });
+
+  await expect(page.getByRole('heading', { name: '歡迎回來' })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
+  const authTrace = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  expect(authTrace.some((entry) => entry.stage === 'AUTH_PROFILE_CHECK_FAILED'
+    && entry.errorCode === 'auth_invalid')).toBe(true);
+  expect(authTrace.some((entry) => entry.stage === 'LIVE_COMPONENT_UNMOUNTED')).toBe(true);
+});
+
+test('newer same-user auth state cannot be overwritten by stale profile validation', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.unroute('**/api/profile');
+  await page.route('**/api/profile', async (route) => {
+    const authorization = route.request().headers().authorization || '';
+    if (authorization.includes('stale-profile-token')) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await route.fulfill({ json: { profile: { id: 'owner-1', status: 'disabled', role: 'owner' } } }).catch(() => {});
+      return;
+    }
+    await route.fulfill({ json: { profile: { id: 'owner-1', status: 'active', role: 'super_admin' } } });
+  });
+  await emitE2EAuthState(page, 'TOKEN_REFRESHED', { access_token: 'stale-profile-token' });
+  await emitE2EAuthState(page, 'TOKEN_REFRESHED', { access_token: 'newer-profile-token' });
+
+  await page.waitForTimeout(200);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page.getByText('正在檢查登入狀態…')).toHaveCount(0);
+  const authTrace = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  expect(authTrace.filter((entry) => entry.stage === 'AUTH_STATE_CHANGED'
+    && entry.authEvent === 'TOKEN_REFRESHED').length).toBeGreaterThanOrEqual(2);
+  expect(authTrace.some((entry) => entry.stage === 'LIVE_COMPONENT_UNMOUNTED')).toBe(false);
 });
 
 test('pause and resume drains first speech from the replacement pre-roll', async ({ page }) => {
@@ -2545,6 +2636,7 @@ test('lifecycle v2 rollover survives unrelated session PATCH outage and keeps pr
   const segmentPatchRequests = [];
   let activeSequence = 0;
   let rolloverFailures = 0;
+  let authRefreshInjected = false;
   await page.route(`**/api/meetings/${MOCK_MEETING_ID}/segments`, async (route) => {
     await route.fulfill({
       status: 200,
@@ -2562,6 +2654,13 @@ test('lifecycle v2 rollover survives unrelated session PATCH outage and keeps pr
       return;
     }
     commands.push(command);
+    if (command === 'rollover' && !authRefreshInjected) {
+      authRefreshInjected = true;
+      await emitE2EAuthState(page, 'TOKEN_REFRESHED', {
+        access_token: 'e2e-refreshed-access-token',
+        expires_at: Math.floor(Date.now() / 1000) + 3600
+      });
+    }
     if (command === 'rollover' && activeSequence === 6 && rolloverFailures === 0) {
       rolloverFailures += 1;
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'supabase_request_failed', requestId: 'failed-rollover-request' } }) });
@@ -2612,6 +2711,15 @@ test('lifecycle v2 rollover survives unrelated session PATCH outage and keeps pr
   await expect(finalCueRows(page)).toHaveCount(6);
   await expect.poll(() => new Set(checkpointRequests.cueRequests.map(({ segmentId }) => segmentId)).size).toBe(6);
   await expect(page.getByText('after rollover 6 translation')).toBeVisible();
+  const authRolloverTrace = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  expect(authRolloverTrace.some((entry) => entry.stage === 'AUTH_STATE_CHANGED'
+    && entry.authEvent === 'TOKEN_REFRESHED'
+    && entry.reason === 'same-user')).toBe(true);
+  expect(authRolloverTrace.some((entry) => entry.stage === 'LIVE_COMPONENT_UNMOUNTED')).toBe(false);
+  expect(authRolloverTrace.some((entry) => entry.stage === 'RECORDING_STATE_RESET')).toBe(false);
+  expect(authRolloverTrace.some((entry) => entry.stage === 'ROLLOVER_COMMITTED')).toBe(true);
+  expect(authRolloverTrace.some((entry) => entry.stage === 'PROVIDER_SESSION_READY'
+    && entry.reason === 'rollover')).toBe(true);
   await expect.poll(() => commands.filter((item) => item === 'rollover').length).toBe(8);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBeGreaterThanOrEqual(8);
   await expect(page.getByRole('button', { name: '繼續', exact: true })).toHaveCount(0);

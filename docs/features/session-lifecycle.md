@@ -171,6 +171,14 @@ callbacks run; stop/end cancellation cannot start that replacement session.
 
 ## Bounded Segment Rollover Recovery
 
+Supabase Auth refresh is independent from Recorder and Gemini lifecycle. A
+`TOKEN_REFRESHED` event, or a duplicate `SIGNED_IN` event for the same
+`user.id`, updates the current session and revalidates the account profile in
+the background without replacing the mounted Live recorder. Initial sign-in,
+account changes, disabled/forbidden profiles, `auth_invalid`, and `SIGNED_OUT`
+remain blocking authorization boundaries. Profile checks use a request
+generation guard so an older response cannot overwrite a newer Auth state.
+
 Segment rollover uses one logical operation with a stable `operationId` and immutable request payload. Network errors, HTTP timeout, 408, 425, 429, and 5xx are bounded-retry candidates. Before every retry, the client reads the authoritative Segment timeline. A timeout is an unknown outcome, never proof that the mutation failed. If the next active Segment already exists, the client replays the same idempotent lifecycle operation only to recover the stored response and current lease. HTTP 403 is not retried; HTTP 409 is reconciled before any decision.
 
 The recorder keeps capturing during provider transition. New PCM is held in a bounded memory queue while the old provider is drained using `turnComplete`/`generationComplete`, `audioTurnId`, provider epoch, a short event-quiet condition, and a hard upper bound. Accepted callbacks remain enabled and retain their original Segment/provider ownership. On a pre-commit failure, queued PCM resumes against the confirmed old provider. After a committed mutation, PCM is never replayed to the old Segment.

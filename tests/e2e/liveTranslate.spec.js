@@ -2501,6 +2501,60 @@ test('auth-invalid profile revalidation safely signs out an active recorder', as
   expect(authTrace.some((entry) => entry.stage === 'LIVE_COMPONENT_UNMOUNTED')).toBe(true);
 });
 
+test('temporary profile revalidation failure keeps the validated recorder mounted', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.unroute('**/api/profile');
+  await page.route('**/api/profile', (route) => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: { code: 'cloud_capability_unavailable' } })
+  }));
+  await emitE2EAuthState(page, 'TOKEN_REFRESHED', { access_token: 'e2e-temporary-profile-failure-token' });
+
+  await expect.poll(() => page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace()
+    .some((entry) => entry.stage === 'AUTH_PROFILE_CHECK_FAILED'
+      && entry.reason === 'background_profile_failure'
+      && entry.httpStatus === 503))).toBe(true);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page.getByText('正在檢查登入狀態…')).toHaveCount(0);
+  expect(await page.evaluate(() => window.__mockMicTracks.some((track) => track.stopped))).toBe(false);
+  const authTrace = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  expect(authTrace.some((entry) => entry.stage === 'LIVE_COMPONENT_UNMOUNTED')).toBe(false);
+});
+
+test('disabled profile revalidation immediately revokes an active recorder', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.unroute('**/api/profile');
+  await page.route('**/api/profile', (route) => route.fulfill({
+    json: { profile: { id: 'owner-1', email: 'owner@example.com', role: 'owner', status: 'disabled' } }
+  }));
+  await emitE2EAuthState(page, 'TOKEN_REFRESHED', { access_token: 'e2e-disabled-profile-token' });
+
+  await expect(page.getByRole('heading', { name: '暫時無法啟用帳號' })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
+  const authTrace = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  expect(authTrace.some((entry) => entry.stage === 'AUTH_PROFILE_CHECK_SUCCEEDED'
+    && entry.reason === 'disabled')).toBe(true);
+  expect(authTrace.some((entry) => entry.stage === 'LIVE_COMPONENT_UNMOUNTED')).toBe(true);
+  expect(authTrace.some((entry) => entry.stage === 'RECORDING_STATE_RESET')).toBe(true);
+});
+
 test('newer same-user auth state cannot be overwritten by stale profile validation', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
   await mockLiveSessionCreateApi(page);

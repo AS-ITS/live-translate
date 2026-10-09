@@ -3,7 +3,8 @@ import test from 'node:test';
 import {
   applyGlossaryCorrectionToCue,
   applyGlossaryReplacements,
-  correctTranslationForSource
+  correctTranslationForSource,
+  glossaryCorrectionForSource
 } from '../../src/lib/glossaryReplacement.js';
 import { mergeMeetingGlossaryEntries } from '../../src/lib/meetingGlossary.js';
 
@@ -82,8 +83,9 @@ test('Cue correction retains glossary-corrected initial translation when refinem
 
   assert.equal(cue.cueId, 'cue-1');
   assert.equal(cue.rawTranslation, 'Acme approved.');
-  assert.equal(cue.initialTranslation, 'Meeting Acme approved.');
-  assert.equal(cue.refinedTranslation, 'Meeting Acme approved.');
+  assert.equal(cue.initialTranslation, 'Acme approved.');
+  assert.equal(cue.refinedTranslation, 'The company approved.');
+  assert.equal(cue.glossaryCorrectionStatus, 'correction_uncertain');
 });
 
 test('exact-source dictionary hits canonicalize every provider variant to one target', () => {
@@ -97,6 +99,69 @@ test('exact-source dictionary hits canonicalize every provider variant to one ta
   }
 });
 
+test('glossary-only sources preserve every longest non-overlapping occurrence', () => {
+  const glossaryEntries = [{ source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }];
+  const fixtures = [
+    ['你好', 'Hello.', 'su3cl3.'],
+    ['你好你好', 'Hello, hello.', 'su3cl3, su3cl3.'],
+    ['你好你好', 'su3cl3.', 'su3cl3, su3cl3.'],
+    ['你好你好', 'Hello, su3cl3.', 'su3cl3, su3cl3.']
+  ];
+
+  for (const [sourceText, translatedText, expected] of fixtures) {
+    assert.equal(
+      correctTranslationForSource({ sourceText, translatedText }, glossaryEntries),
+      expected
+    );
+  }
+});
+
+test('no-glossary translations remain byte-for-byte unchanged', () => {
+  for (const translatedText of ['Hello, hello, hello.', 'hello.']) {
+    assert.equal(
+      correctTranslationForSource({ sourceText: '你好', translatedText }, []),
+      translatedText
+    );
+  }
+});
+
+test('source occurrence matching is longest-first, case-insensitive, and punctuation preserving', () => {
+  const glossaryEntries = [
+    { source: '你好', target: 'SHORT' },
+    { source: '你好你好', target: 'LONG' },
+    { source: 'Acme', target: 'BRAND' }
+  ];
+
+  assert.equal(
+    correctTranslationForSource({
+      sourceText: '你好你好！ACME acme。',
+      translatedText: 'Any provider wording.'
+    }, glossaryEntries),
+    'LONG！BRAND BRAND.'
+  );
+});
+
+test('mixed sources preserve provider output and mark uncertain correction', () => {
+  const input = {
+    sourceText: '想請教他你好，歡迎會議。',
+    translatedText: 'I would like to ask him hello, welcome to the meeting.'
+  };
+  const glossaryEntries = [{ source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }];
+  const correction = glossaryCorrectionForSource(input, glossaryEntries);
+  const cue = applyGlossaryCorrectionToCue({
+    cueId: 'cue-mixed',
+    status: 'final',
+    rawSource: input.sourceText,
+    rawTranslation: input.translatedText,
+    translatedText: input.translatedText
+  }, glossaryEntries);
+
+  assert.equal(correction.translatedText, input.translatedText);
+  assert.equal(correction.status, 'correction_uncertain');
+  assert.equal(cue.initialTranslation, input.translatedText);
+  assert.equal(cue.glossaryCorrectionStatus, 'correction_uncertain');
+});
+
 test('sentence glossary correction preserves provider target repetitions without inventing missing ones', () => {
   const glossaryEntries = [{ source: '哈囉', target: 'Hello', replacementAliases: [] }];
 
@@ -105,14 +170,14 @@ test('sentence glossary correction preserves provider target repetitions without
       sourceText: '哈囉哈囉哈囉。',
       translatedText: 'Hello, hello, hello.'
     }, glossaryEntries),
-    'Hello, hello, hello.'
+    'Hello, Hello, Hello.'
   );
   assert.equal(
     correctTranslationForSource({
       sourceText: '哈囉哈囉哈囉。',
       translatedText: 'Hello.'
     }, glossaryEntries),
-    'Hello.'
+    'Hello, Hello, Hello.'
   );
 });
 
@@ -124,14 +189,14 @@ test('sentence glossary correction removes only adjacent alias-target duplicates
       sourceText: '你好你好',
       translatedText: 'Hello. su3cl3. Hello. su3cl3.'
     }, glossaryEntries),
-    'su3cl3. su3cl3.'
+    'su3cl3, su3cl3.'
   );
   assert.equal(
     correctTranslationForSource({
       sourceText: '你好，歡迎參加會議',
       translatedText: 'Hello, su3cl3, welcome to the meeting.'
     }, glossaryEntries),
-    'su3cl3, welcome to the meeting.'
+    'Hello, su3cl3, welcome to the meeting.'
   );
 });
 
@@ -146,7 +211,7 @@ test('sentence glossary correction preserves case punctuation and independent gl
       sourceText: '你好你好，會議會議。',
       translatedText: 'HELLO! Su3Cl3! su3cl3; Su3Cl3. meeting, Gathering; gathering.'
     }, glossaryEntries),
-    'Su3Cl3! su3cl3; Su3Cl3. Gathering; gathering.'
+    'Su3Cl3, Su3Cl3，Gathering, Gathering.'
   );
 });
 
@@ -176,15 +241,21 @@ test('sentence dictionary hits replace adjacent aliases without deleting provide
   }];
 
   for (const [translatedText, expected] of [
-    ["Hello, su3cl3, welcome to today's meeting.", "su3cl3, welcome to today's meeting."],
-    ["HelloGlobal, su3cl3, su3cl3, welcome to today's meeting.", "su3cl3, su3cl3, welcome to today's meeting."]
+    ["Hello, su3cl3, welcome to today's meeting.", "Hello, su3cl3, welcome to today's meeting."],
+    ["HelloGlobal, su3cl3, su3cl3, welcome to today's meeting.", "HelloGlobal, su3cl3, su3cl3, welcome to today's meeting."]
   ]) {
     const corrected = correctTranslationForSource({
       sourceText: '你好，歡迎參加今天的會議',
       translatedText
     }, glossaryEntries);
     assert.equal(corrected, expected);
-    assert.equal(corrected.includes('Hello'), false);
+    assert.equal(
+      glossaryCorrectionForSource({
+        sourceText: '你好，歡迎參加今天的會議',
+        translatedText
+      }, glossaryEntries).status,
+      'correction_uncertain'
+    );
   }
 });
 
@@ -213,4 +284,34 @@ test('partial final and refined updates keep one canonical target on the same cu
   assert.equal(refinedCue.initialTranslation, 'su3cl3.');
   assert.equal(refinedCue.refinedTranslation, 'su3cl3.');
   assert.equal(refinedCue.rawTranslation, 'Hello. su3cl3.');
+});
+
+test('partial final and late-final corrections always restart from provider raw translation', () => {
+  const glossaryEntries = [{ source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }];
+  const sourceText = '你好你好';
+  const partialRaw = 'Hello.';
+  const partial = correctTranslationForSource({ sourceText, translatedText: partialRaw }, glossaryEntries);
+  const finalCue = applyGlossaryCorrectionToCue({
+    cueId: 'cue-revision-1',
+    status: 'final',
+    rawSource: sourceText,
+    rawTranslation: 'Hello, hello.',
+    translatedText: partial,
+    sourceVersion: 1,
+    translationVersion: 2
+  }, glossaryEntries);
+  const lateFinalCue = applyGlossaryCorrectionToCue({
+    ...finalCue,
+    rawTranslation: 'su3cl3.',
+    translatedText: finalCue.initialTranslation,
+    translationVersion: 3
+  }, glossaryEntries);
+
+  assert.equal(partialRaw, 'Hello.');
+  assert.equal(partial, 'su3cl3, su3cl3.');
+  assert.equal(finalCue.rawTranslation, 'Hello, hello.');
+  assert.equal(finalCue.initialTranslation, 'su3cl3, su3cl3.');
+  assert.equal(lateFinalCue.rawTranslation, 'su3cl3.');
+  assert.equal(lateFinalCue.initialTranslation, 'su3cl3, su3cl3.');
+  assert.equal(lateFinalCue.translationVersion, 3);
 });

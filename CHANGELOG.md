@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修正 Glossary occurrence canonicalization：來源詞改採 longest-match、non-overlapping 計數；只有完全由字典 spans 組成的來源才安全補足 target 次數，混合句保留 provider 原譯並標記 `correction_uncertain`。Live Cue 分開追蹤 provider raw translation 與 corrected translation，partial／final／late-final correction 均由 raw translation 重算。
+
 - 修正 Recorder Stop→Continue 後 Viewer 被錯誤標記為會議結束並進入永久重連：Pause cleanup 不再發送 `meeting.stopped` 或撤銷 signaling，Viewer snapshot 新增 authoritative `recordingState`，暫停時顯示等待且不消耗六次 transport recovery，Continue 後自動重建原 Meeting 的 Viewer transport；真正 End Meeting 維持 terminal 與不可重開語意。
 
 - 修正長會議 rollover 失敗後永久停用排程與 transition callback 丟失：新增 bounded reconciliation/retry（同一 operationId 與 immutable payload）、語意邊界 Provider drain、有界 PCM overflow 警示及 Cue durability timeout。timeout 先視為結果未知並查詢 authoritative Segment；不重播 OPFS 歷史 PCM 至 Gemini，避免字幕重複／錯序。錄音、分段、雲端保存與 Viewer 狀態分離，rollover／checkpoint 失敗不拆除健康 WebRTC DataChannel，且不清除既有 IndexedDB／OPFS 會議資料。

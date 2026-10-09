@@ -15,32 +15,29 @@ export function applyGlossaryReplacements(text, glossaryEntries = []) {
 }
 
 export function correctTranslationForSource({ sourceText, translatedText } = {}, glossaryEntries = []) {
+  return glossaryCorrectionForSource({ sourceText, translatedText }, glossaryEntries).translatedText;
+}
+
+export function glossaryCorrectionForSource({ sourceText, translatedText } = {}, glossaryEntries = []) {
   if (typeof sourceText !== 'string' || typeof translatedText !== 'string' || !Array.isArray(glossaryEntries)) {
-    return translatedText;
+    return { translatedText, status: 'not_applicable', occurrences: [] };
   }
 
-  return glossaryEntries.reduce((current, entry, entryIndex) => {
-    if (!sourceContainsTerm(sourceText, entry?.source)) return current;
-    if (typeof entry?.target !== 'string' || entry.target.trim() === '') return current;
+  const occurrences = matchSourceOccurrences(sourceText, glossaryEntries);
+  if (occurrences.length === 0) {
+    return { translatedText, status: 'not_applicable', occurrences: [] };
+  }
 
-    const target = entry.target.trim();
-    if (sourceEqualsTerm(sourceText, entry.source)) {
-      return `${target}${trailingPunctuation(current)}`;
-    }
+  if (!sourceIsFullyCovered(sourceText, occurrences)) {
+    return { translatedText, status: 'correction_uncertain', occurrences };
+  }
 
-    const candidates = [entry.source, ...(Array.isArray(entry.replacementAliases) ? entry.replacementAliases : [])]
-      .filter((candidate) => typeof candidate === 'string' && candidate.trim() && candidate !== target)
-      .sort((left, right) => right.length - left.length);
-
-    const marker = `\uE000glossary-${entryIndex}\uE001`;
-    const marked = candidates.reduce(
-      (value, candidate) => replaceScopedCandidate(value, candidate, marker),
-      current
-    );
-    return marked === current
-      ? current
-      : resolveMarkedAliases(marked, marker, target);
-  }, translatedText);
+  const corrected = renderCoveredGlossaryTranslation(sourceText, translatedText, occurrences);
+  return {
+    translatedText: corrected,
+    status: corrected === translatedText ? 'unchanged' : 'corrected',
+    occurrences
+  };
 }
 
 export function applyGlossaryCorrectionsToCueState(state, glossaryEntries = []) {
@@ -60,26 +57,31 @@ export function applyGlossaryCorrectionToCue(cue, glossaryEntries = []) {
   if (!cue || cue.status !== 'final') return cue;
   const sourceText = cue.rawSource ?? cue.sourceText ?? '';
   const providerTranslation = cue.rawTranslation ?? cue.translatedText ?? '';
-  const initialTranslation = correctTranslationForSource(
+  const initialCorrection = glossaryCorrectionForSource(
     { sourceText, translatedText: providerTranslation },
     glossaryEntries
   );
-  const correctedRefinedTranslation = typeof cue.refinedTranslation === 'string'
-    ? correctTranslationForSource({ sourceText, translatedText: cue.refinedTranslation }, glossaryEntries)
-    : cue.refinedTranslation;
-  const refinedTranslation = shouldKeepInitialGlossaryTranslation({
-    sourceText,
-    initialTranslation,
-    refinedTranslation: correctedRefinedTranslation,
-    glossaryEntries
-  }) ? initialTranslation : correctedRefinedTranslation;
-  const initialChanged = initialTranslation !== providerTranslation;
+  const initialTranslation = initialCorrection.translatedText;
+  const refinedCorrection = typeof cue.refinedTranslation === 'string'
+    ? glossaryCorrectionForSource({ sourceText, translatedText: cue.refinedTranslation }, glossaryEntries)
+    : null;
+  const refinedTranslation = refinedCorrection?.translatedText ?? cue.refinedTranslation;
+  const glossaryCorrectionStatus = [initialCorrection.status, refinedCorrection?.status]
+    .includes('correction_uncertain')
+    ? 'correction_uncertain'
+    : initialCorrection.status;
+  const initialChanged = (
+    initialCorrection.status !== 'not_applicable'
+    || typeof cue.initialTranslation === 'string'
+  ) && initialTranslation !== cue.initialTranslation;
   const refinedChanged = refinedTranslation !== cue.refinedTranslation;
-  if (!initialChanged && !refinedChanged) return cue;
+  const statusChanged = glossaryCorrectionStatus !== cue.glossaryCorrectionStatus;
+  if (!initialChanged && !refinedChanged && !statusChanged) return cue;
   return {
     ...cue,
     ...(initialChanged ? { initialTranslation } : {}),
-    ...(refinedChanged ? { refinedTranslation } : {})
+    ...(refinedChanged ? { refinedTranslation } : {}),
+    glossaryCorrectionStatus
   };
 }
 
@@ -95,87 +97,90 @@ function replacementCandidatesForEntry(entry) {
     .map((from) => ({ from, to: entry.target }));
 }
 
-function sourceContainsTerm(sourceText, sourceTerm) {
+function matchSourceOccurrences(sourceText, glossaryEntries) {
   const source = comparableText(sourceText);
-  const term = comparableText(sourceTerm);
-  if (!source || !term) return false;
-  if (containsCjk(term)) return source.includes(term);
-  const escaped = escapeRegExp(term);
-  return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, 'iu').test(source);
+  const entries = glossaryEntries
+    .map((entry, order) => ({
+      entry,
+      order,
+      source: comparableText(entry?.source),
+      target: typeof entry?.target === 'string' ? entry.target.trim() : ''
+    }))
+    .filter(({ source, target }) => source && target)
+    .sort((left, right) => right.source.length - left.source.length || left.order - right.order);
+  const occurrences = [];
+
+  for (let index = 0; index < source.length;) {
+    const match = entries.find((candidate) => (
+      source.startsWith(candidate.source, index)
+      && hasSourceBoundaries(source, candidate.source, index)
+    ));
+    if (!match) {
+      index += 1;
+      continue;
+    }
+    occurrences.push({
+      start: index,
+      end: index + match.source.length,
+      source: match.entry.source,
+      target: match.target
+    });
+    index += match.source.length;
+  }
+  return occurrences;
 }
 
-function sourceEqualsTerm(sourceText, sourceTerm) {
-  return stripTerminalPunctuation(comparableText(sourceText)) === stripTerminalPunctuation(comparableText(sourceTerm));
+function hasSourceBoundaries(source, term, index) {
+  if (containsCjk(term)) return true;
+  const before = source[index - 1] || '';
+  const after = source[index + term.length] || '';
+  return (!before || !/[\p{L}\p{N}]/u.test(before))
+    && (!after || !/[\p{L}\p{N}]/u.test(after));
 }
 
-function shouldKeepInitialGlossaryTranslation({ sourceText, initialTranslation, refinedTranslation, glossaryEntries }) {
-  if (typeof initialTranslation !== 'string' || typeof refinedTranslation !== 'string') return false;
-  const requiredEntries = glossaryEntries.filter((entry) => (
-    sourceContainsTerm(sourceText, entry?.source)
-    && typeof entry?.target === 'string'
-    && entry.target.trim() !== ''
-  ));
-  return requiredEntries.length > 0
-    && requiredEntries.every((entry) => containsLiteral(initialTranslation, entry.target))
-    && requiredEntries.some((entry) => !containsLiteral(refinedTranslation, entry.target));
+function sourceIsFullyCovered(sourceText, occurrences) {
+  const source = comparableText(sourceText);
+  let cursor = 0;
+  for (const occurrence of occurrences) {
+    if (!isSeparatorOnly(source.slice(cursor, occurrence.start))) return false;
+    cursor = occurrence.end;
+  }
+  return isSeparatorOnly(source.slice(cursor));
+}
+
+function renderCoveredGlossaryTranslation(sourceText, providerTranslation, occurrences) {
+  const parts = [];
+  let cursor = 0;
+  occurrences.forEach((occurrence, index) => {
+    const separator = sourceText.slice(cursor, occurrence.start);
+    if (index === 0) parts.push(separator);
+    else parts.push(separator || ', ');
+    parts.push(occurrence.target);
+    cursor = occurrence.end;
+  });
+
+  const sourceTrailing = sourceText.slice(cursor);
+  const providerTrailing = terminalPunctuation(providerTranslation);
+  const trailing = providerTrailing || sourceTrailing;
+  const result = parts.join('');
+  return `${stripDuplicateTerminalPunctuation(result, trailing)}${trailing}`;
+}
+
+function isSeparatorOnly(value) {
+  return value === '' || /^[\s\p{P}\p{S}]*$/u.test(value);
+}
+
+function terminalPunctuation(value) {
+  return value.match(/[\p{P}\p{S}]+\s*$/u)?.[0] || '';
+}
+
+function stripDuplicateTerminalPunctuation(value, trailing) {
+  if (!trailing) return value;
+  return value.replace(/[\p{P}\p{S}]+\s*$/u, '');
 }
 
 function comparableText(value) {
-  return typeof value === 'string' ? value.normalize('NFKC').trim().toLocaleLowerCase() : '';
-}
-
-function stripTerminalPunctuation(value) {
-  return value.replace(/[\s\p{P}\p{S}]+$/gu, '');
-}
-
-function trailingPunctuation(value) {
-  const match = value.match(/[\s\p{P}\p{S}]+$/u);
-  return match?.[0] || '';
-}
-
-function containsLiteral(value, candidate) {
-  return value.normalize('NFKC').toLocaleLowerCase().includes(candidate.normalize('NFKC').toLocaleLowerCase());
-}
-
-function resolveMarkedAliases(value, marker, target) {
-  let current = value;
-  let removedAlias = false;
-  let markerIndex = current.indexOf(marker);
-
-  while (markerIndex >= 0) {
-    const before = current.slice(0, markerIndex);
-    const after = current.slice(markerIndex + marker.length);
-    const duplicatesAdjacentTarget = endsWithScopedTarget(before, target)
-      || startsWithScopedTarget(after, target);
-    current = `${before}${duplicatesAdjacentTarget ? '' : target}${after}`;
-    removedAlias ||= duplicatesAdjacentTarget;
-    markerIndex = current.indexOf(marker, markerIndex + (duplicatesAdjacentTarget ? 0 : target.length));
-  }
-
-  return removedAlias ? normalizeRemovedTranslationPunctuation(current) : current;
-}
-
-function startsWithScopedTarget(value, target) {
-  const separator = String.raw`[\s\p{P}\p{S}]*`;
-  const escaped = escapeRegExp(target);
-  const boundary = containsCjk(target) ? '' : String.raw`(?=$|[^\p{L}\p{N}])`;
-  return new RegExp(`^${separator}${escaped}${boundary}`, 'iu').test(value);
-}
-
-function endsWithScopedTarget(value, target) {
-  const separator = String.raw`[\s\p{P}\p{S}]*`;
-  const escaped = escapeRegExp(target);
-  const boundary = containsCjk(target) ? '' : String.raw`(^|[^\p{L}\p{N}])`;
-  return new RegExp(`${boundary}${escaped}${separator}$`, 'iu').test(value);
-}
-
-function normalizeRemovedTranslationPunctuation(value) {
-  return value
-    .replace(/^[\s\p{P}\p{S}]+/u, '')
-    .replace(/([。！？.!?,，、；;：:])(?:\s*[。！？.!?,，、；;：:])+/gu, '$1')
-    .replace(/\s+([。！？.!?,，、；;：:])/gu, '$1')
-    .replace(/[\t ]{2,}/gu, ' ')
-    .trim();
+  return typeof value === 'string' ? value.normalize('NFKC').toLocaleLowerCase() : '';
 }
 
 function replaceScopedCandidate(value, candidate, target) {

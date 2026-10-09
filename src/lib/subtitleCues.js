@@ -280,6 +280,9 @@ function normalizeEvent(event, options) {
     eventId: event.eventId || deterministicEventId({ ...event, text, eventType: control ? 'boundary' : event.eventType || 'transcript' }),
     stream: control ? null : event.stream,
     text,
+    ...(event.stream === 'translation' && typeof event.providerRawText === 'string'
+      ? { providerRawText: normalizeText(event.providerRawText) }
+      : {}),
     sessionTimeMs,
     isFinal: Boolean(event.isFinal),
     turnComplete: Boolean(event.turnComplete),
@@ -620,12 +623,26 @@ function updateFinalCue(state, target, event) {
       ? normalizeText(event.text)
       : mergeCueText(target.cue[field], event.text, event);
   const nextStatus = event.isFinal ? 'finalized' : normalizeSideStatus(target.cue[statusField], nextText);
+  const providerRawText = normalizeText(event.providerRawText ?? event.text);
+  const nextRawTranslation = event.stream === 'translation'
+    ? (target.snapshot
+      ? replaceCumulativeText(target.cue.rawTranslation, providerRawText)
+      : target.replace
+        ? providerRawText
+        : mergeCueText(target.cue.rawTranslation, providerRawText, event))
+    : null;
   finalCues[target.index] = {
     ...target.cue,
     [field]: nextText,
     ...(event.stream === 'source'
       ? { rawSource: nextText }
-      : { rawTranslation: nextText, initialTranslation: nextText }),
+      : {
+        rawTranslation: nextRawTranslation,
+        initialTranslation: nextText,
+        ...(event.glossaryCorrectionStatus
+          ? { glossaryCorrectionStatus: event.glossaryCorrectionStatus }
+          : {})
+      }),
     [statusField]: nextStatus,
     [versionField]: nextSideVersion(target.cue[versionField], target.cue[field], nextText, {
       previousStatus: target.cue[statusField],
@@ -731,6 +748,14 @@ function addCue(state, event) {
     mode: event.targetLanguageCode ? 'translation' : 'transcription',
     sourceText: event.stream === 'source' ? event.text : '',
     translatedText: event.stream === 'translation' ? event.text : '',
+    ...(event.stream === 'source' ? { rawSource: event.text } : {}),
+    ...(event.stream === 'translation' ? {
+      rawTranslation: normalizeText(event.providerRawText ?? event.text),
+      initialTranslation: event.text,
+      ...(event.glossaryCorrectionStatus
+        ? { glossaryCorrectionStatus: event.glossaryCorrectionStatus }
+        : {})
+    } : {}),
     sourceStatus: event.stream === 'source' && event.isFinal ? 'finalized' : 'pending',
     translationStatus: event.stream === 'translation' && event.isFinal ? 'finalized' : 'pending',
     sourceVersion: event.stream === 'source' ? 1 : 0,
@@ -765,9 +790,22 @@ function updateCue(state, target, event) {
     ? replaceCumulativeText(cue[field], event.text)
     : mergeCueText(cue[field], event.text, event);
   const nextStatus = event.isFinal ? 'finalized' : normalizeSideStatus(cue[statusField], nextText);
+  const providerRawText = normalizeText(event.providerRawText ?? event.text);
+  const nextRawTranslation = event.stream === 'translation'
+    ? mergeCueText(cue.rawTranslation, providerRawText, event)
+    : null;
   const updated = {
     ...cue,
     [field]: nextText,
+    ...(event.stream === 'source'
+      ? { rawSource: nextText }
+      : {
+        rawTranslation: nextRawTranslation,
+        initialTranslation: nextText,
+        ...(event.glossaryCorrectionStatus
+          ? { glossaryCorrectionStatus: event.glossaryCorrectionStatus }
+          : {})
+      }),
     [statusField]: nextStatus,
     [versionField]: nextSideVersion(cue[versionField], cue[field], nextText, {
       previousStatus: cue[statusField],

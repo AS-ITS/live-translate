@@ -4,6 +4,7 @@ import { effectiveTranslationForCue } from '../../src/lib/cueContent.js';
 import { applyGlossaryCorrectionToCue } from '../../src/lib/glossaryReplacement.js';
 import { LiveTranslateSession } from '../../src/lib/liveSession.js';
 import { mergeMeetingViewerSnapshot } from '../../src/lib/meetingViewerState.js';
+import { applySubtitleCueEvent, createSubtitleCueState } from '../../src/lib/subtitleCues.js';
 import { exportCuesToSrt, exportCuesToTxt, exportCuesToVtt } from '../../src/lib/subtitleCueExport.js';
 import { createReplayRequest, createSubtitleSource } from '../../src/webrtc/subtitleDataChannel.js';
 
@@ -35,16 +36,20 @@ test('Live partial and final callbacks canonicalize an exact dictionary hit once
   assert.deepEqual(
     outputEvents.map(({ text, isFinal }) => ({ text, isFinal })),
     [
-      { text: 'su3cl3', isFinal: false },
-      { text: 'su3cl3', isFinal: true }
+      { text: 'su3cl3.', isFinal: false },
+      { text: 'su3cl3.', isFinal: true }
     ]
   );
   assert.deepEqual(
     cueEvents.filter((event) => event.stream === 'translation').map(({ text, isFinal }) => ({ text, isFinal })),
     [
-      { text: 'su3cl3', isFinal: false },
-      { text: 'su3cl3', isFinal: true }
+      { text: 'su3cl3.', isFinal: false },
+      { text: 'su3cl3.', isFinal: true }
     ]
+  );
+  assert.deepEqual(
+    cueEvents.filter((event) => event.stream === 'translation').map((event) => event.providerRawText),
+    ['Hello. su3cl3.', 'su3cl3. su3cl3.']
   );
 });
 
@@ -81,10 +86,46 @@ test('Live token response dictionary is retained for canonical transcript correc
     });
 
     assert.equal(session.liveGlossaryEntries.length, 1);
-    assert.equal(outputEvents[0].text, 'su3cl3');
+    assert.equal(outputEvents[0].text, 'su3cl3.');
+    assert.equal(outputEvents[0].rawText, 'Hello. su3cl3.');
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('Cue state keeps immutable provider raw translation separate from corrected text', () => {
+  let state = createSubtitleCueState();
+  const common = {
+    sessionId: 'session-raw-1',
+    segmentId: 'segment-raw-1',
+    audioTurnId: 'audio-turn-raw-1',
+    turnKey: 'local:audio-turn-raw-1',
+    sourceLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en'
+  };
+  state = applySubtitleCueEvent(state, {
+    ...common,
+    eventId: 'source-raw-1',
+    stream: 'source',
+    text: '你好你好',
+    sessionTimeMs: 100,
+    isFinal: false
+  });
+  state = applySubtitleCueEvent(state, {
+    ...common,
+    eventId: 'translation-raw-1',
+    stream: 'translation',
+    text: 'su3cl3, su3cl3.',
+    providerRawText: 'Hello, hello.',
+    glossaryCorrectionStatus: 'corrected',
+    sessionTimeMs: 120,
+    isFinal: false
+  });
+
+  assert.equal(state.currentCue.translatedText, 'su3cl3, su3cl3.');
+  assert.equal(state.currentCue.initialTranslation, 'su3cl3, su3cl3.');
+  assert.equal(state.currentCue.rawTranslation, 'Hello, hello.');
+  assert.equal(state.currentCue.glossaryCorrectionStatus, 'corrected');
 });
 
 test('canonical dictionary translation survives cue update, snapshot, replay, Viewer, and export', () => {
@@ -120,7 +161,7 @@ test('canonical dictionary translation survives cue update, snapshot, replay, Vi
 
   assert.equal(appended.cue.cueId, 'cue-1');
   assert.equal(updated.cue.cueId, 'cue-1');
-  assert.equal(effectiveTranslationForCue(updated.cue), 'su3cl3');
+  assert.equal(effectiveTranslationForCue(updated.cue), 'su3cl3.');
 
   const snapshot = source.snapshot();
   const replay = source.replay(createReplayRequest({
@@ -134,8 +175,8 @@ test('canonical dictionary translation survives cue update, snapshot, replay, Vi
 
   assert.equal(snapshot.cues.length, 1);
   assert.equal(replay.events.length, 2);
-  assert.ok(replay.events.every((event) => effectiveTranslationForCue(event.cue) === 'su3cl3'));
-  assert.equal(effectiveTranslationForCue(canonicalCue), 'su3cl3');
+  assert.ok(replay.events.every((event) => effectiveTranslationForCue(event.cue) === 'su3cl3.'));
+  assert.equal(effectiveTranslationForCue(canonicalCue), 'su3cl3.');
 
   for (const exported of [
     exportCuesToTxt([canonicalCue], { stream: 'translation' }),

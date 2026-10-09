@@ -3095,7 +3095,7 @@ test('live meeting dictionary canonicalizes an exact-source provider append on o
 
   await expect(finalCueRows(page)).toHaveCount(1);
   const cue = finalCueRows(page).first();
-  await expectCueRow(cue, { sourceText: '你好', translatedText: 'su3cl3' });
+  await expectCueRow(cue, { sourceText: '你好', translatedText: 'su3cl3.' });
   await expect(cue).not.toContainText('Hello');
   await expect(cue).toHaveAttribute('data-cue-id', /.+/);
 });

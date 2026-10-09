@@ -6,7 +6,7 @@ import {
   OUTPUT_SAMPLE_RATE,
   pcm16ToFloat
 } from './audio.js';
-import { correctTranslationForSource } from './glossaryReplacement.js';
+import { glossaryCorrectionForSource } from './glossaryReplacement.js';
 import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDevices.js';
 import { setAudioOutputDevice } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
@@ -1386,15 +1386,20 @@ export class LiveTranslateSession {
     });
     for (const rawEvent of normalizedEvents) {
       const event = rawEvent.stream === 'translation'
-        ? {
-          ...rawEvent,
-          text: correctTranslationForSource({
+        ? (() => {
+          const correction = glossaryCorrectionForSource({
             sourceText: content.inputTranscription?.text
               || content.interimInputTranscription?.text
               || this.lastInputTranscriptText,
             translatedText: rawEvent.text
-          }, this.liveGlossaryEntries)
-        }
+          }, this.liveGlossaryEntries);
+          return {
+            ...rawEvent,
+            text: correction.translatedText,
+            providerRawText: rawEvent.text,
+            glossaryCorrectionStatus: correction.status
+          };
+        })()
         : rawEvent;
       liveCueLatencyTracker.linkAudioTurn({
         fromAudioTurnId: this.audioTurnId,
@@ -1545,11 +1550,14 @@ export class LiveTranslateSession {
     }
 
     if (this.mode !== 'transcription' && content?.outputTranscription?.text) {
-      const transcript = withTranscriptEventId({
-        text: correctTranslationForSource({
+      const correction = glossaryCorrectionForSource({
           sourceText: content.inputTranscription?.text || content.interimInputTranscription?.text || this.lastInputTranscriptText,
           translatedText: content.outputTranscription.text
-        }, this.liveGlossaryEntries),
+        }, this.liveGlossaryEntries);
+      const transcript = withTranscriptEventId({
+        text: correction.translatedText,
+        rawText: content.outputTranscription.text,
+        glossaryCorrectionStatus: correction.status,
         isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete,
         liveSessionId: this.liveSessionId,
         sessionId: this.sessionId,

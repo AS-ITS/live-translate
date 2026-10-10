@@ -104,3 +104,38 @@ test('Supabase REST errors retain only safe upstream diagnostics', async () => {
     }
   );
 });
+
+test('Supabase RPC exposes SQLSTATE and RPC name without raw provider details', async () => {
+  const client = createSupabaseUserClient({
+    env: {
+      SUPABASE_URL: 'https://project.supabase.co',
+      VITE_SUPABASE_PUBLISHABLE_KEY: 'publishable-key'
+    },
+    accessToken: 'user-jwt',
+    fetchImpl: async () => ({
+      ok: false,
+      status: 503,
+      async json() {
+        return {
+          code: '57014',
+          message: 'private database diagnostics',
+          details: 'must not escape'
+        };
+      }
+    })
+  });
+
+  await assert.rejects(
+    client.rpc('resume_legacy_recording_transaction', {}),
+    (error) => {
+      assert.equal(error.code, 'supabase_request_failed');
+      assert.equal(error.supabaseStatus, 503);
+      assert.equal(error.supabaseCode, '57014');
+      assert.equal(error.supabaseErrorClass, 'database_request_rejected');
+      assert.equal(error.supabaseResource, 'resume_legacy_recording_transaction');
+      assert.equal(error.supabaseOperation, 'RPC');
+      assert.doesNotMatch(JSON.stringify(error), /private database diagnostics|must not escape/u);
+      return true;
+    }
+  );
+});

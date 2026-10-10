@@ -1826,12 +1826,30 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
 
   if (req.method === 'POST' && isLegacyMeetingResumePath(path)) {
     let statusCode = 500;
+    const legacyResumeDiagnostic = {
+      meetingId: null,
+      operationId: null,
+      sourceSegmentId: null,
+      successorSegmentId: null,
+      nextLiveSessionId: null,
+      sessionId: null,
+      lifecycleVersion: null,
+      rpcName: null,
+      failureStage: 'request',
+      commitStatus: 'unknown'
+    };
     try {
       if (!legacyResumeService) throw createHttpError('cloud_capability_unavailable');
       const meetingId = parseLegacyMeetingResumePath(path);
+      legacyResumeDiagnostic.meetingId = meetingId;
       const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
       const sourceSegmentId = String(body?.sourceSegmentId || '').trim();
+      legacyResumeDiagnostic.operationId = String(body?.operationId || '').trim() || null;
+      legacyResumeDiagnostic.sourceSegmentId = sourceSegmentId || null;
+      legacyResumeDiagnostic.nextLiveSessionId = String(body?.nextLiveSessionId || '').trim() || null;
+      legacyResumeDiagnostic.sessionId = String(body?.expectedSessionId || '').trim() || null;
       if (!sourceSegmentId) throw createHttpError('invalid_request');
+      legacyResumeDiagnostic.failureStage = 'authorization';
       const principal = await resolveMeetingLifecyclePrincipal({
         req,
         meetingId,
@@ -1850,6 +1868,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       });
       let result;
       if (body?.reconcileOnly === true) {
+        legacyResumeDiagnostic.failureStage = 'reconcile_rpc';
+        legacyResumeDiagnostic.rpcName = 'get_legacy_resume_operation';
         result = await legacyResumeService.getOperation({
           ownerUserId: principal.ownerUserId,
           meetingId,
@@ -1860,13 +1880,20 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         const payload = legacyResumePayload({ meetingId, ...body });
         const payloadHash = crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
         if (payloadHash !== body?.payloadHash) throw createHttpError('invalid_request');
+        legacyResumeDiagnostic.failureStage = 'meeting_read';
         const meeting = await meetingRepository.getMeeting(meetingId);
         if (!meeting) throw createHttpError('meeting_not_found');
+        legacyResumeDiagnostic.lifecycleVersion = Number.isInteger(meeting.lifecycleVersion)
+          ? meeting.lifecycleVersion
+          : null;
+        legacyResumeDiagnostic.failureStage = 'glossary_read';
         const allGlossaryEntries = await glossaryController.listEntries();
         const globalGlossaryEntries = liveGlossaryEntriesForTarget(
           allGlossaryEntries,
           meeting.targetLanguageCode
         );
+        legacyResumeDiagnostic.failureStage = 'resume_rpc';
+        legacyResumeDiagnostic.rpcName = 'resume_legacy_recording_transaction';
         result = await legacyResumeService.execute({
           ...payload,
           ownerUserId: principal.ownerUserId,
@@ -1875,12 +1902,40 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
           globalGlossaryEntries
         });
       }
+      legacyResumeDiagnostic.successorSegmentId = result?.segment?.id || null;
+      legacyResumeDiagnostic.lifecycleVersion = Number.isInteger(result?.meeting?.lifecycleVersion)
+        ? result.meeting.lifecycleVersion
+        : legacyResumeDiagnostic.lifecycleVersion;
+      legacyResumeDiagnostic.failureStage = 'response';
+      legacyResumeDiagnostic.commitStatus = 'committed';
       statusCode = body?.reconcileOnly === true ? 200 : 201;
       sendJson(res, statusCode, normalizeLegacyResumeResult(result), requestId);
+      requestLogger({
+        level: 'info',
+        event: 'legacy_resume_command',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        ...legacyResumeDiagnostic
+      });
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'legacy_resume_command',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        errorCode: code,
+        durationMs: Math.round(performance.now() - startedAt),
+        ...legacyResumeDiagnostic,
+        ...safeSupabaseFailureDiagnostics(error)
+      });
     }
     return;
   }

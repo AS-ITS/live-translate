@@ -260,6 +260,71 @@ test('audio artifact completion bypasses an expired recorder lease', async () =>
   assert.equal(response.json().status, 'ready');
 });
 
+test('legacy resume route logs safe RPC failure stage and SQLSTATE', async () => {
+  const logs = [];
+  const payload = {
+    meetingId: 'meeting-1',
+    sourceSegmentId: 'segment-1',
+    nextLiveSessionId: 'live-2',
+    expectedSessionId: 'session-1',
+    checkpoint: {
+      lastFinalCueSequence: 0,
+      finalCues: [],
+      durableChunks: [],
+      cueCheckpoint: null
+    }
+  };
+  const payloadHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  const handler = createHandler(undefined, {
+    requestLogger(event) {
+      logs.push(event);
+    },
+    legacyResumeService: {
+      async execute() {
+        const error = new Error('private provider message');
+        error.code = 'supabase_request_failed';
+        error.status = 503;
+        error.supabaseStatus = 503;
+        error.supabaseCode = '57014';
+        error.supabaseResource = 'resume_legacy_recording_transaction';
+        error.supabaseOperation = 'RPC';
+        throw error;
+      }
+    },
+    meetingRepository: {
+      async getMeeting() {
+        return { id: 'meeting-1', targetLanguageCode: 'en', lifecycleVersion: 7 };
+      }
+    },
+    glossaryController: {
+      async listEntries() {
+        return [];
+      }
+    }
+  });
+
+  const response = await request(handler, {
+    url: '/api/meetings/meeting-1/recording/legacy-resume',
+    body: { ...payload, operationId: 'continue-1', payloadHash }
+  });
+
+  assert.equal(response.status, 503);
+  assert.equal(response.json().error.code, 'supabase_request_failed');
+  const event = logs.find((entry) => entry.event === 'legacy_resume_command');
+  assert.equal(event.requestId, response.json().error.requestId);
+  assert.equal(event.operationId, 'continue-1');
+  assert.equal(event.sourceSegmentId, 'segment-1');
+  assert.equal(event.nextLiveSessionId, 'live-2');
+  assert.equal(event.sessionId, 'session-1');
+  assert.equal(event.lifecycleVersion, 7);
+  assert.equal(event.rpcName, 'resume_legacy_recording_transaction');
+  assert.equal(event.failureStage, 'resume_rpc');
+  assert.equal(event.commitStatus, 'unknown');
+  assert.equal(event.supabaseStatus, 503);
+  assert.equal(event.supabaseCode, '57014');
+  assert.doesNotMatch(JSON.stringify(event), /private provider message/u);
+});
+
 function createHandler(meetingLifecycleService, { meetingAudioService, ...extra } = {}) {
   return createRequestHandler({
     meetingLifecycleService,

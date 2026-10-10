@@ -496,6 +496,12 @@ Low:
 - Additional status labels and recovery messages.
 - Documentation updates across capability references.
 
+## Legacy Continue Recovery
+
+Legacy Stop → Continue stores one immutable local operation before the server mutation. A timeout or recoverable 5xx is handled in this order: reconcile the same operation, confirm the authoritative source Segment is still active, then perform a bounded retry with the same operation ID, payload hash, and next live-session ID. A committed successor is replayed instead of creating another Segment.
+
+The operation remains recoverable until the successor Token and Provider report the same effective glossary revision and raw audio recording resumes. Reload uses this same durable operation path; non-recoverable ownership, authorization, terminal-meeting, and payload-conflict errors are never retried.
+
 ## Acceptance Criteria
 
 - Connection Resilience remains a separate capability specification.

@@ -475,7 +475,8 @@ async function mockMeetingCheckpointApi(page, {
   sourceLanguageCode = 'zh-Hant',
   targetLanguageCode = 'en',
   initialSegmentStatus = 'created',
-  initialLiveSessionId = null
+  initialLiveSessionId = null,
+  legacyResumeFailure = null
 } = {}) {
   page.useMockMeetings = true;
   page.hasMeetingCheckpointMock = true;
@@ -484,8 +485,12 @@ async function mockMeetingCheckpointApi(page, {
   const rolloverRequests = [];
   const cueRequests = [];
   const recoverRequests = [];
+  const legacyResumeRequests = [];
+  const legacyResumeOperations = new Map();
   const checkpoints = new Map();
   let latestSegmentNumber = 1;
+  let latestSegmentStatus = initialSegmentStatus;
+  let legacyResumeFailurePending = Boolean(legacyResumeFailure);
   let checkpointFailuresRemaining = failCheckpointAttempts;
 
   await page.route('**/api/meetings**', async (route) => {
@@ -552,6 +557,7 @@ async function mockMeetingCheckpointApi(page, {
     if (method === 'POST' && startMatch) {
       const body = JSON.parse(request.postData() || '{}');
       latestSegmentNumber = Math.max(latestSegmentNumber, Number(startMatch[1].split('-').at(-1)));
+      latestSegmentStatus = 'active';
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -560,6 +566,79 @@ async function mockMeetingCheckpointApi(page, {
           segment: { id: startMatch[1], meetingId: MOCK_MEETING_ID, sequence: Number(startMatch[1].split('-').at(-1)) - 1, status: 'active', liveSessionId: body.liveSessionId }
         })
       });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === `/api/meetings/${MOCK_MEETING_ID}/recording/legacy-resume`) {
+      const body = JSON.parse(request.postData() || '{}');
+      legacyResumeRequests.push(body);
+      const committed = legacyResumeOperations.get(body.operationId);
+      if (body.reconcileOnly === true) {
+        if (!committed) {
+          await route.fulfill({
+            status: 404,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: { code: 'meeting_segment_not_found' } })
+          });
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ ...committed, replayed: true })
+        });
+        return;
+      }
+
+      if (committed) {
+        await route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          body: JSON.stringify({ ...committed, replayed: true })
+        });
+        return;
+      }
+      if (legacyResumeFailurePending && legacyResumeFailure === 'before-commit-503') {
+        legacyResumeFailurePending = false;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'supabase_request_failed' } })
+        });
+        return;
+      }
+
+      latestSegmentNumber += 1;
+      latestSegmentStatus = 'active';
+      const liveGlossaryEntries = page.liveGlossaryEntries || [];
+      const effectiveGlossaryRevision = createHash('sha256')
+        .update(serializeEffectiveGlossary({ sourceLanguageCode, targetLanguageCode, entries: liveGlossaryEntries }))
+        .digest('hex');
+      const result = {
+        meeting: { id: MOCK_MEETING_ID, name: '測試會議', status: 'active', sourceLanguageCode, targetLanguageCode },
+        interruptedSegment: { id: body.sourceSegmentId, status: 'interrupted' },
+        segment: {
+          id: MOCK_SEGMENT_ID(latestSegmentNumber),
+          meetingId: MOCK_MEETING_ID,
+          sequence: latestSegmentNumber - 1,
+          status: 'active',
+          liveSessionId: body.nextLiveSessionId
+        },
+        operation: { payloadHash: body.payloadHash, sourceSegmentId: body.sourceSegmentId },
+        effectiveGlossaryRevision,
+        liveGlossaryEntries
+      };
+      legacyResumeOperations.set(body.operationId, result);
+      if (legacyResumeFailurePending && legacyResumeFailure === 'lost-ack') {
+        legacyResumeFailurePending = false;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'supabase_request_failed' } })
+        });
+        return;
+      }
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(result) });
       return;
     }
 
@@ -739,7 +818,7 @@ async function mockMeetingCheckpointApi(page, {
             id: MOCK_SEGMENT_ID(index + 1),
             meetingId: MOCK_MEETING_ID,
             sequence: index,
-            status: index + 1 === latestSegmentNumber ? initialSegmentStatus : 'completed',
+            status: index + 1 === latestSegmentNumber ? latestSegmentStatus : 'completed',
             liveSessionId: index + 1 === latestSegmentNumber ? initialLiveSessionId : null
           }))
         })
@@ -753,6 +832,8 @@ async function mockMeetingCheckpointApi(page, {
   checkpointRequests.rolloverRequests = rolloverRequests;
   checkpointRequests.cueRequests = cueRequests;
   checkpointRequests.recoverRequests = recoverRequests;
+  checkpointRequests.legacyResumeRequests = legacyResumeRequests;
+  checkpointRequests.legacyResumeOperations = legacyResumeOperations;
   return checkpointRequests;
 }
 
@@ -2664,6 +2745,38 @@ test('Save then Continue applies one glossary revision before listening', async 
   expect(secondSnapshot.glossaryEntryCount).toBe(0);
   expect(secondSnapshot.effectiveGlossaryRevision).not.toBe(firstSnapshot.effectiveGlossaryRevision);
 });
+
+for (const legacyResumeFailure of ['before-commit-503', 'lost-ack']) {
+  test(`legacy Continue recovers ${legacyResumeFailure} on the same page with one successor`, async ({ page }) => {
+    const checkpointRequests = await mockMeetingCheckpointApi(page, { legacyResumeFailure });
+    await mockLiveSessionCreateApi(page);
+    await gotoMockMeetingLive(page);
+    await configureTestGeminiCredential(page);
+
+    await page.getByRole('button', { name: '開始' }).click();
+    await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThanOrEqual(1);
+    await emitMicrophoneAudio(page);
+    await expect(page.getByText('聆聽中')).toBeVisible();
+    await page.getByRole('button', { name: '停止錄音' }).click();
+    await expect(page.locator('.live-meeting-status').getByText('已暫停', { exact: true })).toBeVisible();
+
+    page.liveGlossaryEntries = [{ source: '你好', target: 'su3cl3', replacementAliases: [] }];
+    await page.getByRole('button', { name: '繼續', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(2);
+    await emitMicrophoneAudio(page);
+    await expect(page.getByText('聆聽中')).toBeVisible();
+    await emitFinalTranscript(page, '你好你好。', 'Hello hello.');
+    await expect(page.getByText('su3cl3, su3cl3.')).toBeVisible();
+
+    const mutationRequests = checkpointRequests.legacyResumeRequests.filter((request) => request.reconcileOnly !== true);
+    expect(new Set(mutationRequests.map((request) => request.operationId)).size).toBe(1);
+    expect(new Set(mutationRequests.map((request) => request.nextLiveSessionId)).size).toBe(1);
+    expect(checkpointRequests.legacyResumeOperations.size).toBe(1);
+    expect([...checkpointRequests.legacyResumeOperations.values()][0].segment.id).toBe(MOCK_SEGMENT_ID(2));
+    const snapshot = await page.evaluate(() => window.__liveTranslateDebug.getSnapshot());
+    expect(snapshot.glossaryEntryCount).toBe(1);
+  });
+}
 
 test('pause and resume drains first speech from the replacement pre-roll', async ({ page }) => {
   await mockMeetingCheckpointApi(page);

@@ -217,6 +217,10 @@ export function createSupabaseUserClient({
       error.code = response.status === 401 ? 'auth_invalid'
         : (response.status === 403 ? 'auth_forbidden'
           : (response.status === 404 ? 'supabase_schema_missing' : 'supabase_request_failed'));
+      await addSafeSupabaseFailureDiagnostics(error, response, {
+        resource: functionName,
+        operation: 'RPC'
+      });
       throw error;
     }
     return response.status === 204 ? [] : response.json();

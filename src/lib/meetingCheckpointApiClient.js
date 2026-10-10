@@ -153,7 +153,7 @@ export function createMeetingCheckpointApiClient({
         error.endpoint = path;
         throw error;
       }
-      return parseLifecycleResponse(response);
+      return parseLegacyResumeResponse(response);
     },
     async getLegacyResumeOperation({ meetingId, operationId, sourceSegmentId } = {}) {
       assertNonEmptyString(meetingId, 'meetingId');
@@ -166,7 +166,7 @@ export function createMeetingCheckpointApiClient({
         body: JSON.stringify({ operationId, sourceSegmentId, reconcileOnly: true })
       }, 'get-legacy-resume-operation', lifecycleTimeoutMs);
       await assertOkResponse(response, { operation: 'get-legacy-resume-operation' });
-      return parseLifecycleResponse(response);
+      return parseLegacyResumeResponse(response);
     },
 
     async heartbeatMeeting({ meetingId, leaseId, fenceToken } = {}) {
@@ -412,6 +412,19 @@ async function parseLifecycleResponse(response) {
   const body = await parseJsonResponse(response);
   if (!body || typeof body !== 'object' || !body.meeting?.id || !body.session?.id || !body.lease?.leaseId) {
     throw new Error('Meeting lifecycle response is incomplete.');
+  }
+  return body;
+}
+
+async function parseLegacyResumeResponse(response) {
+  const body = await parseJsonResponse(response);
+  if (!body || typeof body !== 'object'
+    || !body.meeting?.id
+    || !body.segment?.id
+    || !body.operation?.payloadHash
+    || !body.operation?.sourceSegmentId
+    || typeof body.effectiveGlossaryRevision !== 'string') {
+    throw new Error('Legacy resume response is incomplete.');
   }
   return body;
 }

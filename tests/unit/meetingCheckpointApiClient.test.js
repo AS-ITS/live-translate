@@ -113,6 +113,38 @@ test('meeting checkpoint API client executes lifecycle v2 commands and heartbeat
   assert.equal(calls[1].url, '/api/meetings/meeting-1/recording/lease/heartbeat');
 });
 
+test('meeting checkpoint API client accepts transactional legacy resume without lifecycle lease fields', async () => {
+  const calls = [];
+  const response = {
+    meeting: { id: 'meeting-1' },
+    segment: { id: 'segment-2' },
+    operation: { payloadHash: 'hash-1', sourceSegmentId: 'segment-1' },
+    effectiveGlossaryRevision: 'revision-1'
+  };
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return ok(response);
+    }
+  });
+
+  const resumed = await client.resumeLegacySegment({
+    meetingId: 'meeting-1',
+    operationId: 'continue-1',
+    sourceSegmentId: 'segment-1'
+  });
+  const reconciled = await client.getLegacyResumeOperation({
+    meetingId: 'meeting-1',
+    operationId: 'continue-1',
+    sourceSegmentId: 'segment-1'
+  });
+
+  assert.equal(resumed.segment.id, 'segment-2');
+  assert.equal(reconciled.effectiveGlossaryRevision, 'revision-1');
+  assert.equal(calls[0].url, '/api/meetings/meeting-1/recording/legacy-resume');
+  assert.equal(JSON.parse(calls[1].options.body).reconcileOnly, true);
+});
+
 test('meeting checkpoint API client marks a timed out lifecycle mutation as unknown outcome', async () => {
   const client = createMeetingCheckpointApiClient({
     fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {

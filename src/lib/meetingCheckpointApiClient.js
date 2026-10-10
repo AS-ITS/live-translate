@@ -139,6 +139,35 @@ export function createMeetingCheckpointApiClient({
     async renewRecordingLease({ meetingId, leaseId, fenceToken } = {}) {
       return postRecordingHeartbeat({ meetingId, path: 'recording/lease/heartbeat', leaseId, fenceToken });
     },
+    async resumeLegacySegment({ meetingId, ...body } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      const path = `/api/meetings/${encodeURIComponent(meetingId)}/recording/legacy-resume`;
+      const response = await request(buildUrl(baseUrl, path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
+        body: JSON.stringify(body)
+      }, 'recording-legacy-resume', lifecycleTimeoutMs);
+      try {
+        await assertOkResponse(response, { operation: 'recording-legacy-resume' });
+      } catch (error) {
+        error.endpoint = path;
+        throw error;
+      }
+      return parseLifecycleResponse(response);
+    },
+    async getLegacyResumeOperation({ meetingId, operationId, sourceSegmentId } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      assertNonEmptyString(operationId, 'operationId');
+      assertNonEmptyString(sourceSegmentId, 'sourceSegmentId');
+      const path = `/api/meetings/${encodeURIComponent(meetingId)}/recording/legacy-resume`;
+      const response = await request(buildUrl(baseUrl, path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
+        body: JSON.stringify({ operationId, sourceSegmentId, reconcileOnly: true })
+      }, 'get-legacy-resume-operation', lifecycleTimeoutMs);
+      await assertOkResponse(response, { operation: 'get-legacy-resume-operation' });
+      return parseLifecycleResponse(response);
+    },
 
     async heartbeatMeeting({ meetingId, leaseId, fenceToken } = {}) {
       return postRecordingHeartbeat({ meetingId, path: 'heartbeat', leaseId, fenceToken });

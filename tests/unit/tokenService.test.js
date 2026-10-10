@@ -242,3 +242,27 @@ test('createLiveToken never falls back to process.env.GEMINI_API_KEY', async () 
     else process.env.GEMINI_API_KEY = previous;
   }
 });
+
+test('authoritative Segment freezes global glossary until the next Segment boundary', async () => {
+  const client = { authTokens: { async create() { return { name: 'token' }; } } };
+  const result = await createLiveToken(
+    { targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant', meetingId: 'meeting-1' },
+    {
+      client,
+      glossary: { entriesFor: async () => [{ source: '你好', target: 'current-global' }] },
+      meetingRepository: { async getMeeting() { return { id: 'meeting-1' }; } },
+      authoritativeSegment: {
+        settingsSnapshot: {
+          sourceLanguageCode: 'zh-Hant',
+          targetLanguageCode: 'en',
+          globalGlossaryEntries: [{ source: '你好', target: 'snapshot-global' }],
+          glossaryEntries: [{ source: '你好', target: 'meeting-wins' }],
+          privateGlossaryEntries: []
+        }
+      }
+    }
+  );
+  assert.deepEqual(result.liveGlossaryEntries, [
+    { source: '你好', target: 'meeting-wins', replacementAliases: [] }
+  ]);
+});

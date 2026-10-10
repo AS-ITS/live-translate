@@ -143,6 +143,21 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
       const value = operations.get(operationKey(meetingId, operationId));
       return value ? projectLocalOperation(value) : null;
     },
+    saveContinueOperation(input) {
+      const operation = projectContinueOperation(input);
+      const existing = operations.get(operation.key);
+      if (existing && !sameContinueIdentity(existing, operation)) throw conflict('local_continue_operation_conflict');
+      operations.set(operation.key, operation);
+      return operation;
+    },
+    getPendingContinueOperation(meetingId) {
+      const values = [...operations.values()]
+        .filter((value) => value.meetingId === meetingId
+          && value.type === 'legacy_continue'
+          && value.state !== 'complete')
+        .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+      return values[0] ? projectContinueOperation(values[0]) : null;
+    },
     commitRecordingOperation({ recording: recordingInput, operation: operationInput }) {
       const recording = projectLocalRecording(recordingInput);
       const operation = projectLocalOperation(operationInput);
@@ -307,6 +322,30 @@ export function createIndexedDbLocalMeetingManifestStore({
         const projected = projectLocalOperation(raw);
         if (!sameProjection(raw, projected)) await request(store.put(projected));
         return projected;
+      });
+    },
+    async saveContinueOperation(input) {
+      const operation = projectContinueOperation(input);
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'operations', 'readwrite', async (transaction) => {
+        const store = transaction.objectStore('operations');
+        const existing = await request(store.get(operation.key));
+        if (existing && !sameContinueIdentity(existing, operation)) throw conflict('local_continue_operation_conflict');
+        await request(store.put(operation));
+        return operation;
+      });
+    },
+    async getPendingContinueOperation(meetingId) {
+      normalizeRequiredString(meetingId, 'meetingId');
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'operations', 'readonly', async (transaction) => {
+        const values = await request(transaction.objectStore('operations').getAll());
+        const matches = values
+          .filter((value) => value.meetingId === meetingId
+            && value.type === 'legacy_continue'
+            && value.state !== 'complete')
+          .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+        return matches[0] ? projectContinueOperation(matches[0]) : null;
       });
     },
     async commitRecordingOperation({ recording: recordingInput, operation: operationInput }) {
@@ -557,6 +596,43 @@ function projectLocalRecording(value = {}) {
     terminal: value.terminal === true,
     finalized: value.finalized === true
   });
+}
+
+function projectContinueOperation(value = {}) {
+  const meetingId = normalizeRequiredString(value.meetingId, 'meetingId');
+  const operationId = normalizeRequiredString(value.operationId, 'operationId');
+  const sourceSegmentId = normalizeRequiredString(value.sourceSegmentId, 'sourceSegmentId');
+  const nextLiveSessionId = normalizeRequiredString(value.nextLiveSessionId, 'nextLiveSessionId');
+  const payloadHash = normalizeRequiredString(value.payloadHash, 'payloadHash');
+  const timestamp = normalizeRequiredString(value.updatedAt || value.createdAt || new Date().toISOString(), 'updatedAt');
+  return Object.freeze({
+    schemaVersion: 1,
+    key: operationKey(meetingId, operationId),
+    type: 'legacy_continue',
+    operationId,
+    meetingId,
+    sourceSegmentId,
+    nextLiveSessionId,
+    expectedSessionId: value.expectedSessionId ? String(value.expectedSessionId) : null,
+    payloadHash,
+    checkpoint: value.checkpoint && typeof value.checkpoint === 'object' ? structuredClone(value.checkpoint) : {},
+    attempt: Number.isSafeInteger(value.attempt) && value.attempt >= 0 ? value.attempt : 0,
+    state: String(value.state || 'pending'),
+    committedSuccessor: value.committedSuccessor && typeof value.committedSuccessor === 'object'
+      ? structuredClone(value.committedSuccessor)
+      : null,
+    createdAt: String(value.createdAt || timestamp),
+    updatedAt: timestamp
+  });
+}
+
+function sameContinueIdentity(left, right) {
+  return left.operationId === right.operationId
+    && left.meetingId === right.meetingId
+    && left.sourceSegmentId === right.sourceSegmentId
+    && left.nextLiveSessionId === right.nextLiveSessionId
+    && left.expectedSessionId === right.expectedSessionId
+    && left.payloadHash === right.payloadHash;
 }
 
 function projectLocalOperation(value = {}) {

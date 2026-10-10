@@ -865,6 +865,7 @@ export function createRequestHandler(options = {}) {
     translationOutputMaxBytes,
     recorderLeaseService,
     meetingLifecycleService: options.meetingLifecycleService,
+    legacyResumeService: options.legacyResumeService,
     recorderGrantService,
       sessionEventBroadcaster,
       meetingEventBroadcaster,
@@ -899,6 +900,7 @@ async function handleRequestWithSessionReadController(
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const meetingMembershipService = arguments[2]?.meetingMembershipService;
   const meetingLifecycleService = arguments[2]?.meetingLifecycleService;
+  const legacyResumeService = arguments[2]?.legacyResumeService;
   const meetingPurgeWorker = arguments[2]?.meetingPurgeWorker;
   const observabilityMetricRepository = arguments[2]?.observabilityMetricRepository;
   const observabilityMetrics = arguments[2]?.observabilityMetrics;
@@ -1818,6 +1820,67 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         }),
         ...authorizationDiagnostics
       });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && isLegacyMeetingResumePath(path)) {
+    let statusCode = 500;
+    try {
+      if (!legacyResumeService) throw createHttpError('cloud_capability_unavailable');
+      const meetingId = parseLegacyMeetingResumePath(path);
+      const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
+      const sourceSegmentId = String(body?.sourceSegmentId || '').trim();
+      if (!sourceSegmentId) throw createHttpError('invalid_request');
+      const principal = await resolveMeetingLifecyclePrincipal({
+        req,
+        meetingId,
+        authenticatedUser,
+        meetingMembershipService,
+        sessionShareService
+      });
+      await authorizeRecorderMeetingWrite({
+        req,
+        meetingId,
+        segmentId: sourceSegmentId,
+        sessionRepository,
+        sessionShareService,
+        recorderGrantService,
+        recorderLeaseService
+      });
+      let result;
+      if (body?.reconcileOnly === true) {
+        result = await legacyResumeService.getOperation({
+          ownerUserId: principal.ownerUserId,
+          meetingId,
+          operationId: body?.operationId
+        });
+        if (!result) throw createHttpError('meeting_segment_not_found');
+      } else {
+        const payload = legacyResumePayload({ meetingId, ...body });
+        const payloadHash = crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+        if (payloadHash !== body?.payloadHash) throw createHttpError('invalid_request');
+        const meeting = await meetingRepository.getMeeting(meetingId);
+        if (!meeting) throw createHttpError('meeting_not_found');
+        const allGlossaryEntries = await glossaryController.listEntries();
+        const globalGlossaryEntries = liveGlossaryEntriesForTarget(
+          allGlossaryEntries,
+          meeting.targetLanguageCode
+        );
+        result = await legacyResumeService.execute({
+          ...payload,
+          ownerUserId: principal.ownerUserId,
+          operationId: body.operationId,
+          payloadHash,
+          globalGlossaryEntries
+        });
+      }
+      statusCode = body?.reconcileOnly === true ? 200 : 201;
+      sendJson(res, statusCode, normalizeLegacyResumeResult(result), requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
     return;
   }
@@ -3392,12 +3455,12 @@ function isRecorderAuthorizedPath(method, path, req) {
   if (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) return true;
   if (method === 'POST' && isMeetingCuePublishPath(path)) return true;
   if (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path)) return true;
-  if (method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path))) return true;
+  if (method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path) || isLegacyMeetingResumePath(path))) return true;
   return false;
 }
 
 function isMemberMeetingRecordingPath(method, path) {
-  return (method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path))) ||
+  return (method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path) || isLegacyMeetingResumePath(path))) ||
     (method === 'POST' && isMeetingCuePublishPath(path)) ||
     (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) ||
     (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path)) ||
@@ -3576,6 +3639,78 @@ function isMeetingCompletePath(path) {
 
 function isMeetingRecordingCommandPath(path) {
   return /^\/api\/meetings\/[^/]+\/recording\/(?:start|pause|resume|rollover|recover|stop|takeover|lease\/heartbeat)$/u.test(path);
+}
+
+function isLegacyMeetingResumePath(path) {
+  return /^\/api\/meetings\/[^/]+\/recording\/legacy-resume$/u.test(path);
+}
+
+function parseLegacyMeetingResumePath(path) {
+  const match = path.match(/^\/api\/meetings\/([^/]+)\/recording\/legacy-resume$/u);
+  if (!match) throw createHttpError('invalid_request');
+  return safeDecodePathComponent(match[1]);
+}
+
+function legacyResumePayload(input = {}) {
+  const checkpoint = input.checkpoint && typeof input.checkpoint === 'object' ? input.checkpoint : {};
+  return {
+    meetingId: String(input.meetingId || '').trim(),
+    sourceSegmentId: String(input.sourceSegmentId || '').trim(),
+    nextLiveSessionId: String(input.nextLiveSessionId || '').trim(),
+    expectedSessionId: String(input.expectedSessionId || '').trim() || null,
+    checkpoint: {
+      lastFinalCueSequence: Number.isSafeInteger(checkpoint.lastFinalCueSequence)
+        ? checkpoint.lastFinalCueSequence
+        : 0,
+      finalCues: Array.isArray(checkpoint.finalCues) ? checkpoint.finalCues : [],
+      durableChunks: Array.isArray(checkpoint.durableChunks) ? checkpoint.durableChunks : [],
+      cueCheckpoint: checkpoint.cueCheckpoint && typeof checkpoint.cueCheckpoint === 'object'
+        ? checkpoint.cueCheckpoint
+        : null
+    }
+  };
+}
+
+function normalizeLegacyResumeResult(raw = {}) {
+  const meeting = camelizeSupabaseRecord(raw.meeting);
+  const segment = camelizeSupabaseRecord(raw.segment);
+  const interruptedSegment = camelizeSupabaseRecord(raw.interruptedSegment);
+  const settings = segment?.settingsSnapshot || {};
+  const effectiveEntries = mergeMeetingGlossaryEntries(
+    [...(settings.globalGlossaryEntries || []), ...(settings.glossaryEntries || [])],
+    settings.privateGlossaryEntries || [],
+    settings.targetLanguageCode
+  ).map((entry) => ({
+    source: entry.source,
+    target: entry.target || entry.translations?.[settings.targetLanguageCode],
+    replacementAliases: Array.isArray(entry.replacementAliases)
+      ? entry.replacementAliases
+      : entry.replacementAliases?.[settings.targetLanguageCode] || []
+  })).filter((entry) => typeof entry.target === 'string' && entry.target.trim() !== '');
+  const effectiveGlossaryRevision = crypto.createHash('sha256')
+    .update(serializeEffectiveGlossary({
+      sourceLanguageCode: settings.sourceLanguageCode,
+      targetLanguageCode: settings.targetLanguageCode,
+      entries: effectiveEntries
+    }))
+    .digest('hex');
+  return {
+    ...raw,
+    meeting,
+    segment,
+    interruptedSegment,
+    liveGlossaryEntries: effectiveEntries,
+    effectiveGlossaryRevision,
+    glossaryEntryCount: effectiveEntries.length
+  };
+}
+
+function camelizeSupabaseRecord(value) {
+  if (!value || typeof value !== 'object') return value || null;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+    key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()),
+    entry
+  ]));
 }
 
 function isMeetingLifecycleHeartbeatPath(path) {

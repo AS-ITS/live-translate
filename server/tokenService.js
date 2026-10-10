@@ -162,9 +162,12 @@ export async function createLiveToken(body, options = {}) {
     ? options.authoritativeSegment?.settingsSnapshot
       || await activeMeetingSettingsSnapshot(meeting, options.meetingRepository)
     : null;
+  const authoritativeGlobalGlossaryEntries = Array.isArray(meetingSettings?.globalGlossaryEntries)
+    ? meetingSettings.globalGlossaryEntries
+    : globalGlossaryEntries;
   const glossaryEntries = meetingSettings
     ? mergeMeetingGlossaryEntries(
-      [...globalGlossaryEntries, ...(meetingSettings.glossaryEntries || [])],
+      [...authoritativeGlobalGlossaryEntries, ...(meetingSettings.glossaryEntries || [])],
       meetingSettings.privateGlossaryEntries,
       request.targetLanguageCode
     )

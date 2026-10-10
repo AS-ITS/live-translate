@@ -345,6 +345,43 @@ test('browser IndexedDB reload replays lifecycle operations and OPFS refuses ove
   assert.equal(afterFinalizeReload.projectedOperation.result.apiKey, undefined);
 });
 
+test('existing IndexedDB operations store persists one pending legacy Continue across reload', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://legacy-continue-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://legacy-continue-reload.test/');
+  const source = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
+  const dbName = `legacy-continue-${Date.now()}`;
+  const operation = {
+    operationId: 'continue-1',
+    meetingId: 'meeting-1',
+    sourceSegmentId: 'segment-1',
+    nextLiveSessionId: 'live-2',
+    payloadHash: 'hash-1',
+    checkpoint: {},
+    state: 'pending',
+    attempt: 0,
+    createdAt: '2026-10-10T00:00:00.000Z',
+    updatedAt: '2026-10-10T00:00:00.000Z'
+  };
+  await page.evaluate(async ({ moduleUrl, dbName, operation }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    await store.saveContinueOperation(operation);
+  }, { moduleUrl, dbName, operation });
+  await page.reload();
+  const restored = await page.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    return store.getPendingContinueOperation('meeting-1');
+  }, { moduleUrl, dbName });
+  assert.equal(restored.operationId, 'continue-1');
+  assert.equal(restored.nextLiveSessionId, 'live-2');
+  assert.equal(restored.state, 'pending');
+});
+
 test('browser public append seals an existing OPFS write after reload and rejects different bytes', async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());

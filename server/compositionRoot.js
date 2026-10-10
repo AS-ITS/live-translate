@@ -77,6 +77,7 @@ import { createSupabaseMeetingEventRepository } from '../src/infrastructure/supa
 import { createSupabaseGlossary } from '../src/infrastructure/supabaseGlossary.js';
 import { createSupabaseRecorderLeaseService } from '../src/infrastructure/supabaseRecorderLeaseService.js';
 import { createSupabaseMeetingLifecycleService } from '../src/infrastructure/supabaseMeetingLifecycleService.js';
+import { createSupabaseLegacyResumeService } from '../src/infrastructure/supabaseLegacyResumeService.js';
 import { createSupabaseDurableTranslationExecutionQueueRepository } from '../src/infrastructure/supabaseDurableTranslationExecutionQueueRepository.js';
 import { createSupabaseDeadLetterQueueRepository } from '../src/infrastructure/supabaseDeadLetterQueueRepository.js';
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
@@ -438,6 +439,7 @@ export function createApplicationDependencies(options = {}) {
     ...(exportArtifactService ? { exportArtifactService } : {}),
     recorderLeaseService,
     ...(meetingLifecycleService ? { meetingLifecycleService } : {}),
+    ...(options.legacyResumeService ? { legacyResumeService: options.legacyResumeService } : {}),
     meetingRepository: resolvedMeetingRepository,
     meetingCheckpointService,
     meetingDeletionService,
@@ -590,6 +592,11 @@ export function createProductionApplicationDependencies(options = {}) {
     : cloudDataMode
       ? createSupabaseMeetingLifecycleService({ env })
       : undefined;
+  const legacyResumeService = Object.prototype.hasOwnProperty.call(applicationOptions, 'legacyResumeService')
+    ? applicationOptions.legacyResumeService
+    : cloudDataMode
+      ? createSupabaseLegacyResumeService({ env })
+      : undefined;
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = canCreateProductionProviderComposition
     ? geminiEnvironmentFactory({ env })
@@ -711,6 +718,7 @@ export function createProductionApplicationDependencies(options = {}) {
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
     recorderLeaseService,
     ...(meetingLifecycleService ? { meetingLifecycleService } : {}),
+    ...(legacyResumeService ? { legacyResumeService } : {}),
     ...(activeTranslationExecutionQueue !== undefined
       ? { translationExecutionQueue: activeTranslationExecutionQueue }
       : {}),

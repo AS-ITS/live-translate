@@ -23,6 +23,12 @@ export function createLocalMeetingPersistence({
   let appendQueue = Promise.resolve();
 
   return Object.freeze({
+    saveContinueOperation(input) {
+      return manifestStore.saveContinueOperation(input);
+    },
+    getPendingContinueOperation(meetingId) {
+      return manifestStore.getPendingContinueOperation(meetingId);
+    },
     async start({ meetingId, recordingId, segmentId } = {}) {
       await retention.check(meetingId);
       await retention.assertReadable(meetingId);

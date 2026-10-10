@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { createRequestHandler } from '../../server/index.js';
 import { createSupabaseMeetingLifecycleService } from '../../src/infrastructure/supabaseMeetingLifecycleService.js';
@@ -33,6 +34,54 @@ test('recording start forwards authenticated principal to lifecycle service', as
     fenceToken: undefined,
     payload: {}
   });
+});
+
+test('legacy resume route binds latest repository glossary into successor snapshot', async () => {
+  const calls = [];
+  const payload = {
+    meetingId: 'meeting-1', sourceSegmentId: 'segment-1', nextLiveSessionId: 'live-2',
+    expectedSessionId: 'session-1',
+    checkpoint: { lastFinalCueSequence: 0, finalCues: [], durableChunks: [], cueCheckpoint: null }
+  };
+  const payloadHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  const handler = createHandler(undefined, {
+    legacyResumeService: {
+      async execute(input) {
+        calls.push(input);
+        return {
+          meeting: { id: 'meeting-1' },
+          interruptedSegment: { id: 'segment-1' },
+          segment: {
+            id: 'segment-2', sequence: 2, session_id: 'session-1',
+            settings_snapshot: {
+              sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
+              globalGlossaryEntries: input.globalGlossaryEntries,
+              glossaryEntries: [{ source: '你好', target: 'su3cl3' }],
+              privateGlossaryEntries: []
+            }
+          },
+          operation: { operationId: 'continue-1', payloadHash, sourceSegmentId: 'segment-1' }
+        };
+      }
+    },
+    meetingRepository: {
+      async getMeeting() { return { id: 'meeting-1', targetLanguageCode: 'en' }; }
+    },
+    glossaryController: {
+      async listEntries() { return [{ id: 'global-1', source: '你好', target: 'global', scope: 'live' }]; }
+    }
+  });
+  const response = await request(handler, {
+    url: '/api/meetings/meeting-1/recording/legacy-resume',
+    body: { ...payload, operationId: 'continue-1', payloadHash }
+  });
+  assert.equal(response.status, 201);
+  assert.equal(response.json().segment.id, 'segment-2');
+  assert.deepEqual(response.json().liveGlossaryEntries, [
+    { source: '你好', target: 'su3cl3', replacementAliases: [] }
+  ]);
+  assert.equal(calls[0].payloadHash, payloadHash);
+  assert.equal(calls[0].ownerUserId, 'owner-1');
 });
 
 test('recording lifecycle conflict returns stable HTTP 409 code', async () => {
@@ -211,9 +260,10 @@ test('audio artifact completion bypasses an expired recorder lease', async () =>
   assert.equal(response.json().status, 'ready');
 });
 
-function createHandler(meetingLifecycleService, { meetingAudioService } = {}) {
+function createHandler(meetingLifecycleService, { meetingAudioService, ...extra } = {}) {
   return createRequestHandler({
     meetingLifecycleService,
+    ...extra,
     ...(meetingAudioService ? { meetingAudioService } : {}),
     accessControl: {
       async validateRequest() { return { id: 'member-1', role: 'member', status: 'active' }; }

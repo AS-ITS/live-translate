@@ -19,6 +19,7 @@ import { checkpointChunksForTranscriptItems, createMeetingCheckpointSyncCoordina
 import { createReconnectController } from '../../lib/reconnectController.js';
 import { createSegmentSwitchOrchestrator } from '../../lib/segmentSwitchOrchestrator.js';
 import { createRolloverRecoveryCoordinator } from '../../lib/rolloverRecoveryCoordinator.js';
+import { completeDurableLegacyContinue, establishDurableLegacyContinue } from '../../lib/durableLegacyContinue.js';
 import { selectedMeetingGlossaryEntries } from '../../lib/meetingGlossary.js';
 import { appendNewFinalTranscriptItems, buildSessionRecordInput, createActiveSessionRecord } from '../../lib/sessionRecordLifecycle.js';
 import { clearMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
@@ -227,6 +228,7 @@ export function useLiveRecordingController({
   const recoverySingleFlightRef = useRef(null);
   const segmentTransitionLockRef = useRef(null);
   const resumeInFlightRef = useRef(false);
+  const continueInFlightRef = useRef(false);
   const meetingLifecycleRef = useRef(null);
   const meetingTimingRef = useRef({ meetingId: null, startedAt: null });
   if (meetingTimingRef.current.meetingId !== routeMeetingId) {
@@ -1093,7 +1095,8 @@ export function useLiveRecordingController({
       if (redirectHash) window.location.hash = redirectHash;
     },
     async continuePausedSession() {
-      if (state.status !== 'paused') return;
+      if (state.status !== 'paused' || continueInFlightRef.current) return;
+      continueInFlightRef.current = true;
       recordLivePipelineTrace({
         stage: 'CONTINUE_REQUESTED',
         meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
@@ -1118,6 +1121,8 @@ export function useLiveRecordingController({
       cue.stateRef.current = preparedCueState;
       cue.setState?.(preparedCueState);
       let session;
+      let legacyContinue = null;
+      let legacyPersistence = null;
       try {
         if (meetingLifecycleRef.current) {
           const resumed = await executeMeetingLifecycleCommand('resume');
@@ -1132,16 +1137,73 @@ export function useLiveRecordingController({
             lifecycleVersion: resumed.meeting.lifecycle_version ?? resumed.meeting.lifecycleVersion,
             timestamp: new Date().toISOString()
           });
+        } else {
+          const sourceCheckpoint = recovery.activeMeetingCheckpointRef.current;
+          if (!sourceCheckpoint?.meetingId || !sourceCheckpoint?.segmentId) {
+            const error = new Error('Legacy Continue 缺少來源 Segment。');
+            error.code = 'meeting_segment_not_found';
+            throw error;
+          }
+          await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
+          const checkpointFlushed = await checkpointController.flushMeetingCheckpointSync();
+          if (checkpointFlushed === false) {
+            const error = new Error('Checkpoint durability barrier failed.');
+            error.code = 'checkpoint_conflict';
+            throw error;
+          }
+          legacyPersistence = checkpoint.getLocalMeetingPersistence();
+          const durableCheckpoint = await legacyPersistence.getCheckpoint(sourceCheckpoint);
+          legacyContinue = await establishDurableLegacyContinue({
+            persistence: legacyPersistence,
+            api: recovery.meetingCheckpointApiClientRef.current,
+            meetingId: sourceCheckpoint.meetingId,
+            sourceSegmentId: sourceCheckpoint.segmentId,
+            expectedSessionId: recovery.activeSessionRecordIdRef.current,
+            checkpoint: durableCheckpoint?.checkpoint || {},
+            liveSessionIdFactory: recovery.generateLiveSessionId
+          });
+          const resumed = legacyContinue.result;
+          if (!resumed?.segment?.id || !resumed?.effectiveGlossaryRevision) {
+            const error = new Error('Legacy resume did not return an authoritative Segment binding.');
+            error.code = 'meeting_lifecycle_conflict';
+            throw error;
+          }
+          const nextCheckpoint = {
+            meetingId: resumed.meeting.id,
+            segmentId: resumed.segment.id,
+            segmentSequence: resumed.segment.sequence
+          };
+          recovery.activeMeetingCheckpointRef.current = nextCheckpoint;
+          checkpointController.meetingCheckpointSyncCoordinator().start(nextCheckpoint);
+          recordLivePipelineTrace({
+            stage: 'RESUME_SEGMENT_CONFIRMED',
+            meetingId: resumed.meeting.id,
+            sessionId: resumed.segment.sessionId,
+            segmentId: resumed.segment.id,
+            revision: resumed.effectiveGlossaryRevision,
+            glossaryEntryCount: resumed.glossaryEntryCount,
+            operationId: legacyContinue.operation.operationId,
+            timestamp: new Date().toISOString()
+          });
         }
         const checkpoint = recovery.activeMeetingCheckpointRef.current;
         session = await recovery.createSession({
           preserveTranscript: true,
-          liveSessionId: recovery.generateLiveSessionId(),
+          liveSessionId: legacyContinue?.operation.nextLiveSessionId || recovery.generateLiveSessionId(),
           meetingId: checkpoint?.meetingId,
           segmentId: checkpoint?.segmentId
         });
         recovery.sessionRef.current = session;
         await session.start();
+        if (legacyContinue
+          && session.effectiveGlossaryRevision !== legacyContinue.result.effectiveGlossaryRevision) {
+          const error = new Error('Legacy Continue glossary revision mismatch.');
+          error.code = 'glossary_revision_mismatch';
+          throw error;
+        }
+        if (legacyContinue) {
+          await completeDurableLegacyContinue(legacyPersistence, legacyContinue.operation);
+        }
         recovery.setTranscriptTimeOriginValue();
         if (!recovery.activateLiveSessionCallbacks(session.callbackGeneration)) throw new Error('即時字幕 callback 啟動失敗。');
         await audioController.resumeRawAudioRecording();
@@ -1159,8 +1221,10 @@ export function useLiveRecordingController({
         });
         recovery.setStatus('listening');
         recovery.startSegmentSwitch?.();
+        continueInFlightRef.current = false;
       } catch (error) {
         await stopSessionSafely(session);
+        continueInFlightRef.current = false;
         if (recovery.sessionStopRequestedRef.current) return;
         recovery.sessionRef.current = null;
         if ([

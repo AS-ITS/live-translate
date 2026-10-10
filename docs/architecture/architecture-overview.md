@@ -81,11 +81,14 @@ bounded Storage batches before the Meeting row is removed.
 - An audio upload may begin only with the active recorder fence. An artifact
   that already began may complete or fail after the Meeting stops, but not at or
   after its `purge_at` deadline.
-- Provider reconnect stays inside the current Segment and retains its glossary
-  revision. User pause/resume, rollover, and browser-crash recovery create
-  Segment boundaries. Resume confirms the authoritative Segment before token
-  issuance; the token, Gemini instruction, and deterministic correction share
-  one versioned SHA-256 effective-glossary snapshot.
+- Provider reconnect stays inside the current Segment and retains its provider
+  glossary revision. User pause/resume, rollover, and browser-crash recovery
+  create Segment boundaries. Resume confirms the authoritative Segment before
+  token issuance. Token and Gemini instruction use the Segment-immutable
+  provider glossary snapshot. Local deterministic correction has an independent
+  SHA-256 revision that hot reloads after a successful glossary save and binds
+  each Turn/Cue on first accepted event; refresh failure preserves the last
+  confirmed snapshot and never blocks a legal recording resume.
 
 Meetings already active on lifecycle v1 remain on the legacy flow until they
 stop. Legacy relationship columns remain readable during that compatibility

@@ -1426,10 +1426,11 @@ Fields:
   token constraints. It includes the soft primary input-language hint in
   `systemInstruction`; when live-scoped glossary entries exist, they share that
   same instruction.
-- `liveGlossaryEntries`: The same live-scoped glossary entries resolved for the
-  requested target language. The browser uses these for deterministic translated
-  subtitle replacement. Translated audio follows the server-provided Gemini
-  glossary instruction and is not post-processed by the browser.
+- `liveGlossaryEntries`: The Segment-immutable provider glossary entries resolved for the
+  requested target language. They seed browser correction only when no
+  independently refreshed correction snapshot exists. Translated audio follows
+  the server-provided Gemini glossary instruction and is not post-processed by
+  the browser.
 
 Lifecycle v2 Meeting token requests require `sessionId` and `segmentId`, plus
 the active recorder Session/Segment/lease/fence/lifecycle-version headers. The
@@ -1440,10 +1441,14 @@ by Resume; client-supplied Segment identity is never authoritative.
 `effective-glossary-v1` canonical payload: source language, target language,
 normalized source/target terms, sorted aliases, and the merged effective Global
 + Meeting glossary. `liveConnectConfig.systemInstruction` and
-`liveGlossaryEntries` are generated from that same snapshot. The response also
-returns `glossaryEntryCount` and the authoritative Meeting/Session/Segment/
-lifecycle-version identity. The browser must reject a Segment or revision
-mismatch before opening Gemini or enabling local correction.
+`liveGlossaryEntries` are generated from the same provider snapshot. The
+response also returns `glossaryEntryCount` and the authoritative
+Meeting/Session/Segment/lifecycle-version identity. The browser must reject a
+provider Segment or revision mismatch before opening Gemini. Local canonical
+Cue correction separately reloads the effective Global + Meeting glossary via
+the existing read APIs, computes the same deterministic format as
+`correctionGlossaryRevision`, and binds that snapshot to each new Turn without
+requiring a token request, provider reconnect, or Segment transition.
 
 ## Validation Rules
 

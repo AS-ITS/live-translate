@@ -2854,6 +2854,10 @@ for (const legacyResumeFailure of ['before-commit-503', 'lost-ack']) {
     await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
 
     page.liveGlossaryEntries = [{ source: '你好', target: 'su3cl3', replacementAliases: [] }];
+    await page.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
+    await expect.poll(() => page.evaluate(() => (
+      window.__liveTranslateDebug.getSnapshot().correctionGlossaryEntryCount
+    ))).toBe(1);
     await page.getByRole('button', { name: '繼續', exact: true }).click();
     await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(2);
     await emitMicrophoneAudio(page);
@@ -3119,7 +3123,6 @@ test('long meeting proactively switches through three segments and preserves con
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
   await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
-
   await emitFinalTranscript(page, 'segment one source', 'segment one translation', { waitMs: 100 });
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(1);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(2);

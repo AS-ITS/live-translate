@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- 將字典修正與錄音 Resume 解耦：Provider glossary 仍為 Segment immutable token/system-instruction snapshot；Correction glossary 在 Save 後透過既有 API hot reload，依 Turn 固定 revision，舊 partial/final/late-final 與已完成 Cue 不追溯修改。Refresh 失敗會保留上一個已確認 snapshot 並顯示 pending，不阻止合法錄音。
+- 修正同頁 Continue 僅依賴 volatile lifecycle ref 導致 v2 錄音誤走 Legacy Resume 的問題；現在同時查驗 durable Session 與 authoritative Meeting lifecycle version，並保留 lease/fence、checkpoint、transactional resume、stable operationId 與 lost-ACK reconciliation。
+
 - 修正 Legacy Continue 在暫時性 503／timeout 後只能靠重新整理恢復：同一頁現在先對帳 durable operation，再以同一 `operationId`、payload 與 `nextLiveSessionId` 做有限重試；reload 也重用相同 recovery path，且只有 Token、Provider、revision 與錄音都 ready 後才完成本機 operation。Session Command 日誌另加入正確的 `resume_legacy_meeting_segment` RPC 名稱、RPC attempted、cloud capability source、failure stage、commit status 與 service-role SQLSTATE 安全診斷欄位。
 - 修正 Legacy Stop → Save Glossary → Continue 使用舊 Segment snapshot：Continue 現在以 service-role-only transactional RPC、durable IndexedDB operationId 與 lost-ACK reconciliation 建立唯一 successor Segment；新 Segment 凍結最新 Global + Meeting glossary，Token、Provider 與 deterministic correction 必須綁定同一 revision 後才恢復錄音。
 

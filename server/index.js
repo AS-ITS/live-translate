@@ -1839,6 +1839,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       rpcName: null,
       rpcAttempted: false,
       cloudCapabilitySource: null,
+      glossarySnapshotSource: null,
+      glossaryRefreshErrorCode: null,
       failureStage: 'request',
       commitStatus: 'not_started'
     };
@@ -1897,11 +1899,25 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
           ? meeting.lifecycleVersion
           : null;
         legacyResumeDiagnostic.failureStage = 'glossary_read';
-        const allGlossaryEntries = await glossaryController.listEntries();
-        const globalGlossaryEntries = liveGlossaryEntriesForTarget(
-          allGlossaryEntries,
-          meeting.targetLanguageCode
-        );
+        let globalGlossaryEntries;
+        try {
+          const allGlossaryEntries = await glossaryController.listEntries();
+          globalGlossaryEntries = liveGlossaryEntriesForTarget(
+            allGlossaryEntries,
+            meeting.targetLanguageCode
+          );
+          legacyResumeDiagnostic.glossarySnapshotSource = 'latest_global_glossary';
+        } catch (error) {
+          legacyResumeDiagnostic.glossaryRefreshErrorCode = errorCodeFor(error);
+          const segments = await meetingRepository.listMeetingSegments(meetingId);
+          const sourceSegment = segments.find((segment) => segment.id === sourceSegmentId);
+          globalGlossaryEntries = mergeMeetingGlossaryEntries(
+            sourceSegment?.settingsSnapshot?.globalGlossaryEntries || [],
+            [],
+            meeting.targetLanguageCode
+          );
+          legacyResumeDiagnostic.glossarySnapshotSource = 'source_segment_fallback';
+        }
         legacyResumeDiagnostic.failureStage = 'resume_rpc';
         legacyResumeDiagnostic.rpcName = 'resume_legacy_meeting_segment';
         legacyResumeDiagnostic.rpcAttempted = true;

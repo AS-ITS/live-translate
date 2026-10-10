@@ -145,6 +145,12 @@ export function sessionSnapshotPayloadForRecording({ session, transcriptItems = 
   };
 }
 
+export function recordingLifecycleContractVersion({ lifecycle, sessionRecord, meeting } = {}) {
+  return [lifecycle, sessionRecord, meeting].some((value) => (
+    Number(value?.lifecycleContractVersion ?? value?.lifecycle_contract_version) === 2
+  )) ? 2 : 1;
+}
+
 export async function completeMeetingAfterRecordingFinalize({
   flushAudio,
   flushCues,
@@ -564,7 +570,14 @@ export function useLiveRecordingController({
       checkpoint.pendingSnapshotIdsRef.current.set(sessionId, pendingIds);
     },
     isLifecycleV2Session(sessionId) {
-      return meetingLifecycleRef.current?.sessionId === sessionId;
+    const sessionRecord = checkpoint.sessionRepositoryRef.current
+      .getSessionRecord(sessionId)?.sessionRecord;
+    return recordingLifecycleContractVersion({
+      lifecycle: meetingLifecycleRef.current?.sessionId === sessionId
+        ? { lifecycleContractVersion: 2 }
+        : null,
+      sessionRecord
+    }) === 2;
     },
     sessionSnapshotSyncCoordinator() {
       if (!sessionSnapshotControllerRef.current) {
@@ -769,6 +782,43 @@ export function useLiveRecordingController({
         recovery.meetingCheckpointApiClientRef.current.heartbeatMeeting(lifecycle).catch(() => {});
       }, 30_000);
     };
+
+  const resumeLifecycleV2 = async () => {
+    if (meetingLifecycleRef.current) return executeMeetingLifecycleCommand('resume');
+
+    const sessionRecord = recovery.sessionRepositoryRef.current
+      .getSessionRecord(recovery.activeSessionRecordIdRef.current)?.sessionRecord;
+    const meeting = [
+      selectedMeetingDetail?.meeting,
+      meetingRecords.find((item) => item.id === routeMeetingId)
+    ].find((item) => item?.id === routeMeetingId);
+    if (recordingLifecycleContractVersion({ sessionRecord, meeting }) !== 2) {
+      const error = new Error('Unable to restore lifecycle v2 recording identity.');
+      error.code = 'meeting_lifecycle_conflict';
+      throw error;
+    }
+
+    const resumed = await recovery.meetingCheckpointApiClientRef.current.executeRecordingCommand({
+      meetingId: meeting.id,
+      command: 'resume',
+      operationId: nextOperationId('resume'),
+      expectedLifecycleVersion: meeting.lifecycleVersion ?? meeting.lifecycle_version ?? 0
+    });
+    meetingLifecycleRef.current = {
+      meetingId: resumed.meeting.id,
+      sessionId: resumed.session.id,
+      segmentId: resumed.segment?.id || null,
+      lifecycleVersion: resumed.meeting.lifecycle_version ?? resumed.meeting.lifecycleVersion,
+      leaseId: resumed.lease.leaseId,
+      fenceToken: resumed.lease.fenceToken,
+      leaseTimer: null,
+      livenessTimer: null
+    };
+    setMeetingLifecycleWriteFence(meetingLifecycleRef.current);
+    startMeetingLifecycleHeartbeats();
+    return resumed;
+  };
+
   const controller = ({
     async createCurrentSessionRecord(meetingCheckpoint = recovery.activeMeetingCheckpointRef.current, initialTranscript = null, existingSessionId = null) {
       recovery.polishingSessionIdRef.current = null;
@@ -1127,8 +1177,21 @@ export function useLiveRecordingController({
       let legacyContinue = null;
       let legacyPersistence = null;
       try {
-        if (meetingLifecycleRef.current) {
-          const resumed = await executeMeetingLifecycleCommand('resume');
+      const activeSessionRecord = recovery.sessionRepositoryRef.current
+        .getSessionRecord(recovery.activeSessionRecordIdRef.current)?.sessionRecord;
+      const routeMeeting = [
+        selectedMeetingDetail?.meeting,
+        meetingRecords.find((item) => item.id === routeMeetingId)
+      ].find((item) => item?.id === routeMeetingId);
+      const lifecycleContractVersion = recordingLifecycleContractVersion({
+        lifecycle: meetingLifecycleRef.current
+          ? { lifecycleContractVersion: 2 }
+          : null,
+        sessionRecord: activeSessionRecord,
+        meeting: routeMeeting
+      });
+      if (lifecycleContractVersion === 2) {
+        const resumed = await resumeLifecycleV2();
           const nextCheckpoint = { meetingId: resumed.meeting.id, segmentId: resumed.segment.id, segmentSequence: resumed.segment.sequence };
           recovery.activeMeetingCheckpointRef.current = nextCheckpoint;
           checkpointController.meetingCheckpointSyncCoordinator().start(nextCheckpoint);

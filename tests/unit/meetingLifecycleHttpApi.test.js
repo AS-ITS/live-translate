@@ -84,6 +84,66 @@ test('legacy resume route binds latest repository glossary into successor snapsh
   assert.equal(calls[0].ownerUserId, 'owner-1');
 });
 
+test('legacy resume falls back to source Segment glossary when refresh fails before RPC', async () => {
+  const calls = [];
+  const logs = [];
+  const payload = {
+    meetingId: 'meeting-1', sourceSegmentId: 'segment-1', nextLiveSessionId: 'live-2',
+    expectedSessionId: 'session-1',
+    checkpoint: { lastFinalCueSequence: 0, finalCues: [], durableChunks: [], cueCheckpoint: null }
+  };
+  const payloadHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  const fallbackEntries = [{ source: '你好', target: 'old-global', replacementAliases: [] }];
+  const handler = createHandler(undefined, {
+    legacyResumeService: {
+      async execute(input) {
+        calls.push(input);
+        return {
+          meeting: { id: 'meeting-1' },
+          interruptedSegment: { id: 'segment-1' },
+          segment: {
+            id: 'segment-2', sequence: 2, session_id: 'session-1',
+            settings_snapshot: {
+              sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
+              globalGlossaryEntries: input.globalGlossaryEntries,
+              glossaryEntries: [], privateGlossaryEntries: []
+            }
+          },
+          operation: { operationId: 'continue-1', payloadHash, sourceSegmentId: 'segment-1' }
+        };
+      }
+    },
+    meetingRepository: {
+      async getMeeting() { return { id: 'meeting-1', targetLanguageCode: 'en' }; },
+      async listMeetingSegments() {
+        return [{ id: 'segment-1', settingsSnapshot: { globalGlossaryEntries: fallbackEntries } }];
+      }
+    },
+    glossaryController: {
+      async listEntries() {
+        const error = new Error('temporary glossary read failure');
+        error.code = 'supabase_request_failed';
+        error.status = 503;
+        throw error;
+      }
+    },
+    requestLogger(event) { logs.push(event); }
+  });
+
+  const response = await request(handler, {
+    url: '/api/meetings/meeting-1/recording/legacy-resume',
+    body: { ...payload, operationId: 'continue-1', payloadHash }
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(calls[0].globalGlossaryEntries, fallbackEntries);
+  const event = logs.find((entry) => entry.event === 'legacy_resume_command');
+  assert.equal(event.glossarySnapshotSource, 'source_segment_fallback');
+  assert.equal(event.glossaryRefreshErrorCode, 'supabase_request_failed');
+  assert.equal(event.rpcAttempted, true);
+  assert.equal(event.commitStatus, 'committed');
+});
+
 test('recording lifecycle conflict returns stable HTTP 409 code', async () => {
   const handler = createHandler({
     async execute() {

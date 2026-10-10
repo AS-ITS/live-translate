@@ -3,11 +3,25 @@ import test from 'node:test';
 import { runWithRequestUser, setRequestScope } from '../../server/requestIdentity.js';
 import {
   finalizedTranscriptItemsForRecording,
+  recordingLifecycleContractVersion,
   sessionSnapshotPayloadForRecording,
   stopLifecycleV2AfterFailure
 } from '../../src/features/live/useLiveRecordingController.js';
 import { createSupabaseSessionRepository } from '../../src/infrastructure/supabaseSessionRepository.js';
 import { applyTranscriptEvent, createTranscriptState } from '../../src/lib/transcript.js';
+
+test('durable Session or Meeting identity keeps lifecycle v2 off the legacy resume path', () => {
+  assert.equal(recordingLifecycleContractVersion({
+    sessionRecord: { id: 'session-1', lifecycleContractVersion: 2 }
+  }), 2);
+  assert.equal(recordingLifecycleContractVersion({
+    meeting: { id: 'meeting-1', lifecycle_contract_version: 2 }
+  }), 2);
+  assert.equal(recordingLifecycleContractVersion({
+    sessionRecord: { id: 'session-1' },
+    meeting: { id: 'meeting-1', lifecycleContractVersion: 1 }
+  }), 1);
+});
 
 test('lifecycle v2 finalized transcript items skip Session append and snapshot payload', () => {
   const previous = createTranscriptState();

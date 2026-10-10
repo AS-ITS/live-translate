@@ -8,6 +8,7 @@ import {
 } from './audio.js';
 import { glossaryCorrectionForSource } from './glossaryReplacement.js';
 import { effectiveGlossaryRevision } from './glossaryRevision.js';
+import { createCorrectionGlossaryRegistry } from './correctionGlossarySnapshot.js';
 import { meetingLifecycleWriteHeaders } from './meetingLifecycleWriteFence.js';
 import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDevices.js';
 import { setAudioOutputDevice } from './mediaDevices.js';
@@ -60,6 +61,7 @@ export class LiveTranslateSession {
     onClose,
     onConnectionFailure,
     liveGlossaryEntries = [],
+    correctionGlossaryRegistry = createCorrectionGlossaryRegistry(),
     meetingId = null,
     recordingId = null,
     liveSessionId = null,
@@ -102,6 +104,9 @@ export class LiveTranslateSession {
     this.onConnectionFailure = onConnectionFailure;
     this.liveGlossaryEntries = liveGlossaryEntries;
     this.effectiveGlossaryRevision = null;
+    this.providerGlossaryEntries = liveGlossaryEntries;
+    this.providerGlossaryRevision = null;
+    this.correctionGlossaryRegistry = correctionGlossaryRegistry;
     this.meetingId = meetingId;
     this.recordingId = recordingId;
     this.liveSessionId = liveSessionId;
@@ -223,6 +228,30 @@ export class LiveTranslateSession {
     this.firstPcmRejecter = null;
     activeDebugSession = this;
     exposeLiveTranslateDebug();
+  }
+
+  updateCorrectionGlossary(snapshot) {
+    const activated = this.correctionGlossaryRegistry.activate(snapshot);
+    this.tracePipeline('CORRECTION_GLOSSARY_UPDATED', {
+      segmentId: this.segmentId,
+      providerEpoch: this.providerEpoch,
+      revision: activated.revision,
+      glossaryEntryCount: activated.entries.length
+    });
+    return activated;
+  }
+
+  correctionGlossarySnapshotFor(value = {}) {
+    return this.correctionGlossaryRegistry.bindTurn({
+      ...value,
+      meetingId: this.meetingId,
+      segmentId: this.segmentId,
+      providerEpoch: this.providerEpoch
+    }, this.connectionEpoch);
+  }
+
+  correctionGlossaryEntriesForRevision(revision) {
+    return this.correctionGlossaryRegistry.entriesForRevision(revision);
   }
 
   async start({ inputStream = null } = {}) {
@@ -401,6 +430,12 @@ export class LiveTranslateSession {
     }
     this.liveGlossaryEntries = liveGlossaryEntries;
     this.effectiveGlossaryRevision = calculatedRevision;
+    this.providerGlossaryEntries = liveGlossaryEntries;
+    this.providerGlossaryRevision = calculatedRevision;
+    const correctionSnapshot = this.correctionGlossaryRegistry.activateIfEmpty({
+      revision: calculatedRevision,
+      entries: liveGlossaryEntries
+    });
     this.tokenState = { ...response, fetchedAt: Date.now() };
     this.tracePipeline('TOKEN_SEGMENT_BOUND', {
       segmentId: authoritativeSegment?.segmentId || this.segmentId,
@@ -409,8 +444,8 @@ export class LiveTranslateSession {
     });
     this.tracePipeline('CORRECTION_CONFIGURED', {
       segmentId: this.segmentId,
-      revision: calculatedRevision,
-      glossaryEntryCount: liveGlossaryEntries.length
+      revision: correctionSnapshot.revision,
+      glossaryEntryCount: correctionSnapshot.entries.length
     });
     return this.tokenState;
   }
@@ -1481,26 +1516,36 @@ export class LiveTranslateSession {
       const providerRawTranslation = content.outputTranscription?.text ?? null;
       const event = rawEvent.stream === 'translation'
         ? (() => {
-          const correction = glossaryCorrectionForSource({
-            sourceText: content.inputTranscription?.text
-              || content.interimInputTranscription?.text
-              || this.lastInputTranscriptText,
-            translatedText: rawEvent.text
-          }, this.liveGlossaryEntries);
-          return {
-            ...rawEvent,
-            meetingId: this.meetingId,
-            text: correction.translatedText,
-            providerRawText: rawEvent.text,
-            glossaryCorrectionStatus: correction.status,
-            translationComparisonEventId: rawEvent.eventId
-          };
-        })()
-        : {
-          ...rawEvent,
-          meetingId: this.meetingId,
-          translationComparisonEventId: rawEvent.eventId
-        };
+            const correctionSnapshot = this.correctionGlossarySnapshotFor(rawEvent);
+            const correction = glossaryCorrectionForSource({
+              sourceText: content.inputTranscription?.text
+                || content.interimInputTranscription?.text
+                || this.lastInputTranscriptText,
+              translatedText: rawEvent.text
+            }, correctionSnapshot?.entries || []);
+            return {
+              ...rawEvent,
+              meetingId: this.meetingId,
+              text: correction.translatedText,
+              providerRawText: rawEvent.text,
+              glossaryCorrectionStatus: correction.status,
+              ...(correctionSnapshot
+                ? { correctionGlossaryRevision: correctionSnapshot.revision }
+                : {}),
+              translationComparisonEventId: rawEvent.eventId
+            };
+          })()
+          : (() => {
+            const correctionSnapshot = this.correctionGlossarySnapshotFor(rawEvent);
+            return {
+              ...rawEvent,
+              meetingId: this.meetingId,
+              ...(correctionSnapshot
+                ? { correctionGlossaryRevision: correctionSnapshot.revision }
+                : {}),
+              translationComparisonEventId: rawEvent.eventId
+            };
+          })();
       if (rawEvent.stream) {
         translationComparisonDiagnostics.record({
           stage: 'provider_normalized',
@@ -1675,14 +1720,21 @@ export class LiveTranslateSession {
     }
 
     if (this.mode !== 'transcription' && content?.outputTranscription?.text) {
+      const correctionSnapshot = this.correctionGlossarySnapshotFor({
+        turnKey: `local:${this.activeOutputTranscriptAudioTurnId || boundaryAudioTurnId}`,
+        audioTurnId: this.activeOutputTranscriptAudioTurnId || boundaryAudioTurnId
+      });
       const correction = glossaryCorrectionForSource({
-          sourceText: content.inputTranscription?.text || content.interimInputTranscription?.text || this.lastInputTranscriptText,
-          translatedText: content.outputTranscription.text
-        }, this.liveGlossaryEntries);
+        sourceText: content.inputTranscription?.text || content.interimInputTranscription?.text || this.lastInputTranscriptText,
+        translatedText: content.outputTranscription.text
+      }, correctionSnapshot?.entries || []);
       const transcript = withTranscriptEventId({
         text: correction.translatedText,
         rawText: content.outputTranscription.text,
         glossaryCorrectionStatus: correction.status,
+        ...(correctionSnapshot
+          ? { correctionGlossaryRevision: correctionSnapshot.revision }
+          : {}),
         isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete,
         liveSessionId: this.liveSessionId,
         sessionId: this.sessionId,
@@ -2243,6 +2295,10 @@ export class LiveTranslateSession {
       activeSegmentId: this.closed ? null : this.segmentId,
       effectiveGlossaryRevision: this.effectiveGlossaryRevision,
       glossaryEntryCount: this.liveGlossaryEntries.length,
+      providerGlossaryRevision: this.providerGlossaryRevision,
+      providerGlossaryEntryCount: this.providerGlossaryEntries.length,
+      correctionGlossaryRevision: this.correctionGlossaryRegistry.active()?.revision || null,
+      correctionGlossaryEntryCount: this.correctionGlossaryRegistry.active()?.entries.length || 0,
       activeAudioTurnId: this.closed ? null : this.audioTurnId,
       providerReady: this.providerReady,
       captureStarted: this.audioGraphEpoch !== null,

@@ -4722,6 +4722,9 @@ function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {
     ...(value.rawSource !== undefined ? { rawSource: value.rawSource } : {}),
     ...(value.rawTranslation !== undefined ? { rawTranslation: value.rawTranslation } : {}),
     ...(value.initialTranslation !== undefined ? { initialTranslation: value.initialTranslation } : {}),
+    ...(typeof value.correctionGlossaryRevision === 'string' && value.correctionGlossaryRevision
+      ? { correctionGlossaryRevision: value.correctionGlossaryRevision }
+      : {}),
     status: value.status,
     finalizedReason: value.finalizedReason || null,
     ...(value.refinement ? { refinement: value.refinement } : {})

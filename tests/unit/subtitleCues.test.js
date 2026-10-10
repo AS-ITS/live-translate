@@ -29,6 +29,29 @@ test('aggregates source and translation partials into one pending cue', () => {
   assert.equal(state.nextSequence, 2);
 });
 
+test('Cue keeps the correction glossary revision from its first accepted turn event', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'source-revision-a',
+    stream: 'source',
+    text: '你好',
+    audioTurnId: 'turn-revision',
+    sessionTimeMs: 100,
+    correctionGlossaryRevision: 'revision-a'
+  }));
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'translation-revision-b',
+    stream: 'translation',
+    text: 'Hello.',
+    audioTurnId: 'turn-revision',
+    sessionTimeMs: 110,
+    correctionGlossaryRevision: 'revision-b'
+  }));
+
+  const cue = state.currentCue || state.pendingCues[0] || state.finalCues[0];
+  assert.equal(cue.correctionGlossaryRevision, 'revision-a');
+});
+
 test('queue preserves non-cumulative fragments received in the same batch', () => {
   const events = enqueueLiveCueEvent(
     enqueueLiveCueEvent([], {

@@ -643,6 +643,9 @@ function updateFinalCue(state, target, event) {
           ? { glossaryCorrectionStatus: event.glossaryCorrectionStatus }
           : {})
       }),
+    ...(!target.cue.correctionGlossaryRevision && event.correctionGlossaryRevision
+      ? { correctionGlossaryRevision: event.correctionGlossaryRevision }
+      : {}),
     [statusField]: nextStatus,
     [versionField]: nextSideVersion(target.cue[versionField], target.cue[field], nextText, {
       previousStatus: target.cue[statusField],
@@ -756,6 +759,9 @@ function addCue(state, event) {
         ? { glossaryCorrectionStatus: event.glossaryCorrectionStatus }
         : {})
     } : {}),
+    ...(event.correctionGlossaryRevision
+      ? { correctionGlossaryRevision: event.correctionGlossaryRevision }
+      : {}),
     sourceStatus: event.stream === 'source' && event.isFinal ? 'finalized' : 'pending',
     translationStatus: event.stream === 'translation' && event.isFinal ? 'finalized' : 'pending',
     sourceVersion: event.stream === 'source' ? 1 : 0,
@@ -806,6 +812,9 @@ function updateCue(state, target, event) {
           ? { glossaryCorrectionStatus: event.glossaryCorrectionStatus }
           : {})
       }),
+    ...(!cue.correctionGlossaryRevision && event.correctionGlossaryRevision
+      ? { correctionGlossaryRevision: event.correctionGlossaryRevision }
+      : {}),
     [statusField]: nextStatus,
     [versionField]: nextSideVersion(cue[versionField], cue[field], nextText, {
       previousStatus: cue[statusField],

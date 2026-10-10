@@ -426,7 +426,11 @@ export function useLiveRecordingController({
           sourceLanguageCode
         });
       }
-      next = applyGlossaryCorrectionsToCueState(next, cue.getLiveGlossaryEntries?.() || []);
+      next = applyGlossaryCorrectionsToCueState(
+        next,
+        cue.getLiveGlossaryEntries?.() || [],
+        { entriesForCue: cue.getGlossaryEntriesForCue }
+      );
       if (import.meta.env?.DEV) {
         const previousFinalIds = new Set((current.finalCues || []).map((item) => item.cueId));
         const nextFinalIds = new Set((next.finalCues || []).map((item) => item.cueId));

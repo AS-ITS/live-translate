@@ -2,10 +2,32 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applyGlossaryCorrectionToCue,
+  applyGlossaryCorrectionsToCueState,
   applyGlossaryReplacements,
   correctTranslationForSource,
   glossaryCorrectionForSource
 } from '../../src/lib/glossaryReplacement.js';
+
+test('cue-state correction resolves the snapshot owned by each historical Cue', () => {
+  const cueA = {
+    cueId: 'cue-a', status: 'final', sourceText: '你好', rawTranslation: 'Hello.',
+    translatedText: 'Hello.', correctionGlossaryRevision: 'revision-a'
+  };
+  const cueB = {
+    cueId: 'cue-b', status: 'final', sourceText: '你好', rawTranslation: 'Hello.',
+    translatedText: 'Hello.', correctionGlossaryRevision: 'revision-b'
+  };
+  const snapshots = new Map([
+    ['revision-a', [{ source: '你好', target: 'A', replacementAliases: [] }]],
+    ['revision-b', [{ source: '你好', target: 'B', replacementAliases: [] }]]
+  ]);
+  const result = applyGlossaryCorrectionsToCueState(
+    { finalCues: [cueA, cueB], refinedSubtitleCues: [] },
+    [],
+    { entriesForCue: (cue) => snapshots.get(cue.correctionGlossaryRevision) || [] }
+  );
+  assert.deepEqual(result.finalCues.map((cue) => cue.initialTranslation), ['A.', 'B.']);
+});
 import { mergeMeetingGlossaryEntries } from '../../src/lib/meetingGlossary.js';
 
 test('glossary replacement handles source terms, legacy aliases, repeated matches, and longest-first ordering', () => {

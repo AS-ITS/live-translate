@@ -496,6 +496,23 @@ async function mockMeetingCheckpointApi(page, {
   let legacyResumeFailurePending = Boolean(legacyResumeFailure);
   let checkpointFailuresRemaining = failCheckpointAttempts;
 
+  await page.route('**/api/glossary', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    if (page.failCorrectionGlossaryRefresh) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'supabase_request_failed' } })
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ entries: page.globalGlossaryEntries || [] })
+    });
+  });
+
   await page.route('**/api/meetings**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -528,6 +545,8 @@ async function mockMeetingCheckpointApi(page, {
             status: page.mockMeetingStatus || 'created',
             sourceLanguageCode,
             targetLanguageCode,
+            glossaryEntries: [],
+            privateGlossaryEntries: page.liveGlossaryEntries || [],
             ...(page.mockMeetingLocalAudio ? { shouldRecordInputAudio: true } : {}),
             ...(page.mockMeetingLifecycleV2 ? { lifecycleContractVersion: 2, lifecycleVersion: 0 } : {})
           },
@@ -2703,6 +2722,61 @@ test('newer same-user auth state cannot be overwritten by stale profile validati
   expect(authTrace.some((entry) => entry.stage === 'LIVE_COMPONENT_UNMOUNTED')).toBe(false);
 });
 
+test('saved glossary hot reload affects the next turn without Segment, token, or Provider restart', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThanOrEqual(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  const tokenCount = page.liveTokenRequests.length;
+  const providerCount = await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length);
+  page.liveGlossaryEntries = [{ source: '你好', target: 'su3cl3', replacementAliases: [] }];
+  await page.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
+  await expect.poll(() => page.evaluate(() => (
+    window.__liveTranslateDebug.getSnapshot().correctionGlossaryEntryCount
+  ))).toBe(1);
+
+  expect(page.liveTokenRequests).toHaveLength(tokenCount);
+  expect(await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(providerCount);
+  expect(checkpointRequests.legacyResumeRequests).toHaveLength(0);
+  const snapshot = await page.evaluate(() => window.__liveTranslateDebug.getSnapshot());
+  expect(snapshot.providerGlossaryEntryCount).toBe(0);
+  expect(snapshot.correctionGlossaryEntryCount).toBe(1);
+
+  await emitFinalTranscript(page, '你好', 'Hello.');
+  await expect(page.getByText('su3cl3.', { exact: true })).toBeVisible();
+});
+
+test('correction glossary refresh failure keeps recording on the last confirmed snapshot', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  page.failCorrectionGlossaryRefresh = true;
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThanOrEqual(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  const tokenCount = page.liveTokenRequests.length;
+  const providerCount = await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length);
+
+  await expect.poll(() => page.evaluate(() => (
+    window.__liveTranslateDebug.getPipelineTrace()
+      .some((entry) => entry.stage === 'CORRECTION_GLOSSARY_PENDING')
+  ))).toBe(true);
+  await expect(page.getByText(/字典更新尚未同步/u)).toBeVisible();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  expect(page.liveTokenRequests).toHaveLength(tokenCount);
+  expect(await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(providerCount);
+  expect(checkpointRequests.legacyResumeRequests).toHaveLength(0);
+});
+
 test('Save then Continue applies one glossary revision before listening', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
   await mockLiveSessionCreateApi(page);
@@ -2720,6 +2794,10 @@ test('Save then Continue applies one glossary revision before listening', async 
   page.liveGlossaryEntries = [
     { source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }
   ];
+  await page.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
+  await expect.poll(() => page.evaluate(() => (
+    window.__liveTranslateDebug.getSnapshot().correctionGlossaryEntryCount
+  ))).toBe(1);
   await page.getByRole('button', { name: '繼續', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(2);
   await emitMicrophoneAudio(page);
@@ -2747,6 +2825,10 @@ test('Save then Continue applies one glossary revision before listening', async 
   await page.getByRole('button', { name: '停止錄音' }).click();
   await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
   page.liveGlossaryEntries = [];
+  await page.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
+  await expect.poll(() => page.evaluate(() => (
+    window.__liveTranslateDebug.getSnapshot().correctionGlossaryEntryCount
+  ))).toBe(0);
   await page.getByRole('button', { name: '繼續', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(3);
   await emitMicrophoneAudio(page);

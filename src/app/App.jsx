@@ -18,6 +18,8 @@ import { mergeMeetingDetailWithLocalCues, persistFinalMeetingCues } from '../lib
 import { createTranslationCommandApiClient } from '../lib/translationCommandApiClient.js';
 import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
 import { applyGlossaryCorrectionToCue } from '../lib/glossaryReplacement.js';
+import { effectiveGlossaryRevision } from '../lib/glossaryRevision.js';
+import { createCorrectionGlossaryRegistry } from '../lib/correctionGlossarySnapshot.js';
 import { hasLiveCredential, subscribeToLiveCredentialClear } from '../lib/liveCredentialHolder.js';
 import { stopSessionSafely } from '../lib/stopSessionSafely.js';
 import { effectiveMeetingGlossaryEntries, selectedMeetingGlossaryEntries } from '../lib/meetingGlossary.js';
@@ -159,6 +161,9 @@ export function App() {
   const [glossaryCategories, setGlossaryCategories] = useState([]);
   const [selectedMeetingGlossaryIds, setSelectedMeetingGlossaryIds] = useState([]);
   const [privateMeetingGlossaryEntries, setPrivateMeetingGlossaryEntries] = useState([]);
+  const [correctionGlossaryStatus, setCorrectionGlossaryStatus] = useState('idle');
+  const correctionGlossaryRegistryRef = useRef(createCorrectionGlossaryRegistry());
+  const correctionGlossaryRefreshGenerationRef = useRef(0);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
   const [segmentRolloverStatus, setSegmentRolloverStatus] = useState('idle');
   const [meetingCheckpointErrorMessage, setMeetingCheckpointErrorMessage] = useState('');
@@ -337,7 +342,9 @@ const activeMeetingCheckpointRef = useRef(null);
       getSessionId: () => activeSessionRecordIdRef.current,
       getSegmentId: () => activeMeetingCheckpointRef.current?.segmentId,
       getSessionTime: () => sessionTimeForSubtitleCues(),
-      getLiveGlossaryEntries: () => sessionRef.current?.liveGlossaryEntries || reconnectSessionRef.current?.liveGlossaryEntries || [],
+      getLiveGlossaryEntries: () => correctionGlossaryRegistryRef.current.active()?.entries || [],
+      getGlossaryEntriesForCue: (cue) => correctionGlossaryRegistryRef.current
+        .entriesForRevision(cue?.correctionGlossaryRevision),
       persist: enqueueCuePersistence,
       retranslate: (sourceText, cueId) => sessionRef.current?.retranslateSourceText(sourceText, cueId),
       schedulePolishing: null
@@ -699,6 +706,11 @@ const activeMeetingCheckpointRef = useRef(null);
   }, [page, isLiveSurface]);
 
   useEffect(() => {
+    if (page !== 'live-recording' || !routeMeetingId) return;
+    void refreshCorrectionGlossarySnapshot(routeMeetingId);
+  }, [page, routeMeetingId, locationVersion]);
+
+  useEffect(() => {
     const canReadBackgroundSessionData = status === 'stopped' || status === 'error';
     if (!canReadBackgroundSessionData || !(activeSessionRecordIdRef.current || polishingSessionIdRef.current)) return undefined;
     let cancelled = false;
@@ -783,7 +795,7 @@ const activeMeetingCheckpointRef = useRef(null);
         translatedText: output.translatedText,
         translationStatus: 'finalized',
         refinement: { ...(cue.refinement || {}), status: 'pending' }
-      }, sessionRef.current?.liveGlossaryEntries || []);
+      }, correctionGlossaryEntriesForCue(cue));
     });
     if (!changed) return;
     const next = { ...current, finalCues: nextCues };
@@ -818,7 +830,7 @@ const activeMeetingCheckpointRef = useRef(null);
     });
     if (!refinement.changed) return;
     const nextCues = refinement.cues.map((cue) => (
-      applyGlossaryCorrectionToCue(cue, sessionRef.current?.liveGlossaryEntries || [])
+      applyGlossaryCorrectionToCue(cue, correctionGlossaryEntriesForCue(cue))
     ));
     const next = { ...previous, finalCues: nextCues };
     subtitleCueStateRef.current = next;
@@ -1162,6 +1174,7 @@ const activeMeetingCheckpointRef = useRef(null);
 
     const session = new LiveTranslateSession({
       liveSessionId,
+      correctionGlossaryRegistry: correctionGlossaryRegistryRef.current,
       connectionEpoch: callbackGeneration.generation,
       sessionId: activeSessionRecordIdRef.current,
       recordingId: sessionRepositoryRef.current.getSessionRecord(activeSessionRecordIdRef.current)?.sessionRecord?.recordingId || null,
@@ -1395,12 +1408,79 @@ const activeMeetingCheckpointRef = useRef(null);
   }
 
   function currentMeetingGlossaryEntries() {
-    const selectedEntries = selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode);
+    const meeting = selectedMeetingDetail?.meeting;
+    const selectedEntries = Array.isArray(meeting?.glossaryEntries)
+      ? meeting.glossaryEntries
+      : selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode);
+    const privateEntries = Array.isArray(meeting?.privateGlossaryEntries)
+      ? meeting.privateGlossaryEntries
+      : privateMeetingGlossaryEntries;
     return effectiveMeetingGlossaryEntries(
       glossaryEntries,
-      [...selectedEntries, ...privateMeetingGlossaryEntries],
+      [...selectedEntries, ...privateEntries],
       targetLanguageCode
     );
+  }
+
+  function correctionGlossaryEntriesForCue(cue) {
+    return correctionGlossaryRegistryRef.current
+      .entriesForRevision(cue?.correctionGlossaryRevision);
+  }
+
+  async function refreshCorrectionGlossarySnapshot(meetingId) {
+    const generation = ++correctionGlossaryRefreshGenerationRef.current;
+    setCorrectionGlossaryStatus('refreshing');
+    try {
+      const [globalEntries, detail] = await Promise.all([
+        createGlossaryApiClient().listEntries(),
+        meetingReadApiClientRef.current.getMeetingDetail(meetingId)
+      ]);
+      if (generation !== correctionGlossaryRefreshGenerationRef.current) return null;
+      const meeting = detail?.meeting;
+      if (!meeting || meeting.id !== meetingId) throw new Error('Meeting glossary snapshot unavailable.');
+      const meetingEntries = [
+        ...(Array.isArray(meeting.glossaryEntries) ? meeting.glossaryEntries : []),
+        ...(Array.isArray(meeting.privateGlossaryEntries) ? meeting.privateGlossaryEntries : [])
+      ];
+      const entries = effectiveMeetingGlossaryEntries(
+        globalEntries,
+        meetingEntries,
+        meeting.targetLanguageCode || targetLanguageCode
+      );
+      const revision = await effectiveGlossaryRevision({
+        sourceLanguageCode: meeting.sourceLanguageCode || sourceLanguageCode,
+        targetLanguageCode: meeting.targetLanguageCode || targetLanguageCode,
+        entries
+      });
+      if (generation !== correctionGlossaryRefreshGenerationRef.current) return null;
+      const snapshot = correctionGlossaryRegistryRef.current.activate({ revision, entries });
+      setGlossaryEntries(globalEntries);
+      setPrivateMeetingGlossaryEntries(Array.isArray(meeting.privateGlossaryEntries)
+        ? meeting.privateGlossaryEntries
+        : []);
+      setCorrectionGlossaryStatus('applied');
+      recordLivePipelineTrace({
+        stage: 'CORRECTION_GLOSSARY_UPDATED',
+        meetingId,
+        segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
+        revision: snapshot.revision,
+        glossaryEntryCount: snapshot.entries.length,
+        timestamp: new Date().toISOString()
+      });
+      return snapshot;
+    } catch (refreshError) {
+      if (generation !== correctionGlossaryRefreshGenerationRef.current) return null;
+      setCorrectionGlossaryStatus('pending');
+      recordLivePipelineTrace({
+        stage: 'CORRECTION_GLOSSARY_PENDING',
+        meetingId,
+        segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
+        revision: correctionGlossaryRegistryRef.current.active()?.revision || null,
+        reason: refreshError?.code || refreshError?.name || 'refresh_failed',
+        timestamp: new Date().toISOString()
+      });
+      return null;
+    }
   }
 
   function applyTranscriptUpdate(update) {
@@ -2586,16 +2666,22 @@ const activeMeetingCheckpointRef = useRef(null);
       recordingState,
       translatedAudioState
     });
-    const liveCheckpointMessages = composeCheckpointStatusMessage({
-      meetingCheckpointStatus,
-      checkpointErrorMessage: meetingCheckpointErrorMessage,
-      shouldRecordInputAudio,
-      recordingState,
-      translatedAudioState
-    });
+    const liveCheckpointMessages = [
+      ...composeCheckpointStatusMessage({
+        meetingCheckpointStatus,
+        checkpointErrorMessage: meetingCheckpointErrorMessage,
+        shouldRecordInputAudio,
+        recordingState,
+        translatedAudioState
+      }),
+      ...(correctionGlossaryStatus === 'pending'
+        ? ['字典更新尚未同步；錄音會繼續使用上一個已確認版本，可返回此頁重試。']
+        : [])
+    ];
     const liveStatusNeedsAttention = Boolean(
       controlLeaseSnapshot && !hasSessionControl
-    ) || meetingCheckpointStatus === 'error' || liveAudioStatusHasError || Boolean(deviceMessage);
+    ) || meetingCheckpointStatus === 'error' || correctionGlossaryStatus === 'pending'
+      || liveAudioStatusHasError || Boolean(deviceMessage);
 
     return (
     <WorkspacePage
@@ -2773,7 +2859,9 @@ const activeMeetingCheckpointRef = useRef(null);
             <div className="live-status-attention" role={meetingCheckpointStatus === 'error' || liveAudioStatusHasError ? 'alert' : 'status'}>
               {controlLeaseSnapshot && !hasSessionControl ? <p>目前已有工作階段由其他頁籤控制；本頁面只能唯讀查看。</p> : null}
               {deviceMessage ? <p>{deviceMessage}</p> : null}
-              {meetingCheckpointStatus === 'error' || liveAudioStatusHasError ? <p>{liveCheckpointMessages.join(' ')}</p> : null}
+          {meetingCheckpointStatus === 'error' || correctionGlossaryStatus === 'pending' || liveAudioStatusHasError
+            ? <p>{liveCheckpointMessages.join(' ')}</p>
+            : null}
             </div>
           ) : null}
           {isLiveStatusDetailsOpen ? (

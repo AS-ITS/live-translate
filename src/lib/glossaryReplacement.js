@@ -40,11 +40,15 @@ export function glossaryCorrectionForSource({ sourceText, translatedText } = {},
   };
 }
 
-export function applyGlossaryCorrectionsToCueState(state, glossaryEntries = []) {
-  if (!state || !Array.isArray(glossaryEntries) || glossaryEntries.length === 0) return state;
+export function applyGlossaryCorrectionsToCueState(state, glossaryEntries = [], { entriesForCue } = {}) {
+  if (!state || (!Array.isArray(glossaryEntries) && typeof entriesForCue !== 'function')) return state;
+  if (glossaryEntries.length === 0 && typeof entriesForCue !== 'function') return state;
   let changed = false;
   const correct = (cue) => {
-    const next = applyGlossaryCorrectionToCue(cue, glossaryEntries);
+    const cueEntries = typeof entriesForCue === 'function'
+      ? entriesForCue(cue)
+      : glossaryEntries;
+    const next = applyGlossaryCorrectionToCue(cue, cueEntries);
     if (next !== cue) changed = true;
     return next;
   };

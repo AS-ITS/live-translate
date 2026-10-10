@@ -1354,7 +1354,9 @@ persists or logs it. The response must not expose `GEMINI_API_KEY`.
   "targetLanguageCode": "en",
   "sourceLanguageCode": "zh-Hant",
   "echoTargetLanguage": true,
-  "meetingId": "meeting-1"
+  "meetingId": "meeting-1",
+  "sessionId": "session-1",
+  "segmentId": "segment-2"
 }
 ```
 
@@ -1402,7 +1404,15 @@ Fields:
       "target": "Alan speak",
       "replacementAliases": ["mic"]
     }
-  ]
+  ],
+  "effectiveGlossaryRevision": "<sha256-hex>",
+  "glossaryEntryCount": 1,
+  "authoritativeSegment": {
+    "meetingId": "meeting-1",
+    "sessionId": "session-1",
+    "segmentId": "segment-2",
+    "lifecycleVersion": 8
+  }
 }
 ```
 
@@ -1420,6 +1430,20 @@ Fields:
   requested target language. The browser uses these for deterministic translated
   subtitle replacement. Translated audio follows the server-provided Gemini
   glossary instruction and is not post-processed by the browser.
+
+Lifecycle v2 Meeting token requests require `sessionId` and `segmentId`, plus
+the active recorder Session/Segment/lease/fence/lifecycle-version headers. The
+server validates that binding against the authoritative active Segment returned
+by Resume; client-supplied Segment identity is never authoritative.
+
+`effectiveGlossaryRevision` is the deterministic SHA-256 of the versioned
+`effective-glossary-v1` canonical payload: source language, target language,
+normalized source/target terms, sorted aliases, and the merged effective Global
++ Meeting glossary. `liveConnectConfig.systemInstruction` and
+`liveGlossaryEntries` are generated from that same snapshot. The response also
+returns `glossaryEntryCount` and the authoritative Meeting/Session/Segment/
+lifecycle-version identity. The browser must reject a Segment or revision
+mismatch before opening Gemini or enabling local correction.
 
 ## Validation Rules
 

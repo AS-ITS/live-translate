@@ -1386,7 +1386,7 @@ test('stop marks unconfirmed provider partials as saved-pending terminal state',
   assert.equal(inputEvents[0].providerEndResult, 'sdk-returned-void');
 });
 
-test('session stop flush applies glossary replacement to pending output without changing input', async () => {
+test('session stop flush preserves mixed-source output and marks glossary correction uncertain', async () => {
   const inputEvents = [];
   const outputEvents = [];
   const session = new LiveTranslateSession({
@@ -1412,9 +1412,9 @@ test('session stop flush applies glossary replacement to pending output without 
     { text: 'microphone source', isFinal: false },
     { text: 'microphone source', isFinal: true }
   ]);
-  assert.deepEqual(outputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
-    { text: 'Alan speak', isFinal: false },
-    { text: 'Alan speak', isFinal: true }
+  assert.deepEqual(outputEvents.map(({ text, isFinal, glossaryCorrectionStatus }) => ({ text, isFinal, glossaryCorrectionStatus })), [
+    { text: 'microphone', isFinal: false, glossaryCorrectionStatus: 'correction_uncertain' },
+    { text: 'microphone', isFinal: true, glossaryCorrectionStatus: 'correction_uncertain' }
   ]);
 });
 

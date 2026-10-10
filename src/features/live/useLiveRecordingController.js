@@ -1094,6 +1094,13 @@ export function useLiveRecordingController({
     },
     async continuePausedSession() {
       if (state.status !== 'paused') return;
+      recordLivePipelineTrace({
+        stage: 'CONTINUE_REQUESTED',
+        meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+        sessionId: recovery.activeSessionRecordIdRef.current,
+        segmentId: recovery.activeMeetingCheckpointRef.current?.segmentId,
+        timestamp: new Date().toISOString()
+      });
       recovery.invalidateLiveSessionCallbacks();
       recovery.sessionStopRequestedRef.current = false;
       recovery.reconnectController().reset();
@@ -1117,6 +1124,14 @@ export function useLiveRecordingController({
           const nextCheckpoint = { meetingId: resumed.meeting.id, segmentId: resumed.segment.id, segmentSequence: resumed.segment.sequence };
           recovery.activeMeetingCheckpointRef.current = nextCheckpoint;
           checkpointController.meetingCheckpointSyncCoordinator().start(nextCheckpoint);
+          recordLivePipelineTrace({
+            stage: 'RESUME_SEGMENT_CONFIRMED',
+            meetingId: resumed.meeting.id,
+            sessionId: resumed.session.id,
+            segmentId: resumed.segment.id,
+            lifecycleVersion: resumed.meeting.lifecycle_version ?? resumed.meeting.lifecycleVersion,
+            timestamp: new Date().toISOString()
+          });
         }
         const checkpoint = recovery.activeMeetingCheckpointRef.current;
         session = await recovery.createSession({
@@ -1133,12 +1148,46 @@ export function useLiveRecordingController({
         recovery.setLiveCueUpdatesAllowed(true);
         await recovery.updateCurrentSessionStatus('active', { lastLifecycleState: 'listening' });
         recovery.clearSessionSnapshotSyncError();
+        recordLivePipelineTrace({
+          stage: 'CONTINUE_READY',
+          meetingId: checkpoint?.meetingId,
+          sessionId: recovery.activeSessionRecordIdRef.current,
+          segmentId: checkpoint?.segmentId,
+          revision: session.effectiveGlossaryRevision,
+          glossaryEntryCount: session.liveGlossaryEntries.length,
+          timestamp: new Date().toISOString()
+        });
         recovery.setStatus('listening');
         recovery.startSegmentSwitch?.();
       } catch (error) {
         await stopSessionSafely(session);
         if (recovery.sessionStopRequestedRef.current) return;
         recovery.sessionRef.current = null;
+        if ([
+          'glossary_revision_mismatch',
+          'token_segment_mismatch',
+          'recorder_session_mismatch',
+          'recorder_lease_invalid',
+          'meeting_lifecycle_conflict'
+        ].includes(error?.code)) {
+          if (meetingLifecycleRef.current) {
+            await executeMeetingLifecycleCommand('pause').catch(() => {});
+          }
+          recordLivePipelineTrace({
+            stage: 'CONTINUE_CONFIGURATION_FAILED',
+            meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+            sessionId: recovery.activeSessionRecordIdRef.current,
+            segmentId: recovery.activeMeetingCheckpointRef.current?.segmentId,
+            revision: session?.effectiveGlossaryRevision,
+            glossaryEntryCount: session?.liveGlossaryEntries?.length ?? 0,
+            reason: error.code,
+            errorCode: error.code,
+            timestamp: new Date().toISOString()
+          });
+          recovery.setError(error.userMessage || '字典設定同步失敗，請重試。');
+          recovery.setStatus('paused');
+          return;
+        }
         recovery.applyStartFailure(error, '無法繼續即時字幕。');
       }
     },

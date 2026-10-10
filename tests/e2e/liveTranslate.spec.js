@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { emitE2EAuthState, installE2EAuth } from './authBootstrap.js';
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { serializeEffectiveGlossary } from '../../src/lib/glossaryRevision.js';
 
 const MOCK_MEETING_ID = '11111111-1111-4111-8111-111111111111';
 const MOCK_SEGMENT_ID = (sequence) => `22222222-2222-4${String(sequence).padStart(3, '0')}-8${String(sequence).padStart(3, '0')}-${String(sequence).padStart(12, '0')}`;
@@ -208,6 +210,16 @@ test.beforeEach(async ({ page }) => {
     }
 
     page.liveTokenDiagnostics.actions[page.liveTokenDiagnostics.actions.length - 1] = 'FULFILL';
+    const liveGlossaryEntries = page.liveGlossaryEntries || [];
+    const effectiveGlossaryRevision = createHash('sha256')
+      .update(serializeEffectiveGlossary({
+        sourceLanguageCode: body.sourceLanguageCode,
+        targetLanguageCode: body.targetLanguageCode,
+        entries: liveGlossaryEntries
+      }))
+      .digest('hex');
+    const headers = request.headers();
+    const lifecycleVersion = Number(headers['x-meeting-lifecycle-version']);
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -215,8 +227,20 @@ test.beforeEach(async ({ page }) => {
         token: `mock-token-for-${body.targetLanguageCode}`,
         expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
           liveConnectModel: 'gemini-live-e2e-model',
-          liveConnectConfig: page.liveConnectConfig,
-        liveGlossaryEntries: page.liveGlossaryEntries
+        liveConnectConfig: page.liveConnectConfig,
+        liveGlossaryEntries,
+        effectiveGlossaryRevision,
+        glossaryEntryCount: liveGlossaryEntries.length,
+        ...(Number.isSafeInteger(lifecycleVersion)
+          ? {
+            authoritativeSegment: {
+              meetingId: body.meetingId,
+              sessionId: body.sessionId,
+              segmentId: body.segmentId,
+              lifecycleVersion
+            }
+          }
+          : {})
       })
     });
   });
@@ -2585,6 +2609,60 @@ test('newer same-user auth state cannot be overwritten by stale profile validati
   expect(authTrace.filter((entry) => entry.stage === 'AUTH_STATE_CHANGED'
     && entry.authEvent === 'TOKEN_REFRESHED').length).toBeGreaterThanOrEqual(2);
   expect(authTrace.some((entry) => entry.stage === 'LIVE_COMPONENT_UNMOUNTED')).toBe(false);
+});
+
+test('Save then Continue applies one glossary revision before listening', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+
+  page.liveGlossaryEntries = [];
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThanOrEqual(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.getByRole('button', { name: '停止錄音' }).click();
+  await expect(page.locator('.live-meeting-status').getByText('已暫停', { exact: true })).toBeVisible();
+
+  page.liveGlossaryEntries = [
+    { source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }
+  ];
+  await page.getByRole('button', { name: '繼續', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(2);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  const firstSnapshot = await page.evaluate(() => window.__liveTranslateDebug.getSnapshot());
+  expect(firstSnapshot.glossaryEntryCount).toBe(1);
+  expect(firstSnapshot.effectiveGlossaryRevision).toMatch(/^[a-f0-9]{64}$/);
+
+  await emitFinalTranscript(page, '你好你好', 'Hello. Hello.');
+  await expect(page.getByText('su3cl3, su3cl3.')).toBeVisible();
+
+  const firstConfiguredStages = await page.evaluate((revision) => (
+    window.__liveTranslateDebug.getPipelineTrace()
+      .filter((entry) => entry.revision === revision)
+      .map((entry) => entry.stage)
+  ), firstSnapshot.effectiveGlossaryRevision);
+  expect(firstConfiguredStages).toEqual(expect.arrayContaining([
+    'TOKEN_SEGMENT_BOUND',
+    'PROVIDER_CONFIGURED',
+    'CORRECTION_CONFIGURED',
+    'CONTINUE_READY'
+  ]));
+
+  await page.getByRole('button', { name: '停止錄音' }).click();
+  await expect(page.locator('.live-meeting-status').getByText('已暫停', { exact: true })).toBeVisible();
+  page.liveGlossaryEntries = [];
+  await page.getByRole('button', { name: '繼續', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(3);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  const secondSnapshot = await page.evaluate(() => window.__liveTranslateDebug.getSnapshot());
+  expect(secondSnapshot.glossaryEntryCount).toBe(0);
+  expect(secondSnapshot.effectiveGlossaryRevision).not.toBe(firstSnapshot.effectiveGlossaryRevision);
 });
 
 test('pause and resume drains first speech from the replacement pre-roll', async ({ page }) => {

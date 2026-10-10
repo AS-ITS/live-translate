@@ -7,6 +7,8 @@ import {
   pcm16ToFloat
 } from './audio.js';
 import { glossaryCorrectionForSource } from './glossaryReplacement.js';
+import { effectiveGlossaryRevision } from './glossaryRevision.js';
+import { meetingLifecycleWriteHeaders } from './meetingLifecycleWriteFence.js';
 import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDevices.js';
 import { setAudioOutputDevice } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
@@ -99,6 +101,7 @@ export class LiveTranslateSession {
     this.onClose = onClose;
     this.onConnectionFailure = onConnectionFailure;
     this.liveGlossaryEntries = liveGlossaryEntries;
+    this.effectiveGlossaryRevision = null;
     this.meetingId = meetingId;
     this.recordingId = recordingId;
     this.liveSessionId = liveSessionId;
@@ -299,17 +302,23 @@ export class LiveTranslateSession {
   async getTokenResponse({ forceRefresh = false } = {}) {
     const expiresAt = this.tokenState?.expiresAt ? Date.parse(this.tokenState.expiresAt) : 0;
     if (!forceRefresh && this.tokenState && expiresAt - Date.now() > TOKEN_REFRESH_SAFETY_MS) return this.tokenState;
+    const lifecycleBindingHeaders = meetingLifecycleWriteHeaders(this.meetingId, this.segmentId);
     const geminiApiKey = getLiveCredential();
     let tokenResponse;
     try {
       this.markStartupMilestone('live_token_request_start');
       tokenResponse = await fetchWithTimeout('/api/live-token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.authorizationHeaders },
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.authorizationHeaders,
+        ...lifecycleBindingHeaders
+      },
       body: JSON.stringify({
         mode: this.mode,
         ...(this.sessionId ? { sessionId: this.sessionId } : {}),
         ...(this.meetingId ? { meetingId: this.meetingId } : {}),
+        ...(this.segmentId ? { segmentId: this.segmentId } : {}),
         geminiApiKey,
         targetLanguageCode: this.targetLanguageCode,
         sourceLanguageCode: this.sourceLanguageCode,
@@ -350,8 +359,59 @@ export class LiveTranslateSession {
     }
     this.logLiveEvent('liveToken:success', { expiresAt: response.expiresAt || null });
     this.markStartupMilestone('live_token_request_end');
+    const liveGlossaryEntries = Array.isArray(response.liveGlossaryEntries) ? response.liveGlossaryEntries : [];
+    const calculatedRevision = await effectiveGlossaryRevision({
+      sourceLanguageCode: this.sourceLanguageCode,
+      targetLanguageCode: this.targetLanguageCode,
+      entries: liveGlossaryEntries
+    });
+    const requiresAuthoritativeBinding = Boolean(lifecycleBindingHeaders['x-meeting-lifecycle-version']);
+    if ((requiresAuthoritativeBinding && !response.effectiveGlossaryRevision)
+      || (response.effectiveGlossaryRevision && response.effectiveGlossaryRevision !== calculatedRevision)) {
+      const error = new Error('Live token glossary revision does not match its effective glossary.');
+      error.code = 'glossary_revision_mismatch';
+      error.userMessage = '字典設定同步失敗，錄音仍維持暫停，請重試。';
+      throw error;
+    }
+    if (Number.isSafeInteger(response.glossaryEntryCount)
+      && response.glossaryEntryCount !== liveGlossaryEntries.length) {
+      const error = new Error('Live token glossary entry count does not match its effective glossary.');
+      error.code = 'glossary_revision_mismatch';
+      error.userMessage = '字典設定同步失敗，錄音仍維持暫停，請重試。';
+      throw error;
+    }
+    const authoritativeSegment = response.authoritativeSegment;
+    if (requiresAuthoritativeBinding && !authoritativeSegment) {
+      const error = new Error('Live token did not include an authoritative Segment binding.');
+      error.code = 'token_segment_mismatch';
+      error.userMessage = '會議分段設定同步失敗，錄音仍維持暫停，請重試。';
+      throw error;
+    }
+    if (authoritativeSegment && (
+      authoritativeSegment.meetingId !== this.meetingId
+      || authoritativeSegment.sessionId !== this.sessionId
+      || authoritativeSegment.segmentId !== this.segmentId
+      || (requiresAuthoritativeBinding
+        && authoritativeSegment.lifecycleVersion !== Number(lifecycleBindingHeaders['x-meeting-lifecycle-version']))
+    )) {
+      const error = new Error('Live token is not bound to the requested authoritative Segment.');
+      error.code = 'token_segment_mismatch';
+      error.userMessage = '會議分段設定同步失敗，錄音仍維持暫停，請重試。';
+      throw error;
+    }
+    this.liveGlossaryEntries = liveGlossaryEntries;
+    this.effectiveGlossaryRevision = calculatedRevision;
     this.tokenState = { ...response, fetchedAt: Date.now() };
-    this.liveGlossaryEntries = Array.isArray(response.liveGlossaryEntries) ? response.liveGlossaryEntries : [];
+    this.tracePipeline('TOKEN_SEGMENT_BOUND', {
+      segmentId: authoritativeSegment?.segmentId || this.segmentId,
+      revision: calculatedRevision,
+      glossaryEntryCount: liveGlossaryEntries.length
+    });
+    this.tracePipeline('CORRECTION_CONFIGURED', {
+      segmentId: this.segmentId,
+      revision: calculatedRevision,
+      glossaryEntryCount: liveGlossaryEntries.length
+    });
     return this.tokenState;
   }
 
@@ -362,6 +422,12 @@ export class LiveTranslateSession {
     const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: 'v1alpha' } });
     const connectionEpoch = this.connectionEpoch;
     const providerEpoch = ++this.providerEpoch;
+    this.tracePipeline('PROVIDER_CONFIGURED', {
+      segmentId: this.segmentId,
+      providerEpoch,
+      revision: this.effectiveGlossaryRevision,
+      glossaryEntryCount: this.liveGlossaryEntries.length
+    });
     updateLivePipelineSessionStartedAt(Date.now());
     const config = {
       ...(liveConnectConfig || {}),
@@ -2174,6 +2240,9 @@ export class LiveTranslateSession {
       activeConnectionEpoch: this.closed ? null : this.connectionEpoch,
       activeSessionId: this.closed ? null : this.sessionId,
       activeLiveSessionId: this.closed ? null : this.liveSessionId,
+      activeSegmentId: this.closed ? null : this.segmentId,
+      effectiveGlossaryRevision: this.effectiveGlossaryRevision,
+      glossaryEntryCount: this.liveGlossaryEntries.length,
       activeAudioTurnId: this.closed ? null : this.audioTurnId,
       providerReady: this.providerReady,
       captureStarted: this.audioGraphEpoch !== null,

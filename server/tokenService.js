@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
 import { isSupportedLanguage } from './languages.js';
 import { mergeMeetingGlossaryEntries } from '../src/lib/meetingGlossary.js';
+import { serializeEffectiveGlossary } from '../src/lib/glossaryRevision.js';
 
 export const DEFAULT_LIVE_TRANSLATE_MODEL = 'gemini-3.5-live-translate-preview';
 export const LIVE_TRANSLATE_MODEL = DEFAULT_LIVE_TRANSLATE_MODEL;
@@ -157,7 +159,8 @@ export async function createLiveToken(body, options = {}) {
     throw error;
   }
   const meetingSettings = meeting
-    ? await activeMeetingSettingsSnapshot(meeting, options.meetingRepository)
+    ? options.authoritativeSegment?.settingsSnapshot
+      || await activeMeetingSettingsSnapshot(meeting, options.meetingRepository)
     : null;
   const glossaryEntries = meetingSettings
     ? mergeMeetingGlossaryEntries(
@@ -183,6 +186,13 @@ export async function createLiveToken(body, options = {}) {
     { ...request, liveTranslateModel: liveModel, ...(targetGlossaryEntries === undefined ? {} : { glossaryEntries: targetGlossaryEntries }) },
     now
   );
+  const effectiveGlossaryRevision = createHash('sha256')
+    .update(serializeEffectiveGlossary({
+      sourceLanguageCode: request.sourceLanguageCode,
+      targetLanguageCode: request.targetLanguageCode,
+      entries: targetGlossaryEntries || []
+    }))
+    .digest('hex');
   const client = options.client || (await createGenAiClient(apiKey));
 
   try {
@@ -192,7 +202,12 @@ export async function createLiveToken(body, options = {}) {
       expiresAt: configWithGlossary.expireTime,
       liveConnectModel: liveModel,
       liveConnectConfig: configWithGlossary.liveConnectConstraints.config,
-      liveGlossaryEntries: targetGlossaryEntries || []
+      liveGlossaryEntries: targetGlossaryEntries || [],
+      effectiveGlossaryRevision,
+      glossaryEntryCount: targetGlossaryEntries?.length || 0,
+      ...(options.authoritativeBinding
+        ? { authoritativeSegment: { ...options.authoritativeBinding } }
+        : {})
     };
   } catch (cause) {
     const error = new Error('Failed to create Gemini ephemeral token');

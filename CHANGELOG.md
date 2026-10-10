@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修正會議字典 Save → Stop/Continue 設定過期：Lifecycle v2 Resume 的 authoritative Segment 現在透過 session/segment/lifecycle version/lease/fence 綁定 `/api/live-token`；Provider instruction 與 deterministic correction 共用 `effective-glossary-v1` SHA-256 snapshot。revision 或 Segment 不一致時不會啟動 Gemini 或顯示聆聽中，而會回到可重試的暫停狀態；legacy Resume 不新增無條件 boundary。
+
 - 修正相同帳號的 Supabase `TOKEN_REFRESHED`／重複 `SIGNED_IN` 會讓 `AuthGate` 顯示 blocking loading shell 並卸載錄音 App：同一 `user.id` 現改為背景重新驗證 Profile，保留錄音、Gemini rollover、canonical Cue 與 Viewer DataChannel；換帳號、停用帳號、`auth_invalid` 與 `SIGNED_OUT` 仍會撤銷錄音存取。既有 pipeline trace 補上 Auth、React mount/unmount、rollover commit/failure 與 Gemini provider lifecycle，且不記錄 token 或字幕內容。
 
 - 新增僅限本機或明確 diagnostic build 的 Raw Translation Comparison：以同一 provider event identity 串接 raw source／raw translation、normalized、glossary-corrected 與 Cue canonical 階段，記錄 revision/version、authoritative snapshot 與 token-loss 訊號。資料只存瀏覽器記憶體，最多 500 筆、15 分鐘到期，可手動匯出、清除及關閉；不改 Cue association、merge policy 或翻譯行為。

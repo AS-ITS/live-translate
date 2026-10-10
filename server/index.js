@@ -7,6 +7,8 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SUPPORTED_LANGUAGES, isSupportedLanguage } from './languages.js';
 import { createLiveToken, DEFAULT_LIVE_TRANSLATE_MODEL, safeGeminiProviderDiagnostic } from './tokenService.js';
+import { mergeMeetingGlossaryEntries, liveGlossaryEntriesForTarget } from '../src/lib/meetingGlossary.js';
+import { serializeEffectiveGlossary } from '../src/lib/glossaryRevision.js';
 import { createAccessControl, getBearerToken } from './accessControl.js';
 import { createApplicationDependencies, createProductionApplicationDependencies, ensureDataDirectory } from './compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
@@ -1945,6 +1947,37 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         ...(Object.hasOwn(body || {}, 'glossaryEntries') ? { glossaryEntries: body.glossaryEntries } : {}),
         ...(Object.hasOwn(body || {}, 'privateGlossaryEntries') ? { privateGlossaryEntries: body.privateGlossaryEntries } : {})
       }});
+      if (Object.hasOwn(body || {}, 'glossaryEntries') || Object.hasOwn(body || {}, 'privateGlossaryEntries')) {
+        const updatedMeeting = result?.meeting || result;
+        const sourceLanguageCode = updatedMeeting?.sourceLanguageCode || body.sourceLanguageCode || 'zh-Hant';
+        const targetLanguageCode = updatedMeeting?.targetLanguageCode || body.targetLanguageCode || 'en';
+        const globalGlossary = typeof glossaryController?.listEntries === 'function'
+          ? await glossaryController.listEntries()
+          : [];
+        const globalLiveEntries = liveGlossaryEntriesForTarget(
+          globalGlossary.filter((entry) => !entry.scope || entry.scope === 'live' || entry.scope === 'both'),
+          targetLanguageCode
+        );
+        const effectiveEntries = mergeMeetingGlossaryEntries(
+          [...globalLiveEntries, ...(updatedMeeting?.glossaryEntries || [])],
+          updatedMeeting?.privateGlossaryEntries || [],
+          targetLanguageCode
+        );
+        const revision = crypto.createHash('sha256')
+          .update(serializeEffectiveGlossary({ sourceLanguageCode, targetLanguageCode, entries: effectiveEntries }))
+          .digest('hex');
+        const glossaryEvent = {
+          level: 'info',
+          requestId,
+          meetingId,
+          revision,
+          glossaryEntryCount: effectiveEntries.length,
+          statusCode: 200,
+          timestamp: new Date().toISOString()
+        };
+        requestLogger({ ...glossaryEvent, event: 'GLOSSARY_SAVE_ACCEPTED' });
+        requestLogger({ ...glossaryEvent, event: 'GLOSSARY_REVISION_UPDATED' });
+      }
       statusCode = 200;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
@@ -3006,6 +3039,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     delete body.geminiApiKey;
     if (typeof requestApiKey !== 'string' || requestApiKey.trim() === '') throw createHttpError('server_misconfigured');
     let tokenRequest = body;
+    let authoritativeSegment = null;
+    let authoritativeBinding = null;
     if (hasRecorderHeaders(req)) {
       const sessionId = body?.sessionId;
       const auth = await authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
@@ -3014,8 +3049,49 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       tokenRequest = { ...body, targetLanguageCode: session.targetLanguageCode, sourceLanguageCode: session.sourceLanguageCode };
       void auth;
     }
+    const meeting = await meetingRepository?.getMeeting?.(body.meetingId);
+    if (meeting?.lifecycleContractVersion === 2) {
+      const headerSessionId = req.headers?.['x-meeting-session-id'];
+      const headerSegmentId = req.headers?.['x-meeting-segment-id'];
+      const headerLeaseId = req.headers?.['x-meeting-lease-id'];
+      const headerFenceToken = Number(req.headers?.['x-meeting-fence-token']);
+      const headerLifecycleVersion = Number(req.headers?.['x-meeting-lifecycle-version']);
+      if (!meetingLifecycleService
+        || typeof body.segmentId !== 'string'
+        || body.segmentId !== headerSegmentId
+        || body.sessionId !== headerSessionId
+        || !Number.isSafeInteger(headerFenceToken)
+        || !Number.isSafeInteger(headerLifecycleVersion)
+        || headerLifecycleVersion !== meeting.lifecycleVersion) {
+        throw createHttpError('recorder_session_mismatch');
+      }
+      await meetingLifecycleService.validateWrite({
+        meetingId: body.meetingId,
+        sessionId: headerSessionId,
+        segmentId: headerSegmentId,
+        leaseId: headerLeaseId,
+        fenceToken: headerFenceToken
+      });
+      const segments = await meetingRepository.listMeetingSegments(body.meetingId);
+      authoritativeSegment = segments.find((segment) => segment.id === headerSegmentId) || null;
+      if (!authoritativeSegment
+        || authoritativeSegment.status !== 'active'
+        || (authoritativeSegment.sessionId && authoritativeSegment.sessionId !== headerSessionId)) {
+        throw createHttpError('recorder_session_mismatch');
+      }
+      authoritativeBinding = {
+        meetingId: body.meetingId,
+        sessionId: headerSessionId,
+        segmentId: authoritativeSegment.id,
+        lifecycleVersion: meeting.lifecycleVersion
+      };
+    }
     targetLanguageCode = tokenRequest.targetLanguageCode || 'en';
-    const token = await liveTokenCreator(tokenRequest, { apiKey: requestApiKey });
+    const token = await liveTokenCreator(tokenRequest, {
+      apiKey: requestApiKey,
+      authoritativeSegment,
+      authoritativeBinding
+    });
     try {
       observabilityMetrics?.recordCounter(OBSERVABILITY_METRIC_NAMES.GEMINI_REQUEST, 1, { provider: 'gemini', operation: 'token', statusClass: '200' });
       observabilityMetrics?.recordLatency(OBSERVABILITY_METRIC_NAMES.GEMINI_LATENCY, Math.max(0, performance.now() - startedAt), { provider: 'gemini', operation: 'token', statusClass: '200' });
@@ -3026,8 +3102,24 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       expiresAt: token?.expiresAt,
       ...(token?.liveConnectModel ? { liveConnectModel: token.liveConnectModel } : {}),
       ...(token?.liveConnectConfig ? { liveConnectConfig: token.liveConnectConfig } : {}),
-      ...(Array.isArray(token?.liveGlossaryEntries) ? { liveGlossaryEntries: token.liveGlossaryEntries } : {})
+      ...(Array.isArray(token?.liveGlossaryEntries) ? { liveGlossaryEntries: token.liveGlossaryEntries } : {}),
+      effectiveGlossaryRevision: token?.effectiveGlossaryRevision,
+      glossaryEntryCount: token?.glossaryEntryCount ?? 0,
+      ...(token?.authoritativeSegment ? { authoritativeSegment: token.authoritativeSegment } : {})
     }, requestId, { 'Cache-Control': 'no-store' });
+    requestLogger({
+      level: 'info',
+      event: 'TOKEN_SEGMENT_BOUND',
+      requestId,
+      meetingId: authoritativeBinding?.meetingId || body.meetingId,
+      sessionId: authoritativeBinding?.sessionId || body.sessionId,
+      segmentId: authoritativeBinding?.segmentId || body.segmentId,
+      lifecycleVersion: authoritativeBinding?.lifecycleVersion ?? meeting?.lifecycleVersion ?? null,
+      revision: token?.effectiveGlossaryRevision || null,
+      glossaryEntryCount: token?.glossaryEntryCount ?? 0,
+      statusCode: 200,
+      timestamp: new Date().toISOString()
+    });
     logEvent({
       level: 'info',
       event: 'token_issued',

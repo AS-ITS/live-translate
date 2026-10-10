@@ -201,7 +201,11 @@ export function createApplicationDependencies(options = {}) {
     ? glossaryControllerFactory({ glossary: translationGlossary })
     : glossaryController;
   const resolvedLiveTokenCreator = liveTokenCreator === undefined
-    ? (body) => createLiveToken(body, { glossary: translationGlossary, meetingRepository: resolvedMeetingRepository })
+    ? (body, tokenOptions = {}) => createLiveToken(body, {
+      ...tokenOptions,
+      glossary: translationGlossary,
+      meetingRepository: resolvedMeetingRepository
+    })
     : liveTokenCreator;
   const resolvedMeetingRepository = Object.prototype.hasOwnProperty.call(options, 'meetingRepository')
     ? meetingRepository

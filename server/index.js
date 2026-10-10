@@ -974,6 +974,7 @@ async function handleRequestWithSessionReadController(
       statusCode,
       errorCode: 'cloud_capability_unavailable',
       safeSummary: 'Production cloud environment is not ready.',
+      cloudCapabilitySource: 'production_cloud_environment',
       durationMs: Math.round(performance.now() - startedAt),
       clientIp,
       origin
@@ -1059,6 +1060,7 @@ async function handleRequestWithSessionReadController(
       statusCode,
       errorCode: 'cloud_capability_unavailable',
       safeSummary: 'Cloud capability is disabled by profile-only mode.',
+      cloudCapabilitySource: 'profile_only_mode',
       durationMs: Math.round(performance.now() - startedAt),
       clientIp,
       origin
@@ -1835,11 +1837,17 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       sessionId: null,
       lifecycleVersion: null,
       rpcName: null,
+      rpcAttempted: false,
+      cloudCapabilitySource: null,
       failureStage: 'request',
-      commitStatus: 'unknown'
+      commitStatus: 'not_started'
     };
     try {
-      if (!legacyResumeService) throw createHttpError('cloud_capability_unavailable');
+      legacyResumeDiagnostic.failureStage = 'capability_composition';
+      if (!legacyResumeService) {
+        legacyResumeDiagnostic.cloudCapabilitySource = 'legacy_resume_service';
+        throw createHttpError('cloud_capability_unavailable');
+      }
       const meetingId = parseLegacyMeetingResumePath(path);
       legacyResumeDiagnostic.meetingId = meetingId;
       const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
@@ -1870,6 +1878,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       if (body?.reconcileOnly === true) {
         legacyResumeDiagnostic.failureStage = 'reconcile_rpc';
         legacyResumeDiagnostic.rpcName = 'get_legacy_resume_operation';
+        legacyResumeDiagnostic.rpcAttempted = true;
+        legacyResumeDiagnostic.commitStatus = 'read_only';
         result = await legacyResumeService.getOperation({
           ownerUserId: principal.ownerUserId,
           meetingId,
@@ -1893,7 +1903,9 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
           meeting.targetLanguageCode
         );
         legacyResumeDiagnostic.failureStage = 'resume_rpc';
-        legacyResumeDiagnostic.rpcName = 'resume_legacy_recording_transaction';
+        legacyResumeDiagnostic.rpcName = 'resume_legacy_meeting_segment';
+        legacyResumeDiagnostic.rpcAttempted = true;
+        legacyResumeDiagnostic.commitStatus = 'unknown';
         result = await legacyResumeService.execute({
           ...payload,
           ownerUserId: principal.ownerUserId,

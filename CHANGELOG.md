@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- 修正 Legacy Continue 在暫時性 503／timeout 後只能靠重新整理恢復：同一頁現在先對帳 durable operation，再以同一 `operationId`、payload 與 `nextLiveSessionId` 做有限重試；reload 也重用相同 recovery path，且只有 Token、Provider、revision 與錄音都 ready 後才完成本機 operation。Session Command 日誌另加入安全的 RPC、failure stage、commit status 與 SQLSTATE 診斷欄位。
+- 修正 Legacy Continue 在暫時性 503／timeout 後只能靠重新整理恢復：同一頁現在先對帳 durable operation，再以同一 `operationId`、payload 與 `nextLiveSessionId` 做有限重試；reload 也重用相同 recovery path，且只有 Token、Provider、revision 與錄音都 ready 後才完成本機 operation。Session Command 日誌另加入正確的 `resume_legacy_meeting_segment` RPC 名稱、RPC attempted、cloud capability source、failure stage、commit status 與 service-role SQLSTATE 安全診斷欄位。
 - 修正 Legacy Stop → Save Glossary → Continue 使用舊 Segment snapshot：Continue 現在以 service-role-only transactional RPC、durable IndexedDB operationId 與 lost-ACK reconciliation 建立唯一 successor Segment；新 Segment 凍結最新 Global + Meeting glossary，Token、Provider 與 deterministic correction 必須綁定同一 revision 後才恢復錄音。
 
 - 修正會議字典 Save → Stop/Continue 設定過期：Lifecycle v2 Resume 的 authoritative Segment 現在透過 session/segment/lifecycle version/lease/fence 綁定 `/api/live-token`；Provider instruction 與 deterministic correction 共用 `effective-glossary-v1` SHA-256 snapshot。revision 或 Segment 不一致時不會啟動 Gemini 或顯示聆聽中，而會回到可重試的暫停狀態。

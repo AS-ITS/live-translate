@@ -130,6 +130,10 @@ export function createSupabaseServiceRoleClient({
           : 'supabase_request_failed');
       error.supabaseMessage = typeof responseBody?.message === 'string' ? responseBody.message : null;
       error.supabaseDetails = typeof responseBody?.details === 'string' ? responseBody.details : null;
+      applySafeSupabaseFailureDiagnostics(error, responseBody, {
+        resource: functionName,
+        operation: 'RPC'
+      });
       throw error;
     }
     return response.status === 204 ? [] : response.json();
@@ -241,6 +245,10 @@ async function addSafeSupabaseFailureDiagnostics(error, response, { resource, op
     // A non-JSON response still retains its upstream HTTP status.
   }
 
+  applySafeSupabaseFailureDiagnostics(error, body, { resource, operation });
+}
+
+function applySafeSupabaseFailureDiagnostics(error, body, { resource, operation }) {
   const supabaseCode = safeIdentifier(body?.code);
   error.supabaseCode = supabaseCode;
   error.supabaseErrorClass = supabaseErrorClass(supabaseCode);

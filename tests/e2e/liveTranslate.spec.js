@@ -45,6 +45,7 @@ test.beforeEach(async ({ page }) => {
   page.on('response', recordLiveTokenResponse);
   page.on('requestfailed', recordLiveTokenRequestFailed);
   page.failLiveTokenRequestAt = null;
+  page.failLiveTokenRequestFrom = null;
   page.liveGlossaryEntries = [];
   page.liveConnectConfig = {};
   page.delayLiveTokenRequestMs = 0;
@@ -195,7 +196,9 @@ test.beforeEach(async ({ page }) => {
     const body = request.postDataJSON() || {};
     page.liveTokenRequests.push(body);
 
-    if (page.failLiveTokenRequestAt === page.liveTokenRequests.length) {
+    if (page.failLiveTokenRequestAt === page.liveTokenRequests.length
+      || (Number.isInteger(page.failLiveTokenRequestFrom)
+        && page.liveTokenRequests.length >= page.failLiveTokenRequestFrom)) {
       page.liveTokenDiagnostics.actions[page.liveTokenDiagnostics.actions.length - 1] = 'FULFILL';
       await route.fulfill({
         status: 503,
@@ -992,10 +995,18 @@ async function gotoMockMeetingLive(page, { sourceLanguageCode, targetLanguageCod
   await expect(page).toHaveURL(new RegExp(`#live\\?meetingId=${MOCK_MEETING_ID}$`));
   await expect(page.locator('h1', { hasText: '即時字幕' })).toBeVisible();
   await expect(page.getByTestId('live-session-toolbar')).toContainText('測試會議');
-  await expect(page.getByTestId('live-session-toolbar').getByText(meetingStatus === 'active' ? '進行中' : '準備就緒', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('live-session-toolbar').getByText(meetingStatus === 'active' ? '進行中' : '準備就緒', { exact: true })).toHaveText(meetingStatus === 'active' ? '進行中' : '準備就緒');
   if (!page.skipTestGeminiCredential) await configureTestGeminiCredential(page);
   await expect(page.locator('h1', { hasText: '即時字幕' })).toBeVisible();
-  await expect(page.getByRole('link', { name: '返回會議管理' })).toHaveAttribute('href', '#meetings');
+  if ((page.viewportSize()?.width || 0) >= 720) {
+    const backToMeetings = page.getByRole('link', { name: '返回會議管理' })
+      .or(page.getByRole('button', { name: '返回會議管理' }))
+      .first();
+    await expect(backToMeetings).toBeAttached();
+    if (await backToMeetings.evaluate((element) => element.tagName === 'A')) {
+      await expect(backToMeetings).toHaveAttribute('href', '#meetings');
+    }
+  }
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
 }
 
@@ -2704,7 +2715,7 @@ test('Save then Continue applies one glossary revision before listening', async 
   await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
   await page.getByRole('button', { name: '停止錄音' }).click();
-  await expect(page.locator('.live-meeting-status').getByText('已暫停', { exact: true })).toBeVisible();
+  await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
 
   page.liveGlossaryEntries = [
     { source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }
@@ -2734,7 +2745,7 @@ test('Save then Continue applies one glossary revision before listening', async 
   ]));
 
   await page.getByRole('button', { name: '停止錄音' }).click();
-  await expect(page.locator('.live-meeting-status').getByText('已暫停', { exact: true })).toBeVisible();
+  await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
   page.liveGlossaryEntries = [];
   await page.getByRole('button', { name: '繼續', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(3);
@@ -2758,7 +2769,7 @@ for (const legacyResumeFailure of ['before-commit-503', 'lost-ack']) {
     await emitMicrophoneAudio(page);
     await expect(page.getByText('聆聽中')).toBeVisible();
     await page.getByRole('button', { name: '停止錄音' }).click();
-    await expect(page.locator('.live-meeting-status').getByText('已暫停', { exact: true })).toBeVisible();
+    await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
 
     page.liveGlossaryEntries = [{ source: '你好', target: 'su3cl3', replacementAliases: [] }];
     await page.getByRole('button', { name: '繼續', exact: true }).click();
@@ -2778,6 +2789,41 @@ for (const legacyResumeFailure of ['before-commit-503', 'lost-ack']) {
   });
 }
 
+test('legacy Continue reuses committed successor after token failure without reload', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThanOrEqual(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.getByRole('button', { name: '停止錄音' }).click();
+  await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
+
+  page.liveGlossaryEntries = [{ source: '你好', target: 'su3cl3', replacementAliases: [] }];
+  page.failLiveTokenRequestFrom = 2;
+  await page.getByRole('button', { name: '繼續', exact: true }).click();
+  await expect.poll(() => page.liveTokenRequests.length).toBeGreaterThanOrEqual(2);
+  await expect(page.locator('.live-error-message')).toBeVisible();
+  await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
+
+  const processorCountAfterFailure = await page.evaluate(() => window.__mockAudioProcessors.length);
+  page.failLiveTokenRequestFrom = null;
+  await page.getByRole('button', { name: '繼續', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length))
+    .toBeGreaterThan(processorCountAfterFailure);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  const mutationRequests = checkpointRequests.legacyResumeRequests.filter((request) => request.reconcileOnly !== true);
+  expect(mutationRequests).toHaveLength(1);
+  expect(checkpointRequests.legacyResumeOperations.size).toBe(1);
+  expect([...checkpointRequests.legacyResumeOperations.values()][0].segment.id).toBe(MOCK_SEGMENT_ID(2));
+  expect(checkpointRequests.legacyResumeRequests.some((request) => request.reconcileOnly === true)).toBe(true);
+});
+
 test('pause and resume drains first speech from the replacement pre-roll', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
   await mockLiveSessionCreateApi(page);
@@ -2788,7 +2834,7 @@ test('pause and resume drains first speech from the replacement pre-roll', async
   await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
   await page.getByRole('button', { name: '停止錄音' }).click();
-  await expect(page.locator('.live-meeting-status').getByText('已暫停', { exact: true })).toBeVisible();
+  await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
 
   await page.evaluate(() => { window.__mockLiveConnectDelayMs = 1000; });
   await page.getByRole('button', { name: '繼續', exact: true }).click();

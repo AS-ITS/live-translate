@@ -286,7 +286,7 @@ test('legacy resume route logs safe RPC failure stage and SQLSTATE', async () =>
         error.status = 503;
         error.supabaseStatus = 503;
         error.supabaseCode = '57014';
-        error.supabaseResource = 'resume_legacy_recording_transaction';
+        error.supabaseResource = 'resume_legacy_meeting_segment';
         error.supabaseOperation = 'RPC';
         throw error;
       }
@@ -317,12 +317,35 @@ test('legacy resume route logs safe RPC failure stage and SQLSTATE', async () =>
   assert.equal(event.nextLiveSessionId, 'live-2');
   assert.equal(event.sessionId, 'session-1');
   assert.equal(event.lifecycleVersion, 7);
-  assert.equal(event.rpcName, 'resume_legacy_recording_transaction');
+  assert.equal(event.rpcName, 'resume_legacy_meeting_segment');
+  assert.equal(event.rpcAttempted, true);
   assert.equal(event.failureStage, 'resume_rpc');
   assert.equal(event.commitStatus, 'unknown');
   assert.equal(event.supabaseStatus, 503);
   assert.equal(event.supabaseCode, '57014');
   assert.doesNotMatch(JSON.stringify(event), /private provider message/u);
+});
+
+test('legacy resume reports unavailable server capability before any RPC', async () => {
+  const logs = [];
+  const handler = createHandler(undefined, {
+    legacyResumeService: null,
+    requestLogger(event) { logs.push(event); }
+  });
+
+  const response = await request(handler, {
+    url: '/api/meetings/meeting-1/recording/legacy-resume',
+    body: { sourceSegmentId: 'segment-1' }
+  });
+
+  assert.equal(response.status, 503);
+  assert.equal(response.json().error.code, 'cloud_capability_unavailable');
+  const event = logs.find((entry) => entry.event === 'legacy_resume_command');
+  assert.equal(event.failureStage, 'capability_composition');
+  assert.equal(event.cloudCapabilitySource, 'legacy_resume_service');
+  assert.equal(event.rpcName, null);
+  assert.equal(event.rpcAttempted, false);
+  assert.equal(event.commitStatus, 'not_started');
 });
 
 function createHandler(meetingLifecycleService, { meetingAudioService, ...extra } = {}) {

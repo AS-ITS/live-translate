@@ -139,3 +139,36 @@ test('Supabase RPC exposes SQLSTATE and RPC name without raw provider details', 
     }
   );
 });
+
+test('Supabase service-role RPC exposes safe SQLSTATE diagnostics', async () => {
+  const client = createSupabaseServiceRoleClient({
+    env: {
+      SUPABASE_URL: 'https://project.supabase.co',
+      SUPABASE_SECRET_KEY: 'service-key'
+    },
+    fetchImpl: async () => ({
+      ok: false,
+      status: 503,
+      async json() {
+        return {
+          code: '57014',
+          message: 'private database diagnostics',
+          details: 'must not escape'
+        };
+      }
+    })
+  });
+
+  await assert.rejects(
+    client.rpc('resume_legacy_meeting_segment', {}),
+    (error) => {
+      assert.equal(error.code, 'supabase_request_failed');
+      assert.equal(error.supabaseStatus, 503);
+      assert.equal(error.supabaseCode, '57014');
+      assert.equal(error.supabaseErrorClass, 'database_request_rejected');
+      assert.equal(error.supabaseResource, 'resume_legacy_meeting_segment');
+      assert.equal(error.supabaseOperation, 'RPC');
+      return true;
+    }
+  );
+});

@@ -402,6 +402,7 @@ export function createApplicationDependencies(options = {}) {
       ...(sessionShareService !== undefined ? { sessionShareService } : {}),
       recorderLeaseService,
       ...(meetingLifecycleService ? { meetingLifecycleService } : {}),
+      ...(options.legacyResumeService ? { legacyResumeService: options.legacyResumeService } : {}),
       ...(resolvedSessionApplicationService !== undefined
         ? { sessionApplicationService: resolvedSessionApplicationService }
         : {}),

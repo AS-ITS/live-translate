@@ -4044,6 +4044,41 @@ test('live recording adapts the meeting design system across desktop and mobile 
   expect(smallPhoneLayout.hasHorizontalOverflow).toBe(false);
   expect(smallPhoneLayout.cuePanelHeightRatio).toBeGreaterThan(0.5);
 
+  await page.setViewportSize({ width: 320, height: 812 });
+  const originalMeetingTitle = await page.locator('.live-meeting-summary h2').textContent();
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = '20px';
+    const title = document.querySelector('.live-meeting-summary h2');
+    if (title) title.textContent = '跨部門產品策略與客戶成功同步會議';
+  });
+  const narrowPhoneLayout = await page.evaluate(() => {
+    const title = document.querySelector('.live-meeting-summary h2');
+    const toolbarStatus = document.querySelector('.live-toolbar-status');
+    const sessionActions = document.querySelector('.session-actions');
+    const buttons = [...document.querySelectorAll('.session-actions > .button')];
+    return {
+      hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      titleWritingMode: title ? getComputedStyle(title).writingMode : '',
+      titleFits: title ? title.scrollWidth <= title.clientWidth : false,
+      statusFits: toolbarStatus ? toolbarStatus.scrollWidth <= toolbarStatus.clientWidth : false,
+      actionColumns: sessionActions ? getComputedStyle(sessionActions).gridTemplateColumns.split(' ').filter(Boolean).length : 0,
+      touchTargetsValid: buttons.every((button) => button.getBoundingClientRect().height >= 44)
+    };
+  });
+  expect(narrowPhoneLayout).toEqual({
+    hasHorizontalOverflow: false,
+    titleWritingMode: 'horizontal-tb',
+    titleFits: true,
+    statusFits: true,
+    actionColumns: 1,
+    touchTargetsValid: true
+  });
+  await page.evaluate((titleText) => {
+    document.documentElement.style.removeProperty('font-size');
+    const title = document.querySelector('.live-meeting-summary h2');
+    if (title) title.textContent = titleText;
+  }, originalMeetingTitle);
+
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByTestId('live-session-toolbar').getByRole('button', { name: '詳細狀態' }).click();
   const typography = await page.evaluate(() => {

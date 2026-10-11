@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 修正 Stop／Continue 後 successor Segment 的 Cue 被錯誤判定為 `recorder_session_mismatch`：Recorder 寫入現在接受同 Meeting 中反向綁定相同 Session 的 Segment，同時保留舊 Segment 延後重送；Cue、checkpoint 與 terminal retry 由單一 Cloud save state 聚合，Stop 會重播本機 Cue，成功重試可清除 stale failure。Continue diagnostics 從點擊起記錄 barrier、Resume、Token、Provider、Audio 與 listening elapsed time；320–480px toolbar 改為分列並保留 44px touch target。
 - 將字典修正與錄音 Resume 解耦：Provider glossary 仍為 Segment immutable token/system-instruction snapshot；Correction glossary 在 Save 後透過既有 API hot reload，依 Turn 固定 revision，舊 partial/final/late-final 與已完成 Cue 不追溯修改。Refresh 失敗會保留上一個已確認 snapshot 並顯示 pending，不阻止合法錄音。
 - 修正同頁 Continue 僅依賴 volatile lifecycle ref 導致 v2 錄音誤走 Legacy Resume 的問題；現在同時查驗 durable Session 與 authoritative Meeting lifecycle version，並保留 lease/fence、checkpoint、transactional resume、stable operationId 與 lost-ACK reconciliation。
 

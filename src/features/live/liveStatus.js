@@ -5,6 +5,7 @@ const MEETING_CHECKPOINT_STATUS_LABELS = {
   ready: '會議模式：準備中',
   ending: '正在結束會議…',
   syncing: '會議模式：保存中',
+  retrying: '會議模式：正在重試雲端保存',
   synced: '會議模式：已保存',
   switching: '會議模式：切換段落中',
   switched: '會議模式：下一段已開始',

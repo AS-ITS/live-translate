@@ -1872,6 +1872,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         meetingId,
         segmentId: sourceSegmentId,
         sessionRepository,
+        meetingRepository,
         sessionShareService,
         recorderGrantService,
         recorderLeaseService
@@ -2309,16 +2310,20 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const body = await readJson(req, { maxBytes: 100_000 });
       const sessionId = body?.sessionId || req.headers?.['x-recorder-session-id'];
       cueRequestContext.sessionId = sessionId || null;
-      const existing = await sessionRepository.getSessionRecord(sessionId);
-      if (!existing?.sessionRecord || existing.sessionRecord.meetingId !== meetingId || existing.sessionRecord.segmentId !== segmentId) {
-        throw createHttpError('recorder_session_mismatch');
-      }
+      const existing = await validateMeetingSessionSegmentBinding({
+        meetingId,
+        segmentId,
+        sessionId,
+        sessionRepository,
+        meetingRepository
+      });
       if (hasRecorderHeaders(req)) {
         await authorizeRecorderMeetingWrite({
           req,
           meetingId,
           segmentId,
           sessionRepository,
+          meetingRepository,
           sessionShareService,
           recorderGrantService,
           recorderLeaseService
@@ -2461,7 +2466,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingSegmentRolloverPath(path);
-      await authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, sessionShareService, recorderGrantService, recorderLeaseService });
+      await authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, meetingRepository, sessionShareService, recorderGrantService, recorderLeaseService });
       const result = await meetingCheckpointService.rolloverSegment({
         meetingId,
         segmentId,
@@ -2530,7 +2535,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingSegmentRecoverPath(path);
-      await authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, sessionShareService, recorderGrantService, recorderLeaseService });
+      await authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, meetingRepository, sessionShareService, recorderGrantService, recorderLeaseService });
       const result = await meetingCheckpointService.recoverSegment({
         meetingId,
         segmentId,
@@ -2574,7 +2579,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       checkpointParams = parseMeetingSegmentCheckpointPath(path, { strictIds: strictCheckpointPathIds });
       const { meetingId, segmentId } = checkpointParams;
       if (req.method === 'PUT') {
-        await authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, sessionShareService, recorderGrantService, recorderLeaseService });
+        await authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, meetingRepository, sessionShareService, recorderGrantService, recorderLeaseService });
       }
       const result = req.method === 'GET'
         ? await meetingCheckpointService.getCheckpoint({ meetingId, segmentId })
@@ -3579,13 +3584,34 @@ async function authorizeRecorderWrite({ req, sessionId, sessionShareService, rec
   });
 }
 
-async function authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, sessionShareService, recorderGrantService, recorderLeaseService }) {
-  if (!hasRecorderHeaders(req)) return null;
-  const sessionId = req.headers?.['x-recorder-session-id'];
+async function validateMeetingSessionSegmentBinding({ meetingId, segmentId, sessionId, sessionRepository, meetingRepository }) {
   const existing = await sessionRepository?.getSessionRecord?.(sessionId);
-  if (!existing?.sessionRecord || existing.sessionRecord.meetingId !== meetingId || existing.sessionRecord.segmentId !== segmentId) {
+  const sessionRecord = existing?.sessionRecord;
+  if (!sessionRecord || sessionRecord.meetingId !== meetingId) {
     throw createHttpError('recorder_session_mismatch');
   }
+  if (sessionRecord.segmentId === segmentId) return existing;
+
+  const segments = typeof meetingRepository?.listMeetingSegments === 'function'
+    ? await meetingRepository.listMeetingSegments(meetingId)
+    : [];
+  const segment = segments.find((candidate) => candidate?.id === segmentId);
+  if (!segment || segment.sessionId !== sessionId) {
+    throw createHttpError('recorder_session_mismatch');
+  }
+  return existing;
+}
+
+async function authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, meetingRepository, sessionShareService, recorderGrantService, recorderLeaseService }) {
+  if (!hasRecorderHeaders(req)) return null;
+  const sessionId = req.headers?.['x-recorder-session-id'];
+  await validateMeetingSessionSegmentBinding({
+    meetingId,
+    segmentId,
+    sessionId,
+    sessionRepository,
+    meetingRepository
+  });
   return authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
 }
 

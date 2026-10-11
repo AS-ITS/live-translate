@@ -25,6 +25,7 @@ test('enables live meeting start only after the matching checkpoint draft is loa
 
 test('labels meeting completion as ending while completion is pending', () => {
   assert.equal(meetingCheckpointStatusLabel('ending'), '正在結束會議…');
+  assert.equal(meetingCheckpointStatusLabel('retrying'), '會議模式：正在重試雲端保存');
 });
 
 test('composes checkpoint and active audio status messages', () => {

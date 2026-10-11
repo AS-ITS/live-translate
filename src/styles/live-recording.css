@@ -41,8 +41,8 @@
 .live-recording-app-shell .live-header-actions { display: flex; align-items: center; justify-content: flex-end; flex: 0 1 auto; flex-wrap: wrap; gap: var(--space-2); min-width: 0; }
 .live-recording-page .live-meeting-summary { display: flex; align-items: center; gap: var(--space-4); min-width: 0; }
 .live-recording-page .live-meeting-summary-main { min-width: 0; }
-.live-recording-page .live-meeting-summary h2 { margin: 0; overflow-wrap: anywhere; font-size: var(--text-lg); line-height: 1.25; }
-.live-recording-page .live-meeting-language { margin: var(--space-1) 0 0; color: var(--color-text-muted); font-size: var(--text-sm); }
+.live-recording-page .live-meeting-summary h2 { margin: 0; min-width: 0; overflow-wrap: break-word; word-break: keep-all; font-size: var(--text-lg); line-height: 1.25; }
+.live-recording-page .live-meeting-language { margin: var(--space-1) 0 0; min-width: 0; overflow-wrap: break-word; word-break: keep-all; color: var(--color-text-muted); font-size: var(--text-sm); }
 .live-recording-page .live-meeting-status { flex: 0 0 auto; }
 .live-recording-page .live-meeting-settings-button { flex: 0 0 auto; white-space: nowrap; }
 .live-recording-page .live-meeting-picker { display: inline-flex; align-items: center; gap: var(--space-2); width: min(100%, 20rem); color: var(--color-text-muted); font-size: var(--text-sm); font-weight: 700; }
@@ -208,6 +208,13 @@
 }
 
 @media (max-width: 480px) {
+  .live-recording-app-shell .live-recording-page .control-status-row,
+  .live-recording-page .control-status-row { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+  .live-recording-page .live-meeting-summary-column,
+  .live-recording-page .live-toolbar-status,
+  .live-recording-page .control-actions { grid-column: 1; width: 100%; min-width: 0; }
+  .live-recording-page .live-toolbar-status { justify-content: flex-start; flex-wrap: wrap; }
+  .live-recording-page .live-save-status { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: break-word; word-break: keep-all; }
   .live-recording-page .gemini-credential-notice-icon { display: none; }
   .live-recording-page .gemini-credential-notice strong { line-height: 1.35; }
   .live-recording-page .live-meeting-status { display: none; }
@@ -218,6 +225,14 @@
   .live-recording-page .cue-panel-actions .live-inline-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .live-recording-page .subtitle-visibility-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(100%, 14rem); }
   .live-recording-page .subtitle-visibility-toggle { min-width: 0; padding-inline: var(--space-2); }
+}
+
+@media (max-width: 360px) {
+  .live-recording-page .control-actions { grid-template-columns: minmax(0, 1fr); }
+  .live-recording-page .session-actions { grid-column: 1; grid-template-columns: minmax(0, 1fr); }
+  .live-recording-page .session-actions > .button,
+  .live-recording-page .session-actions > .button:only-child { grid-column: 1; min-height: 2.75rem; }
+  .live-recording-page .control-actions > .live-focus-mode-button { grid-column: 1; grid-row: auto; width: 100%; }
 }
 @media (max-width: 760px) {
   .live-recording-app-shell .meeting-app-header .brand-block { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; }

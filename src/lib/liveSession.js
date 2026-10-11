@@ -76,6 +76,7 @@ export class LiveTranslateSession {
     speechActivityRmsThreshold = SPEECH_ACTIVITY_RMS_THRESHOLD,
     firstPcmTimeoutMs = LIVE_SETUP_TIMEOUT_MS,
     startupStartedAt = null,
+    continueStartedAt = null,
     onStartupMilestone,
     onInputBufferOverflow,
     maxPendingInputAudioBytes = MAX_PRE_ROLL_BYTES,
@@ -127,6 +128,7 @@ export class LiveTranslateSession {
     this.speechActivityRmsThreshold = speechActivityRmsThreshold;
     this.firstPcmTimeoutMs = firstPcmTimeoutMs;
     this.startupStartedAt = Number.isFinite(startupStartedAt) ? startupStartedAt : Date.now();
+    this.continueStartedAt = Number.isFinite(continueStartedAt) ? continueStartedAt : null;
     this.onStartupMilestone = onStartupMilestone;
     this.onInputBufferOverflow = onInputBufferOverflow;
     this.maxPendingInputAudioBytes = Math.max(1, Math.floor(maxPendingInputAudioBytes));
@@ -440,7 +442,8 @@ export class LiveTranslateSession {
     this.tracePipeline('TOKEN_SEGMENT_BOUND', {
       segmentId: authoritativeSegment?.segmentId || this.segmentId,
       revision: calculatedRevision,
-      glossaryEntryCount: liveGlossaryEntries.length
+      glossaryEntryCount: liveGlossaryEntries.length,
+      continueElapsedMs: this.continueElapsedMs()
     });
     this.tracePipeline('CORRECTION_CONFIGURED', {
       segmentId: this.segmentId,
@@ -461,7 +464,8 @@ export class LiveTranslateSession {
       segmentId: this.segmentId,
       providerEpoch,
       revision: this.effectiveGlossaryRevision,
-      glossaryEntryCount: this.liveGlossaryEntries.length
+      glossaryEntryCount: this.liveGlossaryEntries.length,
+      continueElapsedMs: this.continueElapsedMs()
     });
     updateLivePipelineSessionStartedAt(Date.now());
     const config = {
@@ -560,6 +564,10 @@ export class LiveTranslateSession {
       // Diagnostics must never interrupt audio or provider startup.
     }
     this.logLiveEvent('startup:milestone', { name, ...milestone });
+  }
+
+  continueElapsedMs() {
+    return this.continueStartedAt === null ? null : Math.max(0, Date.now() - this.continueStartedAt);
   }
 
   async reconnectProvider({

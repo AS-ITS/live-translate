@@ -610,6 +610,8 @@ export function useLiveRecordingController({
       if (!checkpointControllerRef.current) {
         checkpointControllerRef.current = createMeetingCheckpointSyncCoordinator({
           updateCheckpoint: async (payload) => {
+            const cloudOperationId = `checkpoint:${payload.meetingId}:${payload.segmentId}:${payload.idempotencyKey}`;
+            checkpoint.cloudSaveCoordinator?.begin({ id: cloudOperationId, kind: 'checkpoint' });
             recordLivePipelineTrace({
               stage: 'CHECKPOINT_SAVE_STARTED',
               meetingId: payload.meetingId,
@@ -625,8 +627,11 @@ export function useLiveRecordingController({
               persistenceState: 'saving'
             });
             try {
-              return await checkpoint.getLocalMeetingPersistence().updateCheckpoint(payload);
+              const result = await checkpoint.getLocalMeetingPersistence().updateCheckpoint(payload);
+              checkpoint.cloudSaveCoordinator?.succeed(cloudOperationId);
+              return result;
             } catch (error) {
+              checkpoint.cloudSaveCoordinator?.fail(cloudOperationId, error);
               recordLivePipelineTrace({
                 stage: 'CHECKPOINT_SAVE_FAILED',
                 meetingId: payload.meetingId,
@@ -651,8 +656,15 @@ export function useLiveRecordingController({
           getCheckpoint: (payload) => checkpoint.getLocalMeetingPersistence().getCheckpoint(payload),
           delayMs: MEETING_CHECKPOINT_SYNC_DELAY_MS,
           onStatusChange: (status) => {
-            checkpoint.setMeetingCheckpointStatus?.(status);
-            if (status === 'synced') checkpoint.clearCheckpointError?.();
+            if (['idle', 'ready'].includes(status)
+              && checkpoint.cloudSaveCoordinator?.snapshot().failedCount === 0) {
+              checkpoint.setMeetingCheckpointStatus?.(status);
+              return;
+            }
+            if (!checkpoint.cloudSaveCoordinator) {
+              checkpoint.setMeetingCheckpointStatus?.(status);
+              if (status === 'synced') checkpoint.clearCheckpointError?.();
+            }
           },
           onError: checkpoint.reportCheckpointError
         });
@@ -1082,7 +1094,13 @@ export function useLiveRecordingController({
         clearMeetingLifecycleWriteFence(currentMeetingId);
         meetingLifecycleRef.current = null;
         recovery.activeMeetingCheckpointRef.current = null;
-        recovery.setMeetingCheckpointStatus('synced');
+        const cloudState = checkpoint.cloudSaveCoordinator?.snapshot().state;
+        recovery.setMeetingCheckpointStatus({
+          cloud_failed: 'error',
+          cloud_retrying: 'retrying',
+          cloud_pending: 'syncing',
+          cloud_synced: 'synced'
+        }[cloudState] || 'synced');
         await recovery.refreshMeetingRecords();
         window.location.hash = '#meetings';
       } catch {
@@ -1154,11 +1172,13 @@ export function useLiveRecordingController({
     async continuePausedSession() {
       if (state.status !== 'paused' || continueInFlightRef.current) return;
       continueInFlightRef.current = true;
+      const continueStartedAt = Date.now();
       recordLivePipelineTrace({
         stage: 'CONTINUE_REQUESTED',
         meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
         sessionId: recovery.activeSessionRecordIdRef.current,
         segmentId: recovery.activeMeetingCheckpointRef.current?.segmentId,
+        continueElapsedMs: 0,
         timestamp: new Date().toISOString()
       });
       recovery.invalidateLiveSessionCallbacks();
@@ -1205,6 +1225,7 @@ export function useLiveRecordingController({
             sessionId: resumed.session.id,
             segmentId: resumed.segment.id,
             lifecycleVersion: resumed.meeting.lifecycle_version ?? resumed.meeting.lifecycleVersion,
+            continueElapsedMs: Date.now() - continueStartedAt,
             timestamp: new Date().toISOString()
           });
         } else {
@@ -1221,6 +1242,13 @@ export function useLiveRecordingController({
             error.code = 'checkpoint_conflict';
             throw error;
           }
+          recordLivePipelineTrace({
+            stage: 'CONTINUE_BARRIER_COMPLETE',
+            meetingId: sourceCheckpoint.meetingId,
+            sessionId: recovery.activeSessionRecordIdRef.current,
+            segmentId: sourceCheckpoint.segmentId,
+            continueElapsedMs: Date.now() - continueStartedAt
+          });
           legacyPersistence = checkpoint.getLocalMeetingPersistence();
           const durableCheckpoint = await legacyPersistence.getCheckpoint(sourceCheckpoint);
           legacyContinue = await establishDurableLegacyContinue({
@@ -1254,18 +1282,28 @@ export function useLiveRecordingController({
             revision: resumed.effectiveGlossaryRevision,
             glossaryEntryCount: resumed.glossaryEntryCount,
             operationId: legacyContinue.operation.operationId,
+            continueElapsedMs: Date.now() - continueStartedAt,
             timestamp: new Date().toISOString()
           });
         }
         const activeCheckpoint = recovery.activeMeetingCheckpointRef.current;
         session = await recovery.createSession({
           preserveTranscript: true,
+          startupStartedAt: continueStartedAt,
+          continueStartedAt,
           liveSessionId: legacyContinue?.operation.nextLiveSessionId || recovery.generateLiveSessionId(),
           meetingId: activeCheckpoint?.meetingId,
           segmentId: activeCheckpoint?.segmentId
         });
         recovery.sessionRef.current = session;
         await session.start();
+        recordLivePipelineTrace({
+          stage: 'CONTINUE_PROVIDER_READY',
+          meetingId: activeCheckpoint?.meetingId,
+          sessionId: recovery.activeSessionRecordIdRef.current,
+          segmentId: activeCheckpoint?.segmentId,
+          continueElapsedMs: Date.now() - continueStartedAt
+        });
         if (legacyContinue
           && session.effectiveGlossaryRevision !== legacyContinue.result.effectiveGlossaryRevision) {
           const error = new Error('Legacy Continue glossary revision mismatch.');
@@ -1275,6 +1313,13 @@ export function useLiveRecordingController({
         recovery.setTranscriptTimeOriginValue();
         if (!recovery.activateLiveSessionCallbacks(session.callbackGeneration)) throw new Error('即時字幕 callback 啟動失敗。');
         await audioController.resumeRawAudioRecording();
+        recordLivePipelineTrace({
+          stage: 'CONTINUE_AUDIO_RESUMED',
+          meetingId: activeCheckpoint?.meetingId,
+          sessionId: recovery.activeSessionRecordIdRef.current,
+          segmentId: activeCheckpoint?.segmentId,
+          continueElapsedMs: Date.now() - continueStartedAt
+        });
         recovery.setLiveCueUpdatesAllowed(true);
         if (legacyContinue) {
           await completeDurableLegacyContinue(legacyPersistence, legacyContinue.operation);
@@ -1288,6 +1333,7 @@ export function useLiveRecordingController({
           segmentId: checkpoint?.segmentId,
           revision: session.effectiveGlossaryRevision,
           glossaryEntryCount: session.liveGlossaryEntries.length,
+          continueElapsedMs: Date.now() - continueStartedAt,
           timestamp: new Date().toISOString()
         });
         recovery.setStatus('listening');
@@ -1349,7 +1395,10 @@ export function useLiveRecordingController({
       recovery.setLiveCueUpdatesAllowed(false);
       await recovery.finalizePendingTranscriptItemsForStop();
       cueController.flushSubtitleCues('pause');
-      await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
+      await recovery.flushMeetingCuePublishes?.(
+        recovery.activeSessionRecordIdRef.current,
+        { forceCloud: true }
+      );
       await checkpointController.flushMeetingCheckpointSync();
       if (recovery.sessionStopRequestedRef.current) return;
       if (meetingLifecycleRef.current) {

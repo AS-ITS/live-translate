@@ -12,6 +12,7 @@ import { createSessionSnapshotApiClient } from '../lib/sessionSnapshotApiClient.
 import { createSessionCommandApiClient } from '../lib/sessionCommandApiClient.js';
 import { createMeetingCheckpointApiClient } from '../lib/meetingCheckpointApiClient.js';
 import { createMeetingCueApiClient } from '../lib/meetingCueApiClient.js';
+import { createCloudSaveCoordinator } from '../lib/cloudSaveCoordinator.js';
 import { createLocalMeetingPersistence } from '../lib/localMeetingPersistence.js';
 import { createLocalMeetingRetention } from '../lib/localMeetingRetention.js';
 import { mergeMeetingDetailWithLocalCues, persistFinalMeetingCues } from '../lib/meetingLocalTranscript.js';
@@ -200,6 +201,12 @@ export function App() {
   const audioUploadRetryTimersRef = useRef({ input: null, translation: null });
   const audioUploadRetryAttemptsRef = useRef({ input: 0, translation: 0 });
   const meetingCuePublishQueuesRef = useRef(new Map());
+  const cloudSaveCoordinatorRef = useRef(null);
+  if (!cloudSaveCoordinatorRef.current) {
+    cloudSaveCoordinatorRef.current = createCloudSaveCoordinator({
+      onChange: applyCloudSaveSnapshot
+    });
+  }
   const recordingDiagnosticsRef = useRef(createRecordingDiagnostics({ enabled: LIVE_DIAGNOSTICS_ENABLED }));
   useEffect(() => {
     if (!LIVE_DIAGNOSTICS_ENABLED || typeof window === 'undefined') return undefined;
@@ -356,6 +363,7 @@ const activeMeetingCheckpointRef = useRef(null);
       activeMeetingCheckpointRef,
       meetingCheckpointApiClientRef,
       getLocalMeetingPersistence,
+      cloudSaveCoordinator: cloudSaveCoordinatorRef.current,
       setMeetingCheckpointStatus,
       clearCheckpointError: clearMeetingCheckpointError,
       reportSnapshotError: reportSessionSnapshotSyncError,
@@ -1126,6 +1134,7 @@ const activeMeetingCheckpointRef = useRef(null);
     preserveTranscript,
     liveSessionId = generateLiveSessionId(),
     startupStartedAt = null,
+    continueStartedAt = null,
     meetingId = activeMeetingCheckpointRef.current?.meetingId || routeMeetingId,
     segmentId = activeMeetingCheckpointRef.current?.segmentId || liveSessionId
   }) {
@@ -1181,6 +1190,7 @@ const activeMeetingCheckpointRef = useRef(null);
       meetingId: meetingId || null,
       segmentId: segmentId || liveSessionId,
       startupStartedAt,
+      continueStartedAt,
       sessionClock: () => sessionTimeForSubtitleCues(),
       sourceLanguageCode,
       targetLanguageCode,
@@ -1646,7 +1656,7 @@ const activeMeetingCheckpointRef = useRef(null);
           flushCuePublishes: () => flushMeetingCuePublishes(activeSessionRecordIdRef.current, { forceCloud: true }),
           completeMeeting: () => meetingCheckpointApiClientRef.current.completeMeeting({ meetingId })
         });
-        setMeetingCheckpointStatus('synced');
+        applyCloudSaveSnapshot(cloudSaveCoordinatorRef.current.snapshot());
         setNavigationNotice('會議已結束。');
         window.location.hash = '#meetings';
         return true;
@@ -1725,7 +1735,7 @@ const activeMeetingCheckpointRef = useRef(null);
     liveController.checkpoint.meetingCheckpointSyncCoordinator().enqueueCues(checkpointCues, checkpoint);
   }
 
-  async function publishMeetingCues(cues, meetingCheckpoint, sessionId, { allowInactive = false } = {}) {
+  async function publishMeetingCues(cues, meetingCheckpoint, sessionId, { allowInactive = false, cloudKind = 'cue' } = {}) {
     if (!meetingCheckpoint?.meetingId || !meetingCheckpoint?.segmentId || !sessionId || !Array.isArray(cues) || cues.length === 0) return;
     if (!allowInactive && (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
       || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
@@ -1738,7 +1748,7 @@ const activeMeetingCheckpointRef = useRef(null);
       && (!cue.sessionId || cue.sessionId === sessionId)
       && (!cue.segmentId || cue.segmentId === meetingCheckpoint.segmentId)
     ));
-    await Promise.all(finalCues.map((cue) => enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId, { allowInactive })));
+    await Promise.all(finalCues.map((cue) => enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId, { allowInactive, cloudKind })));
   }
 
   async function flushMeetingCuePublishes(sessionId, { forceCloud = false } = {}) {
@@ -1775,7 +1785,7 @@ const activeMeetingCheckpointRef = useRef(null);
           group.cues,
           { meetingId: meetingCheckpoint.meetingId, segmentId: group.segmentId },
           group.sessionId,
-          { allowInactive: true }
+              { allowInactive: true, cloudKind: 'terminal' }
         ))));
       }
     }
@@ -1814,7 +1824,7 @@ const activeMeetingCheckpointRef = useRef(null);
     };
   }
 
-  function enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId, { allowInactive = false } = {}) {
+  function enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId, { allowInactive = false, cloudKind = 'cue' } = {}) {
     const operation = Object.freeze({
       meetingId: meetingCheckpoint.meetingId,
       sessionId,
@@ -1837,10 +1847,12 @@ const activeMeetingCheckpointRef = useRef(null);
       if (!allowInactive && (activeMeetingCheckpointRef.current?.meetingId !== operation.meetingId
         || activeMeetingCheckpointRef.current?.segmentId !== operation.segmentId
         || activeSessionRecordIdRef.current !== operation.sessionId)) return;
+      cloudSaveCoordinatorRef.current.begin({ id: key, kind: cloudKind });
       for (let attempt = 0; attempt < 2; attempt += 1) {
         if (!allowInactive && attempt > 0 && (activeMeetingCheckpointRef.current?.meetingId !== operation.meetingId
           || activeMeetingCheckpointRef.current?.segmentId !== operation.segmentId
           || activeSessionRecordIdRef.current !== operation.sessionId)) return;
+        if (attempt > 0) cloudSaveCoordinatorRef.current.retry(key);
         recordLivePipelineTrace({
           stage: attempt === 0 ? 'CUE_PERSIST_REQUEST' : 'DURABLE_OPERATION_RETRY',
           meetingId: operation.meetingId,
@@ -1869,6 +1881,7 @@ const activeMeetingCheckpointRef = useRef(null);
             cue: operation.cue,
             producedAt: operation.cue.finalizedAt || Date.now()
           });
+          cloudSaveCoordinatorRef.current.succeed(key);
           recordLivePipelineTrace({
             stage: 'CUE_PUBLISHED',
             meetingId: operation.meetingId,
@@ -1895,6 +1908,7 @@ const activeMeetingCheckpointRef = useRef(null);
           liveCueLatencyTracker.recordViewerPublished({ cue: operation.cue });
           return;
         } catch (error) {
+          cloudSaveCoordinatorRef.current.fail(key, error);
           recordLivePipelineTrace({
             stage: 'CUE_PERSIST_FAILED',
             meetingId: operation.meetingId,
@@ -2009,6 +2023,23 @@ const activeMeetingCheckpointRef = useRef(null);
 
   function clearMeetingCheckpointError() {
     setMeetingCheckpointErrorMessage('');
+  }
+
+  function applyCloudSaveSnapshot(snapshot) {
+    if (snapshot.state === 'cloud_failed') {
+      setMeetingCheckpointStatus('error');
+      return;
+    }
+    if (snapshot.state === 'cloud_retrying') {
+      setMeetingCheckpointStatus('retrying');
+      return;
+    }
+    if (snapshot.state === 'cloud_pending') {
+      setMeetingCheckpointStatus('syncing');
+      return;
+    }
+    setMeetingCheckpointStatus('synced');
+    clearMeetingCheckpointError();
   }
 
   function safePersistenceDiagnostic(error) {
@@ -2274,7 +2305,7 @@ const activeMeetingCheckpointRef = useRef(null);
         archivedSegmentCount: Math.max(0, segments.length - 1),
         loadedSegmentCount: archivedTranscriptSegmentsRef.current.length
       });
-      setMeetingCheckpointStatus('synced');
+      applyCloudSaveSnapshot(cloudSaveCoordinatorRef.current.snapshot());
       setStatus('idle');
       setError('');
     } catch {

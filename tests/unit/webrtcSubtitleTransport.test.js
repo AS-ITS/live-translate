@@ -247,15 +247,16 @@ test('Viewer transient ICE disconnect recovers inside grace without reload or pe
   peer.onconnectionstatechange();
   const grace = timers.find((timer) => timer.ms === 5_000 && !timer.cleared);
   assert.ok(grace);
-  assert.equal(statuses.at(-1).value, 'reconnecting');
+  assert.equal(statuses.at(-1).value, 'connected');
+  assert.equal(statuses.some(({ value }) => value === 'reconnecting'), false);
 
   peer.connectionState = 'connected';
   peer.iceConnectionState = 'connected';
-  peer.onconnectionstatechange();
+  peer.oniceconnectionstatechange();
   assert.equal(grace.cleared, true);
   assert.equal(FakePeerConnection.instances.length, 1);
   assert.equal(peer.closed, undefined);
-  assert.equal(statuses.at(-1).value, 'restored');
+  assert.equal(statuses.at(-1).value, 'connected');
   await transport.stop();
 });
 

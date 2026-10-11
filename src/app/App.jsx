@@ -66,7 +66,6 @@ import { MeetingViewerPage } from '../pages/viewer/MeetingViewerPage.jsx';
 import { MeetingElapsedTimer } from '../features/live/MeetingElapsedTimer.jsx';
 import { GlobalGlossaryPage } from '../pages/glossary/GlobalGlossaryPage.jsx';
 import { LiveMeetingPicker, LiveRecordingPage } from '../pages/live/LiveRecordingPage.jsx';
-import { DiagnosticExportButton } from '../components/DiagnosticExportButton.jsx';
 import { LiveCuePanel as LiveCuePanelView } from '../features/live/LiveCuePanel.jsx';
 import { applyCompletedRefinementOutputs } from '../features/live/liveRecordingController.js';
 import { WorkspacePage } from '../features/workspace/WorkspacePage.jsx';
@@ -2836,7 +2835,6 @@ const activeMeetingCheckpointRef = useRef(null);
             </div>
 
             <div className="control-actions">
-              <DiagnosticExportButton role="recorder" meetingId={routeMeetingId} className="recorder-diagnostic-export" />
               <button
                 className="button detail-button live-focus-mode-button"
                 type="button"

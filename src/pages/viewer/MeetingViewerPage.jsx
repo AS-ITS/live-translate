@@ -11,7 +11,6 @@ import { resolveViewerTransportState } from '../../webrtc/viewerTransportState.j
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
 import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
 import { attachClientDiagnosticLifecycle } from '../../lib/clientDiagnostics.js';
-import { DiagnosticExportButton } from '../../components/DiagnosticExportButton.jsx';
 import {
   readSubtitleVisibilityPreference,
   toggleSubtitleVisibility,
@@ -764,7 +763,6 @@ export function MeetingViewerPage({ token, code }) {
             <span>{viewerConnectionLabel(shareConnection.value)}</span>
           </div>
           <div className="viewer-toolbar-actions">
-            <DiagnosticExportButton role="viewer" meetingId={detail?.meeting?.id || detail?.meetingId || null} className="viewer-diagnostic-export" />
             {detail ? (
               <div className="subtitle-visibility-controls">
                 <button className={`button detail-button viewer-visibility-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'source'))}>{showSource ? '隱藏原文' : '顯示原文'}</button>

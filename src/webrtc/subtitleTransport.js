@@ -132,6 +132,13 @@ export function createWebRtcSubtitleTransport({
       && context.channel?.readyState === 'open');
   }
 
+  function isDataChannelUsable(context) {
+    return Boolean(context
+      && !['failed', 'closed'].includes(context.pc?.connectionState)
+      && !['failed', 'closed'].includes(context.pc?.iceConnectionState)
+      && context.channel?.readyState === 'open');
+  }
+
   function isCurrent(context) {
     return !stopped && context.epoch === connectionEpoch
       && (role === 'device' ? devicePeers.get(context.viewerId) === context : active === context);
@@ -193,7 +200,7 @@ export function createWebRtcSubtitleTransport({
         if (signalingHealth !== 'healthy') {
           signalingHealth = 'healthy';
           recoveryTrace('SIGNALING_RECOVERED', null, { epoch, reason: 'heartbeat_join_succeeded' });
-          if (hasOpenDataChannel()) status('connected', { epoch, reason: 'signaling_recovered' });
+          if (hasHealthyTransport()) status('connected', { epoch, reason: 'signaling_recovered' });
         }
         scheduleHeartbeat(joined.ttlMs, epoch);
       } catch (error) {
@@ -211,7 +218,7 @@ export function createWebRtcSubtitleTransport({
             transportResult: 'retrying_signaling_only',
           });
           scheduleHeartbeatRetry(epoch);
-          status('connected', { epoch, reason: 'signaling_failure_preserved' });
+          if (hasHealthyTransport()) status('connected', { epoch, reason: 'signaling_failure_preserved' });
           return;
         }
         handleConnectError(error, 'heartbeat_failed');
@@ -237,7 +244,7 @@ export function createWebRtcSubtitleTransport({
           transportResult: 'recovered',
         });
         scheduleHeartbeat(result.ttlMs, epoch);
-        if (hasOpenDataChannel()) status('connected', { epoch, reason: 'signaling_recovered' });
+        if (hasHealthyTransport()) status('connected', { epoch, reason: 'signaling_recovered' });
       } catch (error) {
         if (stopped || epoch !== connectionEpoch) return;
         signalingHealth = 'recovering';
@@ -261,6 +268,13 @@ export function createWebRtcSubtitleTransport({
   }
 
   function hasOpenDataChannel() {
+    if (role === 'device') {
+      return [...devicePeers.values()].some(isDataChannelUsable);
+    }
+    return isDataChannelUsable(active);
+  }
+
+  function hasHealthyTransport() {
     if (role === 'device') {
       return [...devicePeers.values()].some(isTransportHealthy);
     }
@@ -407,6 +421,12 @@ export function createWebRtcSubtitleTransport({
         context.connected = false;
         recoveryTrace('TRANSPORT_DISCONNECTED', context, { reason: 'ice_state_disconnected' });
         scheduleDisconnectedRecovery(context);
+      } else if (['connected', 'completed'].includes(context.pc.iceConnectionState)) {
+        const recoveredFromDisconnect = Boolean(context.disconnectTimer);
+        clearContextTimer(context, 'disconnectTimer');
+        clearContextTimer(context, 'iceRestartTimer');
+        if (recoveredFromDisconnect) recoveryTrace('DISCONNECT_RECOVERED', context, { reason: 'ice_connected' });
+        if (context.channel?.readyState === 'open') markConnected(context);
       } else if (context.pc.iceConnectionState === 'failed' || context.pc.iceConnectionState === 'closed') {
         recoveryTrace('RECOVERY_STARTED', context, { reason: `ice_${context.pc.iceConnectionState}` });
         if (role === 'device') cleanupDevicePeer(context);
@@ -754,13 +774,9 @@ export function createWebRtcSubtitleTransport({
 
   function scheduleDisconnectedRecovery(context) {
     if (!isCurrent(context) || context.disconnectTimer) return;
-    hadOutage = true;
     recoveryTrace('DISCONNECT_GRACE_STARTED', context, {
       reason: 'transient_disconnected', graceMs: DISCONNECTED_GRACE_MS,
     });
-    if (role === 'viewer' || ![...devicePeers.values()].some((peer) => peer !== context && peer.connected)) {
-      status('reconnecting', { epoch: context.epoch, reason: 'peer_disconnected', graceMs: DISCONNECTED_GRACE_MS });
-    }
     context.disconnectTimer = setTimer(async () => {
       context.disconnectTimer = null;
       if (!isCurrent(context) || context.pc.connectionState === 'connected') return;

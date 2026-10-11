@@ -2414,92 +2414,48 @@ test('flushes a pending Cue on stop without duplicate creation', async ({ page }
   expect(trace.some((entry) => entry.stage === 'CUE_UPDATED' && entry.cueId === cueId)).toBe(true);
 });
 
-test('diagnostic export keeps active and paused Recorder sessions intact', async ({ page }) => {
-  await page.setViewportSize({ width: 412, height: 915 });
-  await mockMeetingCheckpointApi(page);
-  await mockLiveSessionCreateApi(page);
+test('Recorder UI omits diagnostic export while trace collection remains available', async ({ page }) => {
   await gotoMockMeetingLive(page);
-  await configureTestGeminiCredential(page);
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
-  await emitMicrophoneAudio(page);
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  const before = await page.evaluate(() => ({
-    liveSessionCount: window.__mockGoogleGenAI.liveSessions.length,
-    stoppedTrackCount: window.__mockMicTracks.filter((track) => track.stopped).length
-  }));
-  await page.evaluate(() => {
-    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
-    Object.defineProperty(navigator, 'share', {
-      configurable: true,
-      value: async ({ files }) => { window.__diagnosticSharedJson = await files[0].text(); }
-    });
-  });
-  await page.getByRole('button', { name: '匯出診斷紀錄' }).click();
-  await expect(page.locator('.diagnostic-export-message')).toContainText('已匯出');
-  const activeTrace = JSON.parse(await page.evaluate(() => window.__diagnosticSharedJson));
-  expect(activeTrace.schemaVersion).toBe('live-pipeline-trace/v1');
-  expect(activeTrace.entries.some((entry) => entry.role === 'recorder')).toBe(true);
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await expect.poll(() => page.evaluate(() => ({
-    liveSessionCount: window.__mockGoogleGenAI.liveSessions.length,
-    stoppedTrackCount: window.__mockMicTracks.filter((track) => track.stopped).length
-  }))).toEqual(before);
-
-  await page.getByRole('button', { name: '停止錄音' }).click();
-  await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
-  await expect(page.getByRole('button', { name: '匯出診斷紀錄' })).toBeVisible();
-  await page.evaluate(() => { window.__diagnosticSharedJson = null; });
-  await page.getByRole('button', { name: '匯出診斷紀錄' }).click();
-  await expect.poll(() => page.evaluate(() => Boolean(window.__diagnosticSharedJson))).toBe(true);
-  await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
+  await expect(page.getByRole('button', { name: '匯出診斷紀錄' })).toHaveCount(0);
+  await expect.poll(
+    () => page.evaluate(() => window.__liveTranslateDebug?.getPipelineTrace?.())
+  ).not.toBeUndefined();
 });
 
-test('viewer diagnostics use only received and rendered Cue identities', async ({ page }) => {
-  await page.setViewportSize({ width: 412, height: 915 });
-  const cues = [{ cueId: 'viewer-cue-1', sequence: 1, startTimeMs: 0, sourceText: 'Viewer source', translatedText: 'Viewer translation', status: 'final' }];
+test('Viewer UI omits diagnostic export while received Cue trace remains available', async ({ page }) => {
+  const cues = [{
+    cueId: 'viewer-cue-1',
+    sequence: 1,
+    startTimeMs: 0,
+    sourceText: 'Viewer source',
+    translatedText: 'Viewer translation',
+    status: 'final'
+  }];
   await page.route(/\/api\/shared-meetings\/viewer-diagnostics-token(?:\?.*)?$/, async (route) => route.fulfill({
-    json: { capability: { role: 'viewer', meetingId: MOCK_MEETING_ID }, meeting: { id: MOCK_MEETING_ID, name: 'Viewer diagnostics', status: 'active', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }, cues, cursor: { eventId: 0, cueSequence: 1 } }
+    json: {
+      capability: { role: 'viewer', meetingId: MOCK_MEETING_ID },
+      meeting: {
+        id: MOCK_MEETING_ID,
+        name: 'Viewer diagnostics',
+        status: 'active',
+        sourceLanguageCode: 'zh-Hant',
+        targetLanguageCode: 'en'
+      },
+      cues,
+      cursor: { eventId: 0, cueSequence: 1 }
+    }
   }));
   await page.route(/\/api\/shared-meetings\/viewer-diagnostics-token\/events(?:\?.*)?$/, async (route) => route.fulfill({
     status: 200,
     contentType: 'text/event-stream',
     body: `event: cue.append\ndata: ${JSON.stringify({ eventId: 1, cue: cues[0], type: 'cue.append' })}\n\n`
   }));
+
   await page.goto('/#viewer?token=viewer-diagnostics-token');
   await expect(page.getByTestId('meeting-viewer-cue-row')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: '匯出診斷紀錄' })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.__liveTranslateDebug
     .getPipelineTrace({ stage: 'VIEWER_RECEIVED' }).length)).toBeGreaterThan(0);
-  await expect(page.getByRole('button', { name: '匯出診斷紀錄' })).toBeVisible();
-  await page.evaluate(() => {
-    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
-    Object.defineProperty(navigator, 'share', {
-      configurable: true,
-      value: async ({ files }) => { window.__diagnosticSharedJson = await files[0].text(); }
-    });
-  });
-  await page.getByRole('button', { name: '匯出診斷紀錄' }).click();
-  await expect(page.locator('.diagnostic-export-message')).toContainText('已匯出');
-  const exported = JSON.parse(await page.evaluate(() => window.__diagnosticSharedJson));
-  expect(exported.schemaVersion).toBe('live-pipeline-trace/v1');
-  expect(exported.entries.some((entry) => entry.role === 'viewer')).toBe(true);
-  expect(JSON.stringify(exported)).not.toContain('viewer-diagnostics-token');
-  await page.evaluate(() => {
-    Object.defineProperty(navigator, 'share', { configurable: true, value: undefined });
-    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => false });
-    URL.createObjectURL = () => { throw new Error('download unavailable'); };
-  });
-  await page.getByRole('button', { name: '匯出診斷紀錄' }).click();
-  await expect(page.locator('.diagnostic-export-error')).toContainText('匯出失敗');
-  const renderedCueIds = await page.getByTestId('meeting-viewer-cue-row').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-cue-id')).filter(Boolean));
-  const trace = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
-  const received = trace.filter((entry) => entry.stage === 'VIEWER_RECEIVED');
-  const rendered = trace.filter((entry) => entry.stage === 'REACT_RENDER');
-  expect(received.length).toBeGreaterThan(0);
-  expect(received.every((entry) => entry.cueId === 'viewer-cue-1')).toBe(true);
-  expect(rendered.some((entry) => renderedCueIds.includes(entry.cueId))).toBe(true);
-  expect(rendered.filter((entry) => entry.cueId).every((entry) => renderedCueIds.includes(entry.cueId))).toBe(true);
 });
 
 test('keeps numeric tail fragments in the live subtitle', async ({ page }) => {

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 修正 Viewer 在 WebRTC `disconnected` 的 5 秒暫態寬限期內過早顯示「重新連線中」：DataChannel 仍可用時維持「已連線」，短暫 signaling heartbeat 失敗只重試 signaling；只有寬限期到期或 DataChannel／PeerConnection 確實失敗才重建 transport 並消耗最多 6 次 recovery。另從 Recorder 與 Viewer 一般介面移除「匯出診斷紀錄」按鈕及其 UI 樣式，保留 diagnostics collector、Debug API、trace 與底層匯出函式。
 - 修復 Viewer 中途加入：等待 Recorder 時會沿用同一 negotiation 定期重送 `viewer-ready`，不再把「尚無 Recorder」計入 transport recovery；Recorder signaling `/join` 成功即重設 recovery budget，Viewer peer 離開只回到等待狀態而不停止 discovery。保留定向多 Viewer、健康 DataChannel 遇 signaling 503 不拆線，以及 Snapshot／Replay／Live Cue 合併。
 - Recorder 與 Viewer 在 `LIVE_PIPELINE_TRACE_ENABLED=true` 的診斷模式新增手機可用的 JSON 匯出：優先使用系統檔案分享、否則下載 Blob，匯出失敗不影響錄音或 WebRTC。Trace 採 `live-pipeline-trace/v1` allowlist schema 與 20,000 筆 ring buffer，補齊 lifecycle、snapshot、visibility、signaling、offer/answer、ICE/DataChannel、recovery、generation 與 negotiation 關聯欄位；不輸出字幕、音訊、憑證、share token/code、SDP、ICE candidate/IP 或原始 HTTP payload。本次僅補強診斷能力，不代表 Viewer Late Join 根因已修復。
 - 修正 Stop／Continue 後 successor Segment 的 Cue 被錯誤判定為 `recorder_session_mismatch`：Recorder 寫入現在接受同 Meeting 中反向綁定相同 Session 的 Segment，同時保留舊 Segment 延後重送；Cue、checkpoint 與 terminal retry 由單一 Cloud save state 聚合，Stop 會重播本機 Cue，成功重試可清除 stale failure。Continue diagnostics 從點擊起記錄 barrier、Resume、Token、Provider、Audio 與 listening elapsed time；320–480px toolbar 改為分列並保留 44px touch target。

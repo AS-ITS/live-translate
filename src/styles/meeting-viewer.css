@@ -396,26 +396,3 @@
 @media (prefers-reduced-motion: reduce) {
   .meeting-viewer-page * { scroll-behavior: auto !important; }
 }
-.meeting-viewer-page .diagnostic-export-control {
-  display: grid;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.meeting-viewer-page .diagnostic-export-message,
-.meeting-viewer-page .diagnostic-export-error {
-  max-width: 18rem;
-  font-size: var(--text-xs);
-  line-height: 1.35;
-}
-
-.meeting-viewer-page .diagnostic-export-error { color: var(--color-danger); }
-
-@media (max-width: 640px) {
-  .meeting-viewer-page .viewer-diagnostic-export {
-    flex: 1 0 100%;
-    width: 100%;
-  }
-
-  .meeting-viewer-page .viewer-diagnostic-export .diagnostic-export-button { width: 100%; }
-}

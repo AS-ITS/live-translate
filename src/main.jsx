@@ -16,8 +16,8 @@ function ApplicationRoot() {
       const nextPage = pageFromLocation();
       recordLivePipelineTrace({
         stage: 'ROUTE_CHANGED',
-        route: nextPage,
-        reason: window.location.hash || '#'
+        event: 'browser.route.changed',
+        route: nextPage
       });
       setPage(nextPage);
     };

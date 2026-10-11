@@ -64,6 +64,12 @@ SESSION_SNAPSHOT_MAX_BYTES=26214400
 SESSION_AUDIO_MAX_BYTES=52428800
 ```
 
+## Mobile diagnostic export
+
+Set `LIVE_PIPELINE_TRACE_ENABLED=true` and restart or redeploy the Preview. Recorder and Viewer toolbars then show `匯出診斷紀錄`, including while connecting, paused, or recovery has failed. The button opens the system file share sheet when the browser supports sharing JSON files; otherwise it downloads a `.json` file. Exporting only snapshots the in-memory trace and never stops recording or rebuilds WebRTC.
+
+The exported document uses `schemaVersion: "live-pipeline-trace/v1"` and a bounded 20,000-entry ring buffer. Every entry contains `timestamp`, `role`, `event`, `meetingId`, `generation`, and `negotiationId`; optional fields come from a fixed allowlist. It never includes transcript text, audio, credentials, SDP, ICE candidates, candidate IP addresses, share tokens/codes, or raw HTTP payloads. Reloading clears the browser-memory trace; no diagnostic data is uploaded or persisted to cloud storage.
+
 ## Vercel and Supabase cloud capabilities
 
 P0 keeps the local Node runtime unchanged and adds a cloud-only Function shell.

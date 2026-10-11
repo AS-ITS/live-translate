@@ -293,10 +293,42 @@ test('trace export preserves bounded sequence and before/after transcript length
   assert.equal(entries[0].afterTranslationTextLength, 'this sentence cannot disappear'.length);
 
   const exported = JSON.parse(trace.exportJson());
+  assert.equal(exported.schemaVersion, 'live-pipeline-trace/v1');
+  assert.equal(exported.capacity, 2);
+  assert.equal(exported.droppedCount, 1);
   assert.equal(exported.entryCount, 2);
   assert.deepEqual(exported.entries, entries);
   assert.equal(JSON.stringify(exported).includes('undefined'), false);
   assert.equal(JSON.stringify(exported).includes('this sentence'), false);
+});
+
+test('trace export includes correlation fields and redacts sensitive free-form values', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  trace.record({
+    stage: 'WEBRTC_SIGNALING',
+    role: 'viewer',
+    eventType: 'offer.received',
+    meetingId: 'meeting-1',
+    connectionEpoch: 4,
+    negotiationId: 'negotiation-1',
+    reason: 'Bearer secret-token from 192.168.1.20',
+    shareToken: 'share-token-must-not-appear',
+    shareCode: 'share-code-must-not-appear',
+    turnCredential: 'turn-password-must-not-appear',
+    sdp: 'v=0 secret-sdp',
+    candidate: 'candidate:1 1 UDP 2122260223 192.168.1.20 5000 typ host'
+  });
+
+  const exported = JSON.parse(trace.exportJson());
+  const [entry] = exported.entries;
+  assert.equal(entry.role, 'viewer');
+  assert.equal(entry.event, 'WEBRTC_SIGNALING.offer.received');
+  assert.equal(entry.meetingId, 'meeting-1');
+  assert.equal(entry.generation, 4);
+  assert.equal(entry.negotiationId, 'negotiation-1');
+  assert.match(entry.reason, /\[redacted\]/u);
+  const serialized = JSON.stringify(exported);
+  assert.doesNotMatch(serialized, /secret-token|192\.168\.1\.20|share-token-must-not-appear|share-code-must-not-appear|turn-password-must-not-appear|secret-sdp|candidate:1/u);
 });
 
 test('trace preserves bounded local terminal replay provenance', () => {

@@ -788,6 +788,17 @@ These tests verify the 30-minute deadline read model, stable `410` expiry
 contract, v1 read compatibility with v2 legacy-column write suppression, and
 best-effort purge metrics. They do not call Gemini or remote Supabase.
 
+## Mobile diagnostic export
+
+Focused deterministic coverage:
+
+```bash
+node --test tests/unit/livePipelineTrace.test.js tests/unit/clientDiagnostics.test.js tests/unit/webrtcSubtitleTransport.test.js tests/unit/viewerLongSessionRecovery.test.js
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/liveTranslate.spec.js -g "diagnostic export|viewer diagnostics"
+```
+
+The unit tests verify ring-buffer bounds, schema/version fields, timestamp/Meeting/generation/negotiation correlation, allowlist filtering, Web Share and Blob download paths, visibility lifecycle events, and sensitive-value exclusion. Playwright verifies that Recorder export does not stop an active session, Paused Recorder and Viewer can still export, export failure remains isolated, and the control fits a 412×915 viewport in Chromium and mobile WebKit. Native iPhone Safari and Android Chrome share-sheet/file-save behavior remains a real-device Preview acceptance item.
+
 ## Local raw translation comparison
 
 Use only a local development build, or a diagnostic test build explicitly compiled with `LIVE_TRANSLATE_DIAGNOSTICS=true`. In browser DevTools:

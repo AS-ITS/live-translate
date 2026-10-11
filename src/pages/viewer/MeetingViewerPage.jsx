@@ -10,6 +10,8 @@ import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
 import { resolveViewerTransportState } from '../../webrtc/viewerTransportState.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
 import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
+import { attachClientDiagnosticLifecycle } from '../../lib/clientDiagnostics.js';
+import { DiagnosticExportButton } from '../../components/DiagnosticExportButton.jsx';
 import {
   readSubtitleVisibilityPreference,
   toggleSubtitleVisibility,
@@ -49,6 +51,11 @@ export function MeetingViewerPage({ token, code }) {
   const isFullscreen = isNativeFullscreen || isCssFullscreen;
   const estimatedRowHeight = 64;
   const shareUrl = useMemo(() => canonicalViewerShareUrl({ code, token }), [code, token]);
+
+  useEffect(() => attachClientDiagnosticLifecycle({
+    role: 'viewer',
+    getContext: () => ({ meetingId: detailRef.current?.meeting?.id || detailRef.current?.meetingId || null })
+  }), []);
 
   useEffect(() => {
     const syncFullscreenState = () => {
@@ -285,6 +292,16 @@ export function MeetingViewerPage({ token, code }) {
         ['completed', 'failed'].includes(value?.meeting?.status) ? 'ended'
           : value?.meeting?.status === 'created' ? 'waiting' : 'active'
       );
+      recordLivePipelineTrace({
+        stage: 'VIEWER_MEETING_LIFECYCLE',
+        event: 'viewer.meeting.lifecycle',
+        role: 'viewer',
+        meetingId: value?.meeting?.id || value?.meetingId,
+        generation: fallbackEpoch,
+        recordingState,
+        meetingStatus: value?.meeting?.status,
+        lifecycleStatus: recordingState
+      });
       if (recordingState === 'ended') {
         terminal = true;
         setShareConnection({ value: 'stopped' });
@@ -314,10 +331,31 @@ export function MeetingViewerPage({ token, code }) {
         signal: snapshotController.signal,
         onRetry: ({ attempt }) => {
           retried = true;
+          recordLivePipelineTrace({
+            stage: 'VIEWER_SNAPSHOT',
+            event: 'viewer.snapshot.retry',
+            role: 'viewer',
+            meetingId: detailRef.current?.meeting?.id || detailRef.current?.meetingId,
+            generation: expectedEpoch,
+            retryAttempt: attempt,
+            transportResult: 'retrying'
+          });
           if (!cancelled && expectedEpoch === fallbackEpoch) setChannelState('fallback', { value: 'reconnecting', attempt });
         },
       });
       if (cancelled || terminal || expectedEpoch !== fallbackEpoch) return null;
+      recordLivePipelineTrace({
+        stage: 'VIEWER_SNAPSHOT',
+        event: 'viewer.snapshot.received',
+        role: 'viewer',
+        meetingId: value?.meeting?.id || value?.meetingId,
+        generation: expectedEpoch,
+        snapshotRevision: value?.revision ?? value?.cursor?.eventId ?? null,
+        cueCount: Array.isArray(value?.cues) ? value.cues.length : 0,
+        recordingState: value?.recordingState,
+        meetingStatus: value?.meeting?.status,
+        transportResult: retried ? 'recovered' : 'received'
+      });
       nextViewerCursorRef.current = value.pagination?.nextCursor || null;
       setHasOlderCues(Boolean(value.pagination?.hasMore));
       const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
@@ -726,6 +764,7 @@ export function MeetingViewerPage({ token, code }) {
             <span>{viewerConnectionLabel(shareConnection.value)}</span>
           </div>
           <div className="viewer-toolbar-actions">
+            <DiagnosticExportButton role="viewer" meetingId={detail?.meeting?.id || detail?.meetingId || null} className="viewer-diagnostic-export" />
             {detail ? (
               <div className="subtitle-visibility-controls">
                 <button className={`button detail-button viewer-visibility-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'source'))}>{showSource ? '隱藏原文' : '顯示原文'}</button>

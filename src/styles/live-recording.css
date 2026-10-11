@@ -238,3 +238,24 @@
   .live-recording-app-shell .meeting-app-header .brand-block { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; }
   .live-recording-app-shell .meeting-app-header .app-header-actions { display: none; }
 }
+.live-recording-page .diagnostic-export-control {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.live-recording-page .diagnostic-export-message,
+.live-recording-page .diagnostic-export-error {
+  max-width: 18rem;
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+
+.live-recording-page .diagnostic-export-error { color: var(--color-danger); }
+
+@media (max-width: 640px) {
+  .live-recording-page .recorder-diagnostic-export,
+  .live-recording-page .recorder-diagnostic-export .diagnostic-export-button {
+    width: 100%;
+  }
+}

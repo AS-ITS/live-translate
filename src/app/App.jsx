@@ -35,6 +35,7 @@ import { applyCueRefinementExecutionStates, markCuesCompletedByRefinedSubtitleCu
 import { effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from '../lib/cueContent.js';
 import { liveCueLatencyTracker } from '../lib/liveCueLatency.js';
 import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
+import { attachClientDiagnosticLifecycle } from '../lib/clientDiagnostics.js';
 import { waitForDurabilityPromises } from '../lib/durabilityBarrier.js';
 import {
   buildFinalizePatch,
@@ -65,6 +66,7 @@ import { MeetingViewerPage } from '../pages/viewer/MeetingViewerPage.jsx';
 import { MeetingElapsedTimer } from '../features/live/MeetingElapsedTimer.jsx';
 import { GlobalGlossaryPage } from '../pages/glossary/GlobalGlossaryPage.jsx';
 import { LiveMeetingPicker, LiveRecordingPage } from '../pages/live/LiveRecordingPage.jsx';
+import { DiagnosticExportButton } from '../components/DiagnosticExportButton.jsx';
 import { LiveCuePanel as LiveCuePanelView } from '../features/live/LiveCuePanel.jsx';
 import { applyCompletedRefinementOutputs } from '../features/live/liveRecordingController.js';
 import { WorkspacePage } from '../features/workspace/WorkspacePage.jsx';
@@ -291,6 +293,18 @@ const activeMeetingCheckpointRef = useRef(null);
     });
     previousSessionStatusRef.current = status;
   }, [routeMeetingId, status]);
+
+  useEffect(() => {
+    if (!isLiveSurface) return undefined;
+    return attachClientDiagnosticLifecycle({
+      role: 'recorder',
+      getContext: () => ({
+        ...currentLiveTraceIdentity(),
+        generation: liveSessionCallbackGenerationRef.current.generation,
+        recordingState: statusRef.current
+      })
+    });
+  }, [isLiveSurface, routeMeetingId]);
 
   useEffect(() => {
     setIsLiveFocusMode(false);
@@ -2822,6 +2836,7 @@ const activeMeetingCheckpointRef = useRef(null);
             </div>
 
             <div className="control-actions">
+              <DiagnosticExportButton role="recorder" meetingId={routeMeetingId} className="recorder-diagnostic-export" />
               <button
                 className="button detail-button live-focus-mode-button"
                 type="button"

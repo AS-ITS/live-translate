@@ -1609,6 +1609,36 @@ test('newer late final translation snapshot replaces same-turn value and stale r
   assert.equal(state.currentCue, null);
 });
 
+test('late final translation fragment appends to the same finalized Cue instead of replacing it', () => {
+  const audioTurnId = 'audio-turn-late-fragment';
+  const turnKey = `local:${audioTurnId}`;
+  let state = createSubtitleCueState();
+
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'late-fragment-source', eventSequence: 1, stream: 'source',
+    text: '錄音測試，你有聽到嗎？', audioTurnId, turnKey,
+    turnIdentitySource: 'local', sessionTimeMs: 100
+  }));
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'late-fragment-translation-prefix', eventSequence: 2, stream: 'translation',
+    text: 'Recording test, did you hear', textMergeMode: 'append', audioTurnId, turnKey,
+    turnIdentitySource: 'local', sessionTimeMs: 200
+  }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 300, reason: 'localSilence' });
+
+  const cueId = state.finalCues[0].cueId;
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'late-fragment-translation-tail', eventSequence: 3, stream: 'translation',
+    text: 'me?', textMergeMode: 'append', audioTurnId, turnKey,
+    turnIdentitySource: 'local', sessionTimeMs: 350, isFinal: true, isLateTranscript: true
+  }));
+
+  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues[0].cueId, cueId);
+  assert.equal(state.finalCues[0].translatedText, 'Recording test, did you hear me?');
+  assert.equal(state.finalCues[0].rawTranslation, 'Recording test, did you hear me?');
+});
+
 test('late transcript from the previous turn does not mutate the next turn', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({

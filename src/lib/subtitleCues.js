@@ -456,7 +456,11 @@ function findSameAudioTurnFinalCue(state, event, options = {}) {
     return {
       index,
       cue,
-      snapshot: authoritativeSnapshot || (!idleFragmentContinuation && Boolean(currentText))
+      snapshot: authoritativeSnapshot || (
+        event.textMergeMode !== 'append'
+        && !idleFragmentContinuation
+        && Boolean(currentText)
+      )
     };
   }
   return null;

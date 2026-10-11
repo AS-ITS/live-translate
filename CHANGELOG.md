@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 修正同一 `audioTurnId` 的 late final 翻譯片段被 Cue revision 誤判為完整快照：`textMergeMode: append` 現在保留 finalized Cue 已累積的前文，真正的 cumulative snapshot 仍維持 replace；未變更 Viewer／WebRTC transport、provider epoch fencing 或 glossary correction。
 - 修正 Viewer 在 WebRTC `disconnected` 的 5 秒暫態寬限期內過早顯示「重新連線中」：DataChannel 仍可用時維持「已連線」，短暫 signaling heartbeat 失敗只重試 signaling；只有寬限期到期或 DataChannel／PeerConnection 確實失敗才重建 transport 並消耗最多 6 次 recovery。另從 Recorder 與 Viewer 一般介面移除「匯出診斷紀錄」按鈕及其 UI 樣式，保留 diagnostics collector、Debug API、trace 與底層匯出函式。
 - 修復 Viewer 中途加入：等待 Recorder 時會沿用同一 negotiation 定期重送 `viewer-ready`，不再把「尚無 Recorder」計入 transport recovery；Recorder signaling `/join` 成功即重設 recovery budget，Viewer peer 離開只回到等待狀態而不停止 discovery。保留定向多 Viewer、健康 DataChannel 遇 signaling 503 不拆線，以及 Snapshot／Replay／Live Cue 合併。
 - Recorder 與 Viewer 在 `LIVE_PIPELINE_TRACE_ENABLED=true` 的診斷模式新增手機可用的 JSON 匯出：優先使用系統檔案分享、否則下載 Blob，匯出失敗不影響錄音或 WebRTC。Trace 採 `live-pipeline-trace/v1` allowlist schema 與 20,000 筆 ring buffer，補齊 lifecycle、snapshot、visibility、signaling、offer/answer、ICE/DataChannel、recovery、generation 與 negotiation 關聯欄位；不輸出字幕、音訊、憑證、share token/code、SDP、ICE candidate/IP 或原始 HTTP payload。本次僅補強診斷能力，不代表 Viewer Late Join 根因已修復。

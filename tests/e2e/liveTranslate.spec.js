@@ -2933,7 +2933,7 @@ test('legacy Continue reuses committed successor after token failure without rel
 });
 
 test('pause and resume drains first speech from the replacement pre-roll', async ({ page }) => {
-  await mockMeetingCheckpointApi(page);
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
   await mockLiveSessionCreateApi(page);
   await gotoMockMeetingLive(page);
   await configureTestGeminiCredential(page);
@@ -2941,21 +2941,60 @@ test('pause and resume drains first speech from the replacement pre-roll', async
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThanOrEqual(1);
   await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'initial source', 'initial translation');
+  await expect(page.getByText('initial source')).toBeVisible();
+
+  for (let cycle = 1; cycle <= 3; cycle += 1) {
+    await page.getByRole('button', { name: '停止錄音' }).click();
+    await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
+
+    await page.evaluate((delayMs) => { window.__mockLiveConnectDelayMs = delayMs; }, cycle === 1 ? 1000 : 0);
+    await page.getByRole('button', { name: '繼續', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(cycle + 1);
+    await emitMicrophoneAudio(page);
+    await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(cycle + 1);
+    await expect.poll(() => page.evaluate((index) => (
+      window.__mockGoogleGenAI.liveSessions[index].sentInputs.length
+    ), cycle)).toBeGreaterThanOrEqual(1);
+    await expect(page.getByText('聆聽中')).toBeVisible();
+
+    await emitPartialTranscript(page, `resume ${cycle} partial`, `resume ${cycle} translation partial`);
+    await expect(page.getByText(`resume ${cycle} partial`)).toBeVisible();
+    await emitFinalTranscript(page, `resume ${cycle} final`, `resume ${cycle} translation final`);
+    await expect(page.getByText(`resume ${cycle} final`)).toBeVisible();
+  }
+
+  await expect.poll(() => new Set(checkpointRequests.cueRequests.map(({ segmentId }) => segmentId)).size).toBe(4);
+  await page.getByRole('button', { name: '結束會議' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+});
+
+test('Continue provider setup close cannot enter fake listening state', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
   await page.getByRole('button', { name: '停止錄音' }).click();
   await expect(page.locator('.live-meeting-status')).toHaveText('已暫停');
 
-  await page.evaluate(() => { window.__mockLiveConnectDelayMs = 1000; });
+  await page.evaluate(() => {
+    window.__mockLiveConnectDelayMs = 500;
+    window.__mockLiveCloseOnConnectNumber = 2;
+  });
   await page.getByRole('button', { name: '繼續', exact: true }).click();
+
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(2);
   await emitMicrophoneAudio(page);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(2);
-  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[1].sentInputs.length)).toBe(1);
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  await emitFinalTranscript(page, 'resume first source', 'resume first translation');
-  await expect(page.getByText('resume first source')).toBeVisible();
-  await page.getByRole('button', { name: '結束會議' }).click();
-  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.__mockGoogleGenAI.liveSessions[1].sentInputs.length)).toBe(0);
+  await expect(page.getByText('聆聽中')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toContainText('Gemini Live 連線未完成');
+  await expect(page.locator('.live-meeting-status')).not.toHaveText('進行中');
 });
 
 test('pause preserves a pending subtitle received immediately before pause', async ({ page }) => {

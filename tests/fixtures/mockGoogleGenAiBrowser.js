@@ -49,6 +49,12 @@ export class GoogleGenAI {
             this.emitClose();
           }
         };
+        if (window.__mockLiveCloseOnConnectNumber === window.__mockGoogleGenAI.liveConnects.length) {
+          session.closed = true;
+          request.callbacks?.onclose?.({ reason: 'mock-setup-close', code: 1011 });
+          window.__mockGoogleGenAI.liveSessions.push(session);
+          return session;
+        }
         setTimeout(() => request.callbacks?.onmessage?.({ setupComplete: {} }), 0);
 
         window.__mockGoogleGenAI.liveSessions.push(session);

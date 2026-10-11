@@ -1296,7 +1296,15 @@ export function useLiveRecordingController({
           segmentId: activeCheckpoint?.segmentId
         });
         recovery.sessionRef.current = session;
-        await session.start();
+        const started = await session.start();
+        if (started !== true) {
+          const error = new Error('無法繼續即時字幕：Gemini Live 連線未完成，請重試。');
+          error.code = 'continue_provider_not_ready';
+          error.reasonHint = 'provider_start_incomplete';
+          error.startupStage = 'provider';
+          error.userMessage = '無法繼續即時字幕：Gemini Live 連線未完成，請重試。';
+          throw error;
+        }
         recordLivePipelineTrace({
           stage: 'CONTINUE_PROVIDER_READY',
           meetingId: activeCheckpoint?.meetingId,

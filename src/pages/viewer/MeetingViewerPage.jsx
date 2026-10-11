@@ -18,6 +18,7 @@ import {
   writeSubtitleVisibilityPreference
 } from '../../lib/subtitleVisibilityPreference.js';
 import { canonicalViewerShareUrl } from '../../lib/viewerShare.js';
+import { resolveViewerAutoFollow, scrollViewerToLatest } from '../../lib/viewerAutoFollow.js';
 import { ViewerShareHeader } from './ViewerShareHeader.jsx';
 
 export function MeetingViewerPage({ token, code }) {
@@ -27,6 +28,8 @@ export function MeetingViewerPage({ token, code }) {
   const [viewportHeight, setViewportHeight] = useState(560);
   const viewportRef = useRef(null);
   const userScrollIntentRef = useRef(false);
+  const isFollowingLatestRef = useRef(true);
+  const autoFollowFrameRef = useRef(null);
   const detailRef = useRef(null);
   const eventSourceRef = useRef(null);
   const nextViewerCursorRef = useRef(null);
@@ -215,17 +218,24 @@ export function MeetingViewerPage({ token, code }) {
           stage: 'VIEWER_STORE_UPDATED', meetingId: merged?.meeting?.id || merged?.meetingId,
           messageType: 'snapshot', sequence: envelope.sequence, sourceId: envelope.sourceId,
           transportGeneration: transportMeta.transportGeneration,
+          cueDeliverySource: 'snapshot',
           receivedAt: transportMeta.receivedAt,
           decision: 'snapshot_merged', transportResult: 'updated',
         });
         return;
       }
       if (envelope.type === 'replay.response') {
-        (envelope.events || []).forEach((event) => applyWebRtcEnvelope(event, transportMeta));
+        (envelope.events || []).forEach((event) => applyWebRtcEnvelope(event, {
+          ...transportMeta,
+          cueDeliverySource: 'replay'
+        }));
         return;
       }
       if (envelope.type === 'cue.append' || envelope.type === 'cue.update') {
-        applyCuePayload(envelope, transportMeta);
+        applyCuePayload(envelope, {
+          ...transportMeta,
+          cueDeliverySource: transportMeta.cueDeliverySource || 'live'
+        });
       }
     }
 
@@ -384,6 +394,7 @@ export function MeetingViewerPage({ token, code }) {
         sourceVersion: receivedCue?.sourceVersion,
         translationVersion: receivedCue?.translationVersion,
         transportGeneration: transportMeta.transportGeneration,
+        cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
         receivedAt,
         reason: payload.type || 'viewer_cue_received',
         transportResult: duplicate ? 'deduped' : 'accepted',
@@ -397,6 +408,7 @@ export function MeetingViewerPage({ token, code }) {
           sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
           sourceVersion: receivedCue?.sourceVersion, translationVersion: receivedCue?.translationVersion,
           transportGeneration: transportMeta.transportGeneration,
+          cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
           receivedAt, dropReason: 'stale_or_duplicate_revision', transportResult: 'dropped',
         });
       }
@@ -410,6 +422,7 @@ export function MeetingViewerPage({ token, code }) {
         cueId: receivedCue?.cueId, messageType: payload.type,
         sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
         transportGeneration: transportMeta.transportGeneration,
+        cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
         receivedAt, decision: duplicate ? 'unchanged' : 'merged',
         transportResult: duplicate ? 'deduped' : 'updated',
       });
@@ -427,6 +440,7 @@ export function MeetingViewerPage({ token, code }) {
           cueId: receivedCue?.cueId, messageType: payload.type,
           sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
           transportGeneration: transportMeta.transportGeneration,
+          cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
           receivedAt, timestamp: renderedAt, transportResult: 'rendered',
         });
       });
@@ -680,15 +694,33 @@ export function MeetingViewerPage({ token, code }) {
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
-    if (!viewport || cues.length === 0 || !isFollowingLatest) return undefined;
-    // The spacer represents unrendered rows; its measured total is the latest index position.
-    const frame = requestAnimationFrame(() => viewport.scrollTo({ top: rowLayout.totalHeight, behavior: 'auto' }));
-    return () => cancelAnimationFrame(frame);
+    if (!viewport || cues.length === 0 || !isFollowingLatestRef.current) return undefined;
+    // Anchor after the DOM commit and again after virtual-row and viewport measurement settles.
+    scrollViewerToLatest(viewport);
+    const frame = requestAnimationFrame(() => {
+      autoFollowFrameRef.current = null;
+      if (isFollowingLatestRef.current && !userScrollIntentRef.current) scrollViewerToLatest(viewport);
+    });
+    autoFollowFrameRef.current = frame;
+    return () => {
+      cancelAnimationFrame(frame);
+      if (autoFollowFrameRef.current === frame) autoFollowFrameRef.current = null;
+    };
   }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.sourceText, cues.at(-1)?.translatedText,
-    isFollowingLatest, rowLayout.totalHeight, showSource, showTranslation]);
+    isFollowingLatest, rowLayout.totalHeight, showSource, showTranslation, viewportHeight]);
 
   function scrollToLatest() {
+    isFollowingLatestRef.current = true;
     setIsFollowingLatest(true);
+    scrollViewerToLatest(viewportRef.current);
+  }
+
+  function markUserScrollIntent() {
+    userScrollIntentRef.current = true;
+    if (autoFollowFrameRef.current !== null) {
+      cancelAnimationFrame(autoFollowFrameRef.current);
+      autoFollowFrameRef.current = null;
+    }
   }
 
   function dismissFullscreenError() {
@@ -797,14 +829,19 @@ export function MeetingViewerPage({ token, code }) {
             {cues.length === 0 ? <div className="viewer-empty-state"><span className="viewer-empty-mark" aria-hidden="true" /><p>等待錄音端送出第一句字幕</p><span>連線期間會自動顯示，不需要重新整理。</span></div> : <>
               {hasOlderCues ? <button className="button detail-button viewer-load-older" type="button" data-testid="viewer-load-older-button" onClick={() => void loadOlderCues()} disabled={isLoadingOlder}>{isLoadingOlder ? '載入中…' : '載入較舊字幕'}</button> : null}
               <div ref={viewportRef} className="viewer-cue-viewport"
-                onWheel={() => { userScrollIntentRef.current = true; }}
-                onTouchMove={() => { userScrollIntentRef.current = true; }}
-                onPointerDown={() => { userScrollIntentRef.current = true; }}
-                onKeyDown={(event) => { if (['ArrowUp', 'PageUp', 'Home', 'ArrowDown', 'PageDown', 'End'].includes(event.key)) userScrollIntentRef.current = true; }}
+                onWheel={markUserScrollIntent}
+                onTouchMove={markUserScrollIntent}
+                onPointerDown={markUserScrollIntent}
+                onKeyDown={(event) => { if (['ArrowUp', 'PageUp', 'Home', 'ArrowDown', 'PageDown', 'End'].includes(event.key)) markUserScrollIntent(); }}
                 onScroll={(event) => {
                   setScrollTop(event.currentTarget.scrollTop);
-                  if (isCueListAtLatestPosition(event.currentTarget)) setIsFollowingLatest(true);
-                  else if (userScrollIntentRef.current) setIsFollowingLatest(false);
+                  const nextFollowing = resolveViewerAutoFollow({
+                    following: isFollowingLatestRef.current,
+                    userInitiated: userScrollIntentRef.current,
+                    viewport: event.currentTarget
+                  });
+                  isFollowingLatestRef.current = nextFollowing;
+                  setIsFollowingLatest(nextFollowing);
                   userScrollIntentRef.current = false;
                 }} data-testid="meeting-viewer-cue-viewport" role="log" tabIndex={0} aria-live="polite" aria-label="即時字幕列表">
                 <div style={{ height: rowLayout.totalHeight, position: 'relative' }}>
@@ -832,5 +869,3 @@ function viewerConnectionLabel(value) {
   if (value === 'recovery_failed') return '🔴 即時字幕連線異常';
   return webRtcConnectionLabel(value);
 }
-
-function isCueListAtLatestPosition(list) { return list.scrollHeight - list.scrollTop - list.clientHeight < 24; }

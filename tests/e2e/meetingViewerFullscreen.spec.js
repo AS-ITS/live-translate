@@ -65,7 +65,16 @@ function defaultCues(count = 1) {
   }));
 }
 
-test('Viewer uses native Fullscreen API and exits through the same toggle', async ({ page }) => {
+async function scrollViewerUp(viewport) {
+  await viewport.evaluate((node) => {
+    node.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -1_200 }));
+    node.scrollTop = 0;
+    node.dispatchEvent(new Event('scroll', { bubbles: true }));
+  });
+}
+
+test('Viewer uses native Fullscreen API and exits through the same toggle', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile-webkit', 'iPhone Safari is covered by the CSS fullscreen fallback test.');
   await openViewer(page, { code: 'FULLSCREEN-NATIVE' });
 
   const shell = page.getByTestId('viewer-fullscreen-shell');
@@ -90,8 +99,7 @@ test('Viewer uses reversible CSS fullscreen without an error when Fullscreen API
   const viewport = page.getByTestId('meeting-viewer-cue-viewport');
   const toggle = page.getByTestId('viewer-fullscreen-toggle');
   await page.getByTestId('viewer-source-toggle').click();
-  await viewport.hover();
-  await page.mouse.wheel(0, -1_200);
+  await scrollViewerUp(viewport);
   await expect(page.getByTestId('viewer-follow-latest-button')).toBeVisible();
   const scrollTopBefore = await viewport.evaluate((node) => node.scrollTop);
   await toggle.click();

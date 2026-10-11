@@ -260,6 +260,51 @@ test('Viewer transient ICE disconnect recovers inside grace without reload or pe
   await transport.stop();
 });
 
+test('Viewer reports connected when DataChannel is open before PeerConnection settles', async () => {
+  FakePeerConnection.instances = [];
+  const statuses = [];
+  const transport = createViewerTransport({ statuses });
+  transport.start(); await flush(); await flush();
+  const peer = FakePeerConnection.instances[0];
+  peer.connectionState = 'connecting';
+  peer.iceConnectionState = 'checking';
+  const channel = new FakeDataChannel(peer);
+  peer.ondatachannel({ channel });
+  channel.open({ markPeerConnected: false });
+
+  assert.equal(statuses.at(-1).value, 'connected');
+  assert.equal(statuses.at(-1).connectionState, 'connecting');
+  assert.equal(statuses.at(-1).iceConnectionState, 'checking');
+  assert.equal(statuses.at(-1).dataChannelState, 'open');
+  assert.equal(statuses.at(-1).transportGeneration, 1);
+  assert.equal(statuses.at(-1).lastReceivedCueSequence, 0);
+  await transport.stop();
+});
+
+test('healthy DataChannel suppresses ICE disconnected recovery after grace', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  const statuses = [];
+  const transport = createViewerTransport({ timers, statuses });
+  transport.start(); await flush(); await flush();
+  const peer = FakePeerConnection.instances[0];
+  const channel = new FakeDataChannel(peer);
+  peer.ondatachannel({ channel });
+  channel.open();
+  peer.connectionState = 'disconnected';
+  peer.iceConnectionState = 'disconnected';
+  peer.onconnectionstatechange();
+
+  const grace = timers.find((timer) => timer.ms === 5_000 && !timer.cleared);
+  assert.ok(grace);
+  await grace.fn();
+  assert.equal(statuses.at(-1).value, 'connected');
+  assert.equal(statuses.some(({ value }) => value === 'reconnecting'), false);
+  assert.equal(FakePeerConnection.instances.length, 1);
+  assert.equal(peer.closed, undefined);
+  await transport.stop();
+});
+
 test('Viewer closed DataChannel rebuilds peer, opens replacement, and requests replay', async () => {
   FakePeerConnection.instances = [];
   const timers = [];

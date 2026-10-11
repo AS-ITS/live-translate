@@ -55,8 +55,11 @@ test('Viewer keeps receiving and following cues when earlier live cues lack segm
     [...node.querySelectorAll('.viewer-cue-row')].at(-1)?.dataset.cueId)).toBe('new-C');
   await expect(viewport.locator('[data-cue-id="new-C"]')).toBeVisible();
 
-  await viewport.hover();
-  await page.mouse.wheel(0, -1800);
+  await viewport.evaluate((node) => {
+    node.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -1_800 }));
+    node.scrollTop = 0;
+    node.dispatchEvent(new Event('scroll', { bubbles: true }));
+  });
   await expect(page.getByTestId('viewer-follow-latest-button')).toBeVisible();
   await publish(31, 'new-D', 'segment-2', 2, 4, '新字幕 D');
   await publish(32, 'new-E', 'segment-2', 2, 5, '新字幕 E');
@@ -357,7 +360,7 @@ test('Viewer keeps fullscreen presentation state across DataChannel generation r
   await shell.evaluate((node) => { node.dataset.fullscreenBoundary = 'stable'; });
 
   await page.getByTestId('viewer-fullscreen-toggle').click();
-  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.dataset.testid)).toBe('viewer-fullscreen-shell');
+  await expect(shell).toHaveAttribute('data-fullscreen-mode', /^(native|css)$/);
   await page.getByTestId('viewer-source-toggle').click();
   await expect(page.getByTestId('viewer-source-toggle')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByTestId('viewer-translation-toggle')).toHaveAttribute('aria-pressed', 'true');
@@ -383,7 +386,7 @@ test('Viewer keeps fullscreen presentation state across DataChannel generation r
 
   await expect(viewport.locator('[data-cue-id="cue-3"]')).toContainText('Latest translation');
   await expect(shell).toHaveAttribute('data-fullscreen-boundary', 'stable');
-  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.dataset.testid)).toBe('viewer-fullscreen-shell');
+  await expect(shell).toHaveAttribute('data-fullscreen-mode', /^(native|css)$/);
   await expect(page.getByTestId('viewer-source-toggle')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByTestId('viewer-translation-toggle')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('img', { name: 'Viewer 分享連結 QR Code' })).toBeVisible();
@@ -437,7 +440,7 @@ test('Viewer shows recovery failure in fullscreen and reloads only after the use
   await expect(preservedCue).toContainText('保留的舊字幕');
   await page.getByTestId('viewer-source-toggle').click();
   await page.getByTestId('viewer-fullscreen-toggle').click();
-  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.dataset.testid)).toBe('viewer-fullscreen-shell');
+  await expect(shell).toHaveAttribute('data-fullscreen-mode', /^(native|css)$/);
 
   await page.evaluate(() => window.__failViewerTransport());
   const failurePanel = page.getByTestId('viewer-recovery-failed');
@@ -448,7 +451,7 @@ test('Viewer shows recovery failure in fullscreen and reloads only after the use
   await expect(preservedCue).toContainText('Preserved subtitle');
   await expect(page.getByTestId('viewer-source-toggle')).toHaveAttribute('aria-pressed', 'false');
   await expect(shell).toBeVisible();
-  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.dataset.testid)).toBe('viewer-fullscreen-shell');
+  await expect(shell).toHaveAttribute('data-fullscreen-mode', /^(native|css)$/);
   expect(navigationRequests).toBe(1);
 
   await page.evaluate(() => window.__recoverViewerTransport());

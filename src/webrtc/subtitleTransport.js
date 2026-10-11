@@ -61,19 +61,25 @@ export function createWebRtcSubtitleTransport({
 
   function status(value, details = {}) {
     const peerCounts = currentPeerCounts();
+    const context = active;
     const traceDetails = {
       stage: 'WEBRTC_TRANSPORT',
       role: role === 'device' ? 'recorder' : 'viewer',
       event: role === 'device' ? `recorder.sidecar.${value}` : `viewer.transport.${value}`,
       meetingId,
       connectionEpoch: details.epoch ?? connectionEpoch,
+      transportGeneration: details.epoch ?? connectionEpoch,
       eventType: role,
       eventSequence: details.attempt ?? null,
       reason: details.reason || value,
       decision: details.recovered ? 'recovered' : null,
-      connectionState: active?.pc?.connectionState,
-      iceConnectionState: active?.pc?.iceConnectionState,
-      dataChannelState: active?.channel?.readyState,
+      connectionState: context?.pc?.connectionState,
+      iceConnectionState: context?.pc?.iceConnectionState,
+      dataChannelState: context?.channel?.readyState,
+      lastReceivedCueSequence: lastSourceSequence,
+      cueDeliverySource: details.cueDeliverySource ?? null,
+      reconnectReason: details.reason ?? null,
+      reconnectAttempt: details.attempt ?? retryAttempt,
       realtimeState: value,
       transportResult: value,
       signalingHealth,
@@ -81,7 +87,19 @@ export function createWebRtcSubtitleTransport({
     };
     recordLivePipelineTrace(traceDetails);
     recordLivePipelineTrace({ ...traceDetails, stage: 'VIEWER_SHARING_STATE_CHANGED' });
-    onStatus?.(Object.freeze({ value, signalingHealth, ...peerCounts, ...details }));
+    onStatus?.(Object.freeze({
+      value,
+      signalingHealth,
+      transportGeneration: details.epoch ?? connectionEpoch,
+      connectionState: context?.pc?.connectionState,
+      iceConnectionState: context?.pc?.iceConnectionState,
+      dataChannelState: context?.channel?.readyState,
+      lastReceivedCueSequence: lastSourceSequence,
+      reconnectReason: details.reason ?? null,
+      reconnectAttempt: details.attempt ?? retryAttempt,
+      ...peerCounts,
+      ...details,
+    }));
   }
 
   function trace(stage, eventType, context = null, details = {}) {
@@ -126,10 +144,7 @@ export function createWebRtcSubtitleTransport({
   }
 
   function isTransportHealthy(context) {
-    return Boolean(context
-      && context.pc?.connectionState === 'connected'
-      && !['disconnected', 'failed', 'closed'].includes(context.pc?.iceConnectionState)
-      && context.channel?.readyState === 'open');
+    return isDataChannelUsable(context);
   }
 
   function isDataChannelUsable(context) {
@@ -498,7 +513,13 @@ export function createWebRtcSubtitleTransport({
           } else if (envelope.type === SUBTITLE_ENVELOPE_TYPES.replayResponse) {
             recoveryTrace('REPLAY_COMPLETED', context, { reason: 'recovery_payload', sequence: envelope.toSequence });
           }
-          onEnvelope?.(envelope, Object.freeze({ transportGeneration: context.epoch, receivedAt: Date.now() }));
+          onEnvelope?.(envelope, Object.freeze({
+            transportGeneration: context.epoch,
+            receivedAt: Date.now(),
+            cueDeliverySource: envelope.type === SUBTITLE_ENVELOPE_TYPES.snapshot
+              ? 'snapshot'
+              : (envelope.type === SUBTITLE_ENVELOPE_TYPES.replayResponse ? 'replay' : 'live'),
+          }));
         }
       },
       onError: (error) => { if (isCurrent(context)) handleAsyncError(error); },
@@ -787,7 +808,7 @@ export function createWebRtcSubtitleTransport({
     });
     context.disconnectTimer = setTimer(async () => {
       context.disconnectTimer = null;
-      if (!isCurrent(context) || context.pc.connectionState === 'connected') return;
+      if (!isCurrent(context) || isDataChannelUsable(context)) return;
       hadOutage = true;
       if (role !== 'device') {
         recoveryTrace('PEER_REBUILD_STARTED', context, { reason: 'disconnect_grace_expired' });

@@ -15,9 +15,9 @@ class FakeDataChannel {
   addEventListener(type, handler) { this.listeners.set(type, handler); }
   send(value) { this.sent.push(JSON.parse(value)); }
   close() { this.closed = true; this.readyState = 'closed'; }
-  open() {
+  open({ markPeerConnected = true } = {}) {
     this.readyState = 'open';
-    if (this.peer) {
+    if (this.peer && markPeerConnected) {
       this.peer.connectionState = 'connected';
       this.peer.iceConnectionState = 'connected';
     }
@@ -513,6 +513,59 @@ test('Device transport starts independently, publishes snapshot/update, and clea
   assert.equal(peer.channel.closed, true);
   assert.equal(timers.every((timer) => timer.cleared), true);
   assert.equal(requests.some((item) => item.url.endsWith('/leave')), true);
+});
+
+test('open DataChannel cancels negotiation timeout before PeerConnection connected event and carries twenty Cues', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  let deliveredReady = false;
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'device', participantId: 'device-resumed',
+    fetchImpl: async (url) => {
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.includes('/signal?')) {
+        if (!deliveredReady) {
+          deliveredReady = true;
+          return response(200, {
+            messages: [{ sequence: 1, participantId: 'viewer-1', type: 'viewer-ready', negotiationId: 'resume-1', payload: {} }],
+            after: 1,
+          });
+        }
+        return response(200, { messages: [], after: 1 });
+      }
+      if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 2 });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(404, { error: { code: 'not_found' } });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+  });
+
+  transport.start();
+  await flush(); await flush();
+  const discoveryPoll = timers.find((timer) => timer.ms === 2_000 && !timer.cleared);
+  discoveryPoll.cleared = true;
+  await discoveryPoll.fn();
+  await flush(); await flush();
+
+  const peer = FakePeerConnection.instances[0];
+  const negotiationTimeout = timers.find((timer) => timer.ms === 12_000 && !timer.cleared);
+  assert.ok(negotiationTimeout);
+  peer.channel.open({ markPeerConnected: false });
+
+  assert.equal(peer.channel.sent[0].type, 'snapshot');
+  assert.equal(negotiationTimeout.cleared, true, 'an open DataChannel must not be destroyed by negotiation timeout');
+  for (let sequence = 1; sequence <= 20; sequence += 1) {
+    assert.equal(transport.publishCue({
+      cueId: `cue-${sequence}`, sessionId: 'session-1', segmentId: 'segment-2', sequence,
+      sourceText: `source ${sequence}`, translatedText: `translation ${sequence}`,
+    }), true);
+  }
+  assert.equal(peer.channel.sent.filter((packet) => packet.type === 'cue.append').length, 20);
+  assert.equal(peer.closed, undefined);
+  assert.equal(peer.channel.closed, false);
+  await transport.stop();
 });
 
 test('transport renews the participant heartbeat and uses low-frequency Device polling', async () => {

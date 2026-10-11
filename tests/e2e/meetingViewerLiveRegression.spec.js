@@ -125,15 +125,24 @@ test('Viewer waits for a late Recorder then receives snapshot and live Cue updat
     window.EventSource = MockEventSource;
     window.RTCPeerConnection = class MockLateJoinPeerConnection {
       constructor() {
-        this.connectionState = 'connected';
-        this.iceConnectionState = 'connected';
+        this.connectionState = 'connecting';
+        this.iceConnectionState = 'checking';
         this.signalingState = 'stable';
       }
       async setRemoteDescription(description) {
         this.remoteDescription = description;
         const channel = new MockDataChannel();
         window.__lateJoinChannels.push(channel);
-        queueMicrotask(() => { this.ondatachannel?.({ channel }); channel.open(); });
+        queueMicrotask(() => {
+          this.ondatachannel?.({ channel });
+          channel.open();
+          window.setTimeout(() => {
+            this.connectionState = 'connected';
+            this.iceConnectionState = 'connected';
+            this.onconnectionstatechange?.();
+            this.oniceconnectionstatechange?.();
+          }, 10);
+        });
       }
       async createAnswer() { return { type: 'answer', sdp: 'late-answer' }; }
       async setLocalDescription(description) { this.localDescription = description; }
@@ -212,6 +221,21 @@ test('Viewer waits for a late Recorder then receives snapshot and live Cue updat
   await expect(viewport.locator('[data-cue-id="cue-1"]')).toHaveCount(1);
   await expect(viewport.locator('[data-cue-id="cue-1"]')).toContainText('Corrected subtitle');
   await expect(viewport.locator('[data-cue-id="cue-2"]')).toContainText('Following subtitle');
+  await page.evaluate(() => {
+    for (let sequence = 3; sequence <= 20; sequence += 1) {
+      window.__receiveLateJoinPacket({
+        protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-late-recorder',
+        sourceId: 'recorder-source', sequence: sequence + 1,
+        cue: {
+          cueId: `cue-${sequence}`, segmentId: 'segment-1', sequence, revision: 1,
+          sourceText: `持續字幕 ${sequence}`, translatedText: `Continuous subtitle ${sequence}`,
+          sourceVersion: 1, translationVersion: 1
+        },
+      });
+    }
+  });
+
+  await expect(viewport.locator('[data-cue-id="cue-20"]')).toContainText('Continuous subtitle 20');
   await expect(page.getByRole('status')).toContainText('已連線');
 });
 

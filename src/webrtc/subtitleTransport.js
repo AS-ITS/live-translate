@@ -508,6 +508,10 @@ export function createWebRtcSubtitleTransport({
       const openedAt = now();
       context.lastDataChannelMessageAt = openedAt;
       context.lastPongAt = openedAt;
+      // An open SCTP channel is already usable even when the browser has not yet
+      // delivered the PeerConnection "connected" state event. Do not let the
+      // negotiation watchdog tear down that healthy channel during the gap.
+      clearContextTimer(context, 'negotiationTimer');
       trace('WEBRTC_DATA_CHANNEL', 'open', context, { transportResult: 'open' });
       recoveryTrace('DATA_CHANNEL_OPEN', context, { reason: 'channel_open' });
       scheduleLivenessCheck(context);
@@ -586,10 +590,12 @@ export function createWebRtcSubtitleTransport({
         targetParticipantId: viewerId, negotiationId,
       });
       trace('WEBRTC_SIGNALING', 'offer.sent', context, { transportResult: 'sent' });
-      if (!isCurrent(context)) return;
+      if (!isCurrent(context) || context.channel?.readyState === 'open') return;
       context.negotiationTimer = setTimer(() => {
         context.negotiationTimer = null;
-        if (isCurrent(context) && !context.connected) cleanupDevicePeer(context);
+        if (isCurrent(context) && !context.connected && context.channel?.readyState !== 'open') {
+          cleanupDevicePeer(context);
+        }
       }, NEGOTIATION_TIMEOUT_MS);
     } catch (error) {
       if (isCurrent(context)) {
@@ -741,10 +747,12 @@ export function createWebRtcSubtitleTransport({
         targetParticipantId: context.peerId, negotiationId: context.negotiationId,
       });
       trace('WEBRTC_SIGNALING', 'answer.sent', context, { transportResult: 'sent' });
-      if (!isCurrent(context) || context.connected) return;
+      if (!isCurrent(context) || context.connected || context.channel?.readyState === 'open') return;
       context.negotiationTimer = setTimer(() => {
         context.negotiationTimer = null;
-        if (isCurrent(context) && !context.connected) scheduleReconnect('negotiation_timeout');
+        if (isCurrent(context) && !context.connected && context.channel?.readyState !== 'open') {
+          scheduleReconnect('negotiation_timeout');
+        }
       }, NEGOTIATION_TIMEOUT_MS);
       return;
     }

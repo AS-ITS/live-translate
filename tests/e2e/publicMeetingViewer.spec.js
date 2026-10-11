@@ -146,9 +146,9 @@ test('Meeting Viewer keeps current subtitles while a gap snapshot retries a tran
   await page.evaluate(() => window.__emitViewerGap());
   await expect(page.getByText('斷線期間保留', { exact: true })).toBeVisible();
   await expect(page.getByText('重新連線後補齊', { exact: true })).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByText('已恢復連線', { exact: true })).toBeVisible();
+  await expect.poll(() => snapshots).toBe(3);
+  await expect(page.getByRole('status')).toContainText('已連線');
   await expect(page.locator('.viewer-cue-row')).toHaveCount(2);
-  expect(snapshots).toBe(3);
 });
 
 test('history scrolling keeps new Cues in DOM order and return-to-latest continues following', async ({ page }) => {

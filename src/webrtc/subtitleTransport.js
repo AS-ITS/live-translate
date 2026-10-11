@@ -271,6 +271,33 @@ export function createWebRtcSubtitleTransport({
     return ['meeting_stopped', 'meeting_revoked', 'share_unauthorized'].includes(error?.code);
   }
 
+  async function announceViewerReady(context, { repeated = false } = {}) {
+    await client.signal('viewer-ready', {}, { negotiationId: context.negotiationId });
+    if (!isCurrent(context)) return;
+    trace('WEBRTC_SIGNALING', repeated ? 'viewer-ready.resent' : 'viewer-ready.sent', context, {
+      decision: repeated ? 'continue_discovery' : 'start_discovery',
+      transportResult: 'accepted',
+    });
+    status('waiting', {
+      epoch: context.epoch,
+      negotiationId: context.negotiationId,
+      reason: repeated ? 'recorder_not_available' : 'viewer_ready',
+    });
+    clearContextTimer(context, 'negotiationTimer');
+    context.negotiationTimer = setTimer(() => {
+      context.negotiationTimer = null;
+      if (!isCurrent(context) || context.connected) return;
+      if (context.peerId) {
+        scheduleReconnect('negotiation_timeout');
+        return;
+      }
+      void announceViewerReady(context, { repeated: true }).catch((error) => {
+        if (!isCurrent(context)) return;
+        handleConnectError(error, 'viewer_ready_failed');
+      });
+    }, NEGOTIATION_TIMEOUT_MS);
+  }
+
   async function connect({ reconnecting = false } = {}) {
     cleanupAllPeers();
     clearDevicePoll();
@@ -294,6 +321,8 @@ export function createWebRtcSubtitleTransport({
       trace('WEBRTC_SIGNALING', 'join.success', null, { epoch, transportResult: 'joined' });
       scheduleHeartbeat(joinResult.ttlMs, epoch);
       if (role === 'device') {
+        retryAttempt = 0;
+        hadOutage = false;
         status('waiting', { epoch });
         scheduleDevicePoll(epoch);
         return;
@@ -322,14 +351,7 @@ export function createWebRtcSubtitleTransport({
       active = context;
       recoveryTrace('PEER_CREATED', context, { reason: reconnecting ? 'recovery' : 'initial_connect' });
       wirePeer(context);
-      await client.signal('viewer-ready', {}, { negotiationId: context.negotiationId });
-      if (!isCurrent(context)) return;
-      trace('WEBRTC_SIGNALING', 'viewer-ready.sent', context, { transportResult: 'accepted' });
-      status('waiting', { epoch, negotiationId: context.negotiationId });
-      context.negotiationTimer = setTimer(() => {
-        context.negotiationTimer = null;
-        if (isCurrent(context) && !context.connected) scheduleReconnect('negotiation_timeout');
-      }, NEGOTIATION_TIMEOUT_MS);
+      await announceViewerReady(context);
       schedulePoll(context);
     } catch (error) {
       if (stopped || epoch !== connectionEpoch) return;
@@ -508,8 +530,7 @@ export function createWebRtcSubtitleTransport({
   function cleanupDevicePeer(context) {
     cleanupPeer(context);
     if (!stopped && currentPeerCounts().healthyPeerCount === 0) {
-      hadOutage = true;
-      status(devicePeers.size === 0 ? 'reconnecting' : 'connecting', {
+      status('waiting', {
         epoch: connectionEpoch, reason: 'device_peer_closed',
       });
     } else if (!stopped) {
@@ -685,6 +706,7 @@ export function createWebRtcSubtitleTransport({
     const peer = context.pc;
     if (message.type === 'offer' && role === 'viewer') {
       if (message.targetParticipantId !== participantId) return;
+      clearContextTimer(context, 'negotiationTimer');
       context.peerId = message.participantId;
       trace('WEBRTC_SIGNALING', 'offer.received', context, { transportResult: 'received' });
       await peer.setRemoteDescription(message.payload);
@@ -699,6 +721,11 @@ export function createWebRtcSubtitleTransport({
         targetParticipantId: context.peerId, negotiationId: context.negotiationId,
       });
       trace('WEBRTC_SIGNALING', 'answer.sent', context, { transportResult: 'sent' });
+      if (!isCurrent(context) || context.connected) return;
+      context.negotiationTimer = setTimer(() => {
+        context.negotiationTimer = null;
+        if (isCurrent(context) && !context.connected) scheduleReconnect('negotiation_timeout');
+      }, NEGOTIATION_TIMEOUT_MS);
       return;
     }
     if (message.type === 'answer' && role === 'device') {

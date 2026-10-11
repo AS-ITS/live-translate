@@ -101,6 +101,47 @@ test('Viewer requests a fresh negotiation when joining after an offer has expire
   await transport.stop();
 });
 
+test('Viewer keeps advertising one negotiation while waiting for a Recorder', async () => {
+  FakePeerConnection.instances = [];
+  const requests = [];
+  const timers = [];
+  const statuses = [];
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'viewer', participantId: 'viewer-waiting', credential: { shareToken: 'token' },
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      requests.push({ url, body });
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: requests.length });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { messages: [], after: 0 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false, executed: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+    onStatus: (status) => statuses.push(status),
+  });
+
+  transport.start();
+  await flush(); await flush();
+  for (let cycle = 0; cycle < MAX_RECOVERY_ATTEMPTS + 2; cycle += 1) {
+    const timer = timers.find((item) => item.ms === 12_000 && !item.cleared && !item.executed);
+    assert.ok(timer, `missing Viewer discovery timer for cycle ${cycle + 1}`);
+    timer.executed = true;
+    timer.cleared = true;
+    await timer.fn();
+    await flush(); await flush();
+  }
+
+  const readyRequests = requests.filter(({ body }) => body?.type === 'viewer-ready');
+  assert.equal(readyRequests.length, MAX_RECOVERY_ATTEMPTS + 3);
+  assert.equal(new Set(readyRequests.map(({ body }) => body.negotiationId)).size, 1);
+  assert.equal(FakePeerConnection.instances.length, 1);
+  assert.equal(statuses.some(({ value }) => value === 'recovery_failed'), false);
+  assert.equal(statuses.at(-1).value, 'waiting');
+  await transport.stop();
+});
+
 test('Device creates targeted peers for Viewers joining at different times', async () => {
   FakePeerConnection.instances = [];
   const requests = [];
@@ -691,7 +732,7 @@ test('Device DataChannel error closes only its peer while discovery keeps runnin
   await timers.find((timer) => timer.ms === 2_000 && !timer.cleared).fn();
   await flush(); await flush();
   FakePeerConnection.instances[0].channel.error();
-  assert.equal(statuses.at(-1), 'reconnecting');
+  assert.equal(statuses.at(-1), 'waiting');
   assert.equal(FakePeerConnection.instances[0].closed, true);
   assert.ok(timers.find((timer) => timer.ms === 2_000 && !timer.cleared));
   await transport.stop();
@@ -760,6 +801,51 @@ test('join 503 recovers, and a failed leave does not prevent the same participan
   assert.equal(joins, 3);
   assert.deepEqual(requests.filter((item) => item.url.endsWith('/join')).map((item) => item.body.participantId),
     ['device-stable', 'device-stable', 'device-stable']);
+  await transport.stop();
+});
+
+test('successful Device joins reset recovery budget while no Viewer is connected', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  const statuses = [];
+  let joins = 0;
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'device', participantId: 'device-long-wait',
+    fetchImpl: async (url) => {
+      if (url.endsWith('/join')) {
+        joins += 1;
+        return joins % 2 === 0
+          ? response(503, { error: { code: 'webrtc_signaling_unavailable' } })
+          : response(200, { ttlMs: 60_000, iceServers: [] });
+      }
+      if (url.includes('/signal?')) return response(200, { messages: [], after: 0 });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { accepted: true, sequence: 1 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    random: () => 0.5,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false, executed: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+    onStatus: (status) => statuses.push(status),
+  });
+
+  transport.start();
+  await flush(); await flush();
+  for (let cycle = 0; cycle < MAX_RECOVERY_ATTEMPTS + 2; cycle += 1) {
+    const heartbeat = timers.find((item) => item.ms === 30_000 && !item.cleared && !item.executed);
+    assert.ok(heartbeat, `missing Device heartbeat for cycle ${cycle + 1}`);
+    heartbeat.executed = true;
+    await heartbeat.fn();
+    await flush(); await flush();
+    const retry = timers.find((item) => item.ms === 1_000 && !item.cleared && !item.executed);
+    assert.ok(retry, `Device retry budget was not reset for cycle ${cycle + 1}`);
+    retry.executed = true;
+    await retry.fn();
+    await flush(); await flush();
+  }
+
+  assert.equal(statuses.some(({ value }) => value === 'recovery_failed'), false);
+  assert.equal(statuses.at(-1).value, 'waiting');
   await transport.stop();
 });
 

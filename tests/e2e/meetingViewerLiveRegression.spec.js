@@ -91,6 +91,130 @@ test('Viewer keeps receiving and following cues when earlier live cues lack segm
   await expect(viewerHeader).toHaveAttribute('data-reconnect-marker', 'stable');
 });
 
+test('Viewer waits for a late Recorder then receives snapshot and live Cue updates', async ({ page }) => {
+  await page.addInitScript(() => {
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = (callback, delay = 0, ...args) => (
+      nativeSetTimeout(callback, delay === 12_000 ? 5 : delay, ...args)
+    );
+    class MockEventSource extends EventTarget {
+      constructor() { super(); }
+      close() { this.readyState = 2; }
+    }
+    class MockDataChannel {
+      constructor() {
+        this.readyState = 'connecting';
+        this.listeners = new Map();
+        this.sent = [];
+      }
+      addEventListener(type, handler) {
+        if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+        this.listeners.get(type).add(handler);
+      }
+      emit(type, event = new Event(type)) {
+        this.listeners.get(type)?.forEach((handler) => handler(event));
+        this[`on${type}`]?.(event);
+      }
+      open() { this.readyState = 'open'; this.emit('open'); }
+      send(value) { this.sent.push(JSON.parse(value)); }
+      receive(value) { this.emit('message', new MessageEvent('message', { data: JSON.stringify(value) })); }
+      close() { this.readyState = 'closed'; }
+    }
+    window.__lateJoinChannels = [];
+    window.__receiveLateJoinPacket = (packet) => window.__lateJoinChannels.at(-1)?.receive(packet);
+    window.EventSource = MockEventSource;
+    window.RTCPeerConnection = class MockLateJoinPeerConnection {
+      constructor() {
+        this.connectionState = 'connected';
+        this.iceConnectionState = 'connected';
+        this.signalingState = 'stable';
+      }
+      async setRemoteDescription(description) {
+        this.remoteDescription = description;
+        const channel = new MockDataChannel();
+        window.__lateJoinChannels.push(channel);
+        queueMicrotask(() => { this.ondatachannel?.({ channel }); channel.open(); });
+      }
+      async createAnswer() { return { type: 'answer', sdp: 'late-answer' }; }
+      async setLocalDescription(description) { this.localDescription = description; }
+      async addIceCandidate() {}
+      async getStats() { return new Map(); }
+      close() { this.connectionState = 'closed'; }
+    };
+  });
+
+  const signaling = { readyCount: 0, participantId: '', negotiationId: '', sequence: 0, offered: false };
+  await page.route(/\/api\/shared-meetings\/code\/LATE-RECORDER(?:\?.*)?$/, (route) => route.fulfill({
+    json: {
+      meeting: { id: 'meeting-late-recorder', name: 'Late Recorder', status: 'active' },
+      recordingState: 'recording', cues: [], cursor: { eventId: 0, cueSequence: 0 },
+    },
+  }));
+  await page.route('**/api/webrtc/meeting-late-recorder/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('/join')) {
+      await route.fulfill({ json: { ttlMs: 60_000, iceServers: [] } });
+      return;
+    }
+    if (request.method() === 'POST' && url.pathname.endsWith('/signal')) {
+      const body = request.postDataJSON();
+      if (body.type === 'viewer-ready') {
+        signaling.readyCount += 1;
+        signaling.participantId = body.participantId;
+        signaling.negotiationId = body.negotiationId;
+      }
+      await route.fulfill({ json: { accepted: true, sequence: ++signaling.sequence } });
+      return;
+    }
+    if (request.method() === 'GET' && url.pathname.endsWith('/signal')) {
+      const shouldOffer = signaling.readyCount > 6 && !signaling.offered;
+      const messages = shouldOffer ? [{
+        sequence: ++signaling.sequence,
+        participantId: 'recorder-late', targetParticipantId: signaling.participantId,
+        negotiationId: signaling.negotiationId, type: 'offer',
+        payload: { type: 'offer', sdp: 'late-offer' },
+      }] : [];
+      if (shouldOffer) signaling.offered = true;
+      await route.fulfill({ json: { messages, after: signaling.sequence } });
+      return;
+    }
+    await route.fulfill({ json: { left: true } });
+  });
+
+  await page.goto('/#viewer?code=LATE-RECORDER');
+  await expect.poll(() => signaling.readyCount).toBeGreaterThan(6);
+  await expect.poll(() => page.evaluate(() => window.__lateJoinChannels.length)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (
+    window.__lateJoinChannels[0].sent.some((packet) => packet.type === 'replay.request')
+  ))).toBe(true);
+
+  await page.evaluate(() => window.__receiveLateJoinPacket({
+    protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-late-recorder',
+    sourceId: 'recorder-source', sequence: 1,
+    cues: [{ cueId: 'cue-1', segmentId: 'segment-1', sequence: 1, revision: 1,
+      sourceText: '初始字幕', translatedText: 'Initial subtitle', sourceVersion: 1, translationVersion: 1 }],
+  }));
+  await page.evaluate(() => window.__receiveLateJoinPacket({
+    protocol: 'subtitle-webrtc/v1', type: 'cue.update', meetingId: 'meeting-late-recorder',
+    sourceId: 'recorder-source', sequence: 2,
+    cue: { cueId: 'cue-1', segmentId: 'segment-1', sequence: 1, revision: 2,
+      sourceText: '修正字幕', translatedText: 'Corrected subtitle', sourceVersion: 2, translationVersion: 2 },
+  }));
+  await page.evaluate(() => window.__receiveLateJoinPacket({
+    protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-late-recorder',
+    sourceId: 'recorder-source', sequence: 3,
+    cue: { cueId: 'cue-2', segmentId: 'segment-1', sequence: 2, revision: 1,
+      sourceText: '後續字幕', translatedText: 'Following subtitle', sourceVersion: 1, translationVersion: 1 },
+  }));
+
+  const viewport = page.getByTestId('meeting-viewer-cue-viewport');
+  await expect(viewport.locator('[data-cue-id="cue-1"]')).toHaveCount(1);
+  await expect(viewport.locator('[data-cue-id="cue-1"]')).toContainText('Corrected subtitle');
+  await expect(viewport.locator('[data-cue-id="cue-2"]')).toContainText('Following subtitle');
+  await expect(page.getByRole('status')).toContainText('已連線');
+});
+
 test('Viewer keeps fullscreen presentation state across DataChannel generation recovery', async ({ page }) => {
   await page.addInitScript(() => {
     class MockEventSource extends EventTarget {

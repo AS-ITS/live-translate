@@ -379,6 +379,8 @@ completed deletion using the protected minimal tombstone.
 
 ## Security and Compatibility Constraints
 
+Viewer 在 Recorder 尚未出現時維持單一 negotiation，週期性重送 `viewer-ready` 作為 discovery，不重建 PeerConnection 或消耗 transport recovery 次數。Recorder 在成功續租 signaling participant 後重設 discovery recovery budget；單一 Viewer peer 中斷不得停止其他 Viewer 或 Recorder 的 discovery poll。DataChannel 建立後仍以 Snapshot／Replay 補齊，再接續可靠有序的 Live Cue。
+
 - Never expose `GEMINI_API_KEY` or ephemeral tokens to Viewers.
 - Preserve `/api/live-token` access gates, rate limits, and origin checks.
 - Preserve Recorder lease, grant, and fence-token validation.

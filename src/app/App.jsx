@@ -2931,7 +2931,7 @@ const activeMeetingCheckpointRef = useRef(null);
               </p>
               <p className="device-note" data-testid="viewer-health">
                 Viewer：{webRtcConnectionLabel(webRtcDevice.value, { device: true })}
-                {webRtcDevice.value === 'failed' ? (
+                {['failed', 'recovery_failed'].includes(webRtcDevice.value) ? (
                   <button className="button detail-button" type="button" onClick={webRtcDevice.retry}>重試</button>
                 ) : null}
               </p>

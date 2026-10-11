@@ -8,13 +8,16 @@ Live pipeline trace vocabulary: use `TRANSCRIPT_NORMALIZED`, `TURN_ASSIGNED`, `C
 
 ```bash
 node --test tests/unit/webrtcSignalingRoute.test.js tests/unit/webrtcSubtitleDataChannel.test.js tests/unit/webrtcSubtitleTransport.test.js tests/unit/viewerLongSessionRecovery.test.js tests/unit/meetingViewerSnapshot.test.js tests/unit/meetingViewerState.test.js tests/unit/meetingViewerRealtime.test.js tests/unit/webrtcPocPage.test.js
+node --test tests/integration/webrtcLateJoin.integration.test.js
 npm run build
 ```
 
-`webrtcSubtitleTransport.test.js` 另覆蓋 persistence 故障域隔離：已開啟的
+`webrtcSubtitleTransport.test.js` 另覆蓋 Viewer 在 Recorder 出現前持續 discovery、Device 成功 join 重設 recovery budget，以及 persistence 故障域隔離：已開啟的
 DataChannel 在 signaling heartbeat 回 `503` 時不得 teardown、不得切換為
 `reconnecting`，Cue 2／Cue 3 必須沿用同一 transport generation 繼續發布；雲端
 control-plane 恢復後只恢復 heartbeat，不得重複發布已送達的 Cue。
+
+`webrtcLateJoin.integration.test.js` 使用 fake clock 驗證 Recorder 維持 60 分鐘 signaling lease 後，第一個 Viewer 仍能完成定向 `viewer-ready -> offer`；這不等同真實 60 分鐘手機測試。
 
 這些測試涵蓋 Viewer code/token 分流、Device `canRecord` 授權邊界、拒絕 expired/revoked/mismatch/stopped、Viewer 禁止 offer/stop、participant heartbeat、8 秒 signaling timeout、暫時 poll 失敗、5 秒 disconnected grace、ICE restart、DataChannel close/error、舊 epoch、6 次重試耗盡、Realtime token refresh 與故障 reconnect timer 隔離、reconnect snapshot/replay、Segment sequence domain、snapshot 503 retry、same-source replay、sidecar 清理與 Cue 去重。跨網路實機仍依 [WebRTC Preview runbook](verification/webrtc-browser-deployment.md) 執行，不得以單元測試替代。
 

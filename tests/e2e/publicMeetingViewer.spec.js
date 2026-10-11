@@ -179,8 +179,11 @@ test('history scrolling keeps new Cues in DOM order and return-to-latest continu
   await page.goto('/#viewer?code=ORDER1');
   const viewport = page.getByTestId('meeting-viewer-cue-viewport');
   await expect(viewport.locator('[data-cue-id="old-25"]')).toBeVisible();
-  await viewport.hover();
-  await page.mouse.wheel(0, -1800);
+  await viewport.evaluate((node) => {
+    node.dispatchEvent(new TouchEvent('touchmove', { bubbles: true }));
+    node.scrollTop = 0;
+    node.dispatchEvent(new Event('scroll', { bubbles: true }));
+  });
   await expect(page.getByTestId('viewer-follow-latest-button')).toBeVisible();
   await page.getByTestId('viewer-translation-toggle').click();
   await expect(page.getByTestId('viewer-follow-latest-button')).toBeVisible();
@@ -194,7 +197,18 @@ test('history scrolling keeps new Cues in DOM order and return-to-latest continu
         sourceText: `新字幕 ${index}`, status: 'final', sourceVersion: 1, translationVersion: 0 },
     });
   }
-  await page.getByTestId('viewer-follow-latest-button').click();
+  const followLatestButton = page.getByTestId('viewer-follow-latest-button');
+  await expect(followLatestButton).toHaveText('回到最新字幕（3 則新字幕）');
+  await page.evaluate((payload) => window.__emitViewerCue(payload), {
+    eventId: 28,
+    type: 'cue.update',
+    cue: {
+      cueId: 'new-3', segmentId: 'segment-2', sequence: 3,
+      sourceText: '新字幕 3 final revision', status: 'final', sourceVersion: 2, translationVersion: 0
+    }
+  });
+  await expect(followLatestButton).toHaveText('回到最新字幕（3 則新字幕）');
+  await followLatestButton.click();
   await expect(viewport.locator('[data-cue-id="new-3"]')).toBeVisible();
   await expect.poll(() => viewport.evaluate((node) => ({
     ids: [...node.querySelectorAll('.viewer-cue-row')].map((row) => row.dataset.cueId),

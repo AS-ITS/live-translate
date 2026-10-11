@@ -18,7 +18,13 @@ import {
   writeSubtitleVisibilityPreference
 } from '../../lib/subtitleVisibilityPreference.js';
 import { canonicalViewerShareUrl } from '../../lib/viewerShare.js';
-import { resolveViewerAutoFollow, scrollViewerToLatest } from '../../lib/viewerAutoFollow.js';
+import {
+  captureViewerScrollAnchor,
+  countUnseenViewerCues,
+  resolveViewerAutoFollow,
+  restoreViewerScrollAnchor,
+  scrollViewerToLatest
+} from '../../lib/viewerAutoFollow.js';
 import { ViewerShareHeader } from './ViewerShareHeader.jsx';
 
 export function MeetingViewerPage({ token, code }) {
@@ -30,6 +36,8 @@ export function MeetingViewerPage({ token, code }) {
   const userScrollIntentRef = useRef(false);
   const isFollowingLatestRef = useRef(true);
   const autoFollowFrameRef = useRef(null);
+  const historyAnchorRef = useRef(null);
+  const historySeenCueIdsRef = useRef(new Set());
   const detailRef = useRef(null);
   const eventSourceRef = useRef(null);
   const nextViewerCursorRef = useRef(null);
@@ -40,6 +48,7 @@ export function MeetingViewerPage({ token, code }) {
   const [visibility, setVisibility] = useState(() => readSubtitleVisibilityPreference(VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY));
   const { showSource, showTranslation } = visibility;
   const [isFollowingLatest, setIsFollowingLatest] = useState(true);
+  const [unseenCueCount, setUnseenCueCount] = useState(0);
   const [hasOlderCues, setHasOlderCues] = useState(false);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [shareConnection, setShareConnection] = useState({ value: 'connecting' });
@@ -589,7 +598,7 @@ export function MeetingViewerPage({ token, code }) {
       nextViewerCursorRef.current = value.pagination?.nextCursor || null;
       setHasOlderCues(Boolean(value.pagination?.hasMore));
       // Loading history is an explicit review action; keep the return-to-latest control available.
-      setIsFollowingLatest(false);
+      enterHistoryMode(value.cues || []);
       const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
       detailRef.current = merged;
       setDetail(merged);
@@ -624,6 +633,15 @@ export function MeetingViewerPage({ token, code }) {
     });
     return { offsets, totalHeight };
   }, [cues, rowLayoutVersion]);
+
+  useEffect(() => {
+    if (isFollowingLatest) {
+      historySeenCueIdsRef.current = new Set(cues.map((cue) => cue.cueId).filter(Boolean));
+      setUnseenCueCount(0);
+      return;
+    }
+    setUnseenCueCount(countUnseenViewerCues(cues, historySeenCueIdsRef.current));
+  }, [cues, isFollowingLatest]);
   const startIndex = useMemo(() => {
     let low = 0;
     let high = rowLayout.offsets.length;
@@ -694,6 +712,12 @@ export function MeetingViewerPage({ token, code }) {
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
+    if (!viewport || isFollowingLatestRef.current || !historyAnchorRef.current) return;
+    restoreViewerScrollAnchor(viewport, historyAnchorRef.current, cues, rowLayout.offsets);
+  }, [cues, rowLayout.offsets, showSource, showTranslation, viewportHeight]);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
     if (!viewport || cues.length === 0 || !isFollowingLatestRef.current) return undefined;
     // Anchor after the DOM commit and again after virtual-row and viewport measurement settles.
     scrollViewerToLatest(viewport);
@@ -712,7 +736,34 @@ export function MeetingViewerPage({ token, code }) {
   function scrollToLatest() {
     isFollowingLatestRef.current = true;
     setIsFollowingLatest(true);
+    historyAnchorRef.current = null;
+    historySeenCueIdsRef.current = new Set(cues.map((cue) => cue.cueId).filter(Boolean));
+    setUnseenCueCount(0);
     scrollViewerToLatest(viewportRef.current);
+  }
+
+  function enterHistoryMode(additionalCues = []) {
+    if (isFollowingLatestRef.current) {
+      historySeenCueIdsRef.current = new Set(
+        [...cues, ...additionalCues].map((cue) => cue?.cueId).filter(Boolean)
+      );
+      setUnseenCueCount(0);
+    } else {
+      for (const cue of additionalCues) {
+        if (cue?.cueId) historySeenCueIdsRef.current.add(cue.cueId);
+      }
+    }
+    isFollowingLatestRef.current = false;
+    setIsFollowingLatest(false);
+    captureHistoryPosition(viewportRef.current);
+  }
+
+  function captureHistoryPosition(viewport) {
+    historyAnchorRef.current = captureViewerScrollAnchor({
+      cues,
+      offsets: rowLayout.offsets,
+      scrollTop: viewport?.scrollTop || 0
+    });
   }
 
   function markUserScrollIntent() {
@@ -801,7 +852,6 @@ export function MeetingViewerPage({ token, code }) {
                 <button className={`button detail-button viewer-visibility-toggle${showTranslation ? ' is-active' : ''}`} type="button" aria-pressed={showTranslation} data-testid="viewer-translation-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'translation'))}>{showTranslation ? '隱藏翻譯' : '顯示翻譯'}</button>
               </div>
             ) : null}
-            {detail && !isFollowingLatest ? <button className="button detail-button viewer-follow-latest" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
             {shareConnection.value === 'failed' ? (
               <button className="button detail-button viewer-retry-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重新連線</button>
             ) : null}
@@ -835,13 +885,22 @@ export function MeetingViewerPage({ token, code }) {
                 onKeyDown={(event) => { if (['ArrowUp', 'PageUp', 'Home', 'ArrowDown', 'PageDown', 'End'].includes(event.key)) markUserScrollIntent(); }}
                 onScroll={(event) => {
                   setScrollTop(event.currentTarget.scrollTop);
+                  const wasFollowing = isFollowingLatestRef.current;
                   const nextFollowing = resolveViewerAutoFollow({
-                    following: isFollowingLatestRef.current,
+                    following: wasFollowing,
                     userInitiated: userScrollIntentRef.current,
                     viewport: event.currentTarget
                   });
-                  isFollowingLatestRef.current = nextFollowing;
-                  setIsFollowingLatest(nextFollowing);
+                  if (!nextFollowing) {
+                    if (wasFollowing) enterHistoryMode();
+                    else captureHistoryPosition(event.currentTarget);
+                  } else {
+                    isFollowingLatestRef.current = true;
+                    setIsFollowingLatest(true);
+                    historyAnchorRef.current = null;
+                    historySeenCueIdsRef.current = new Set(cues.map((cue) => cue.cueId).filter(Boolean));
+                    setUnseenCueCount(0);
+                  }
                   userScrollIntentRef.current = false;
                 }} data-testid="meeting-viewer-cue-viewport" role="log" tabIndex={0} aria-live="polite" aria-label="即時字幕列表">
                 <div style={{ height: rowLayout.totalHeight, position: 'relative' }}>
@@ -855,6 +914,7 @@ export function MeetingViewerPage({ token, code }) {
                 </div>
               </div>
             </>}
+            {!isFollowingLatest ? <button className="button detail-button viewer-follow-latest" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕{unseenCueCount > 0 ? `（${unseenCueCount} 則新字幕）` : ''}</button> : null}
           </section>
         ) : null}
         </div>

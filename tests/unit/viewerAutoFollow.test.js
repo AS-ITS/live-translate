@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  captureViewerScrollAnchor,
+  countUnseenViewerCues,
   isViewerAtLatestPosition,
   resolveViewerAutoFollow,
+  restoreViewerScrollAnchor,
   scrollViewerToLatest
 } from '../../src/lib/viewerAutoFollow.js';
 
@@ -58,4 +61,26 @@ test('return to latest scrolls immediately and restores auto-follow', () => {
   scrollViewerToLatest(list);
   assert.equal(list.scrollTop, 684);
   assert.equal(resolveViewerAutoFollow({ following: false, userInitiated: false, viewport: list }), true);
+});
+
+test('history anchor survives prepends and Cue height revisions', () => {
+  const cues = [{ cueId: 'a' }, { cueId: 'b' }, { cueId: 'c' }];
+  const anchor = captureViewerScrollAnchor({ cues, offsets: [0, 100, 200], scrollTop: 140 });
+  const list = viewport({ scrollHeight: 520, scrollTop: 140, clientHeight: 200 });
+  const merged = [{ cueId: 'older' }, ...cues];
+
+  assert.deepEqual(anchor, { cueId: 'b', offset: 40 });
+  assert.equal(restoreViewerScrollAnchor(list, anchor, merged, [0, 80, 210, 330]), true);
+  assert.equal(list.scrollTop, 250);
+});
+
+test('unseen count uses stable Cue IDs and ignores revisions', () => {
+  const seen = new Set(['cue-1']);
+  const cues = [
+    { cueId: 'cue-1', sourceVersion: 2 },
+    { cueId: 'cue-2', sourceVersion: 1 },
+    { cueId: 'cue-2', sourceVersion: 2 }
+  ];
+
+  assert.equal(countUnseenViewerCues(cues, seen), 1);
 });

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- 修正 Viewer 字幕 auto-follow 在快速 Cue、Partial/Final 高度變化、Pause/Continue、WebRTC reconnect 與手機全螢幕 viewport 變化後停在舊位置的問題。Pause → Continue 後 DataChannel open 會先取消 negotiation timeout；UI 以健康且開啟的 DataChannel 顯示已連線，不再等待可能延遲的 PeerConnection `connected` 事件，暫時 ICE disconnected 也不拆除健康通道，真正失效仍維持最多 6 次 recovery。Viewer transport 診斷同步記錄 Peer/ICE/DataChannel 狀態、generation、heartbeat、Cue sequence、delivery source 與 reconnect reason/attempt。
+- 修正 Viewer 字幕 auto-follow 在快速 Cue、Partial/Final 高度變化、Pause/Continue、WebRTC reconnect 與手機全螢幕 viewport 變化後停在舊位置的問題；歷史閱讀改以穩定 Cue ID 保存位置，並以唯一 Cue ID 顯示未查看的新字幕數量。Pause → Continue 後 DataChannel open 會先取消 negotiation timeout；UI 以健康且開啟的 DataChannel 顯示已連線，不再等待可能延遲的 PeerConnection `connected` 事件，暫時 ICE disconnected 也不拆除健康通道，真正失效仍維持最多 6 次 recovery。Viewer transport 診斷同步記錄 Peer/ICE/DataChannel 狀態、generation、heartbeat、Cue sequence、delivery source 與 reconnect reason/attempt。
 
 - 修正同一 `audioTurnId` 的 late final 翻譯片段被 Cue revision 誤判為完整快照：`textMergeMode: append` 現在保留 finalized Cue 已累積的前文，真正的 cumulative snapshot 仍維持 replace；未變更 Viewer／WebRTC transport、provider epoch fencing 或 glossary correction。
 - 修正 Viewer 在 WebRTC `disconnected` 的 5 秒暫態寬限期內過早顯示「重新連線中」：DataChannel 仍可用時維持「已連線」，短暫 signaling heartbeat 失敗只重試 signaling；只有寬限期到期或 DataChannel／PeerConnection 確實失敗才重建 transport 並消耗最多 6 次 recovery。另從 Recorder 與 Viewer 一般介面移除「匯出診斷紀錄」按鈕及其 UI 樣式，保留 diagnostics collector、Debug API、trace 與底層匯出函式。

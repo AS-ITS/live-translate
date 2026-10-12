@@ -117,6 +117,7 @@ export class LiveTranslateSession {
     this.onCueEvent = onCueEvent;
     this.authorizationHeaders = { ...authorizationHeaders };
     this.connectionEpoch = connectionEpoch;
+    this.captureEpoch = connectionEpoch;
     this.providerEpoch = 0;
     this.audioTurnId = audioTurnId || `audio-turn-${connectionEpoch}-${++nextAudioTurnSequence}`;
     this.previousAudioTurnId = null;

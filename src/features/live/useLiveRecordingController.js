@@ -772,11 +772,51 @@ export function useLiveRecordingController({
       providerRecoveryCoordinatorRef.current = createProviderRecoveryCoordinator({
         execute: async ({ operation, attempt }) => {
           if (attempt > 1) await audioController.noteProviderReconnect();
-          return operation.session.reconnectProvider({
+          recordLivePipelineTrace({
+            stage: 'PROVIDER_RECOVERY_ATTEMPT',
+            meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+            recorderSessionId: recovery.activeSessionRecordIdRef.current,
+            geminiSessionId: operation.liveSessionId,
             segmentId: operation.segmentId,
-            liveSessionId: operation.liveSessionId,
-            forceRefresh: true
+            operationId: operation.operationId,
+            reconnectAttempt: attempt,
+            providerEpoch: operation.session.providerEpoch
           });
+          try {
+            const ready = await operation.session.reconnectProvider({
+              segmentId: operation.segmentId,
+              liveSessionId: operation.liveSessionId,
+              forceRefresh: true
+            });
+            if (!ready) {
+              recordLivePipelineTrace({
+                stage: 'PROVIDER_RECOVERY_FAILED',
+                meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+                recorderSessionId: recovery.activeSessionRecordIdRef.current,
+                geminiSessionId: operation.liveSessionId,
+                segmentId: operation.segmentId,
+                operationId: operation.operationId,
+                reconnectAttempt: attempt,
+                providerEpoch: operation.session.providerEpoch,
+                reason: 'provider_not_ready'
+              });
+            }
+            return ready;
+          } catch (error) {
+            recordLivePipelineTrace({
+              stage: 'PROVIDER_RECOVERY_FAILED',
+              meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+              recorderSessionId: recovery.activeSessionRecordIdRef.current,
+              geminiSessionId: operation.liveSessionId,
+              segmentId: operation.segmentId,
+              operationId: operation.operationId,
+              reconnectAttempt: attempt,
+              providerEpoch: operation.session.providerEpoch,
+              errorCode: error?.code,
+              httpStatus: error?.status
+            });
+            throw error;
+          }
         }
       });
     }
@@ -793,6 +833,17 @@ export function useLiveRecordingController({
       });
       if (result.status === 'cancelled') return result;
       if (result.status !== 'ready') {
+        recordLivePipelineTrace({
+          stage: 'PROVIDER_RECOVERY_EXHAUSTED',
+          meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+          recorderSessionId: recovery.activeSessionRecordIdRef.current,
+          geminiSessionId: context.liveSessionId,
+          segmentId: context.segmentId,
+          operationId: result.operationId,
+          reconnectAttempt: result.attempt,
+          providerEpoch: context.session.providerEpoch,
+          errorCode: result.lastError?.code
+        });
         recovery.setStatus('provider-recovery-failed');
         recovery.setStatusLabelOverride('翻譯已停止，可手動重試');
         recovery.setError('翻譯已停止，可手動重試');
@@ -881,6 +932,18 @@ export function useLiveRecordingController({
 
   const controller = ({
     cancelProviderRecovery(reason = 'cancelled') {
+      const context = providerRecoveryContextRef.current;
+      if (context) {
+        recordLivePipelineTrace({
+          stage: 'PROVIDER_RECOVERY_CANCELLED',
+          meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+          recorderSessionId: recovery.activeSessionRecordIdRef.current,
+          geminiSessionId: context.liveSessionId,
+          segmentId: context.segmentId,
+          providerEpoch: context.session.providerEpoch,
+          reason
+        });
+      }
       providerRecoveryContextRef.current = null;
       providerRecoveryCoordinator.cancel(reason);
     },

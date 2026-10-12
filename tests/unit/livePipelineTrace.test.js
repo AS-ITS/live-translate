@@ -7,6 +7,27 @@ import {
 } from '../../src/lib/livePipelineTrace.js';
 import { exposeLiveTranslateDebug } from '../../src/lib/liveSession.js';
 
+test('local chunk trace retains safe recording-scoped identity fields', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  trace.record({
+    stage: 'LOCAL_CHUNK_SEALED',
+    meetingId: 'meeting-1',
+    recordingId: 'recording-1',
+    segmentId: 'segment-2',
+    chunkId: 'recording-1:audio-00000042',
+    sequence: 42,
+    captureEpoch: 3,
+    providerEpoch: 8,
+    pcmBytes: 4096
+  });
+  const [entry] = trace.get();
+  assert.equal(entry.chunkId, 'recording-1:audio-00000042');
+  assert.equal(entry.sequence, 42);
+  assert.equal(entry.captureEpoch, 3);
+  assert.equal(entry.providerEpoch, 8);
+  assert.equal(entry.pcmBytes, 4096);
+});
+
 test('development pipeline trace records bounded structured turn entries', () => {
   const logs = [];
   const trace = createLivePipelineTrace({

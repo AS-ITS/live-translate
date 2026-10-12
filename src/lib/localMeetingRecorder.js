@@ -11,7 +11,7 @@ export const LOCAL_RECORDER_STATES = Object.freeze([
   'stop_incomplete'
 ]);
 
-export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = () => Date.now() } = {}) {
+export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = () => Date.now(), onTrace } = {}) {
   if (!manifestStore || typeof manifestStore.reserve !== 'function' || typeof manifestStore.seal !== 'function' || typeof manifestStore.mark !== 'function' || typeof manifestStore.list !== 'function') {
     throw new TypeError('manifestStore must implement reserve, seal, mark, and list.');
   }
@@ -112,18 +112,35 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       if (replayed) return replayed;
       assertActiveRecording();
       const normalizedSegmentId = requiredIdentity(nextSegmentId, 'nextSegmentId');
+      const oldSegmentId = segmentId;
       if (segmentId !== normalizedSegmentId) {
         segmentId = normalizedSegmentId;
         segmentNumber += 1;
         providerEpoch += 1;
       }
-      return persist(operationId, 'local_segment_rollover');
+      const result = await persist(operationId, 'local_segment_rollover');
+      trace('LOCAL_SEGMENT_SCOPE_SWITCHED', {
+        operationId,
+        oldSegmentId,
+        newSegmentId: segmentId,
+        meetingId,
+        recordingId,
+        captureEpoch,
+        providerEpoch
+      });
+      return result;
     },
 
     appendChunk(input, bytes) {
       const task = appendQueue.then(() => appendChunkLocked(input, bytes));
       appendQueue = task.catch(() => {});
-      return task;
+      return task.catch((error) => {
+        trace('LOCAL_CHUNK_FAILED', {
+          ...chunkTraceIdentity(input),
+          errorCode: error?.code || error?.name || 'local_chunk_write_failed'
+        });
+        throw error;
+      });
     },
 
     async reconcile(files) {
@@ -239,29 +256,54 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       recordingId: input?.recordingId || recordingId,
       segmentId: input?.segmentId || segmentId
     });
+    trace('LOCAL_CHUNK_RESERVED', chunkTraceIdentity(record));
     if (record.state === 'sealed') {
       await assertStoredChunkMatches(record, bytes);
+      trace('LOCAL_CHUNK_SEALED', { ...chunkTraceIdentity(record), reason: 'idempotent_retry' });
       return record;
     }
     try {
+      trace('LOCAL_CHUNK_WRITE_STARTED', chunkTraceIdentity(record));
       await chunkStore.write(record.path, bytes);
+      trace('LOCAL_CHUNK_WRITE_SUCCEEDED', chunkTraceIdentity(record));
     } catch (error) {
       if (error?.code === 'local_chunk_file_exists') {
         await assertStoredChunkMatches(record, bytes);
-        return manifestStore.seal(record.chunkId, {
+        const sealed = await manifestStore.seal(record.chunkId, {
           byteSize: record.byteSize,
           checksum: record.checksum,
           endedAt: record.endedAt || now()
         });
+        trace('LOCAL_CHUNK_SEALED', { ...chunkTraceIdentity(sealed), reason: 'existing_file_verified' });
+        return sealed;
       }
       stopError = error;
       throw error;
     }
-    return manifestStore.seal(record.chunkId, {
+    const sealed = await manifestStore.seal(record.chunkId, {
       byteSize: input?.byteSize,
       checksum: input?.checksum,
       endedAt: input?.endedAt || now()
     });
+    trace('LOCAL_CHUNK_SEALED', chunkTraceIdentity(sealed));
+    return sealed;
+  }
+
+  function chunkTraceIdentity(value = {}) {
+    return {
+      meetingId: value.meetingId || meetingId,
+      recordingId: value.recordingId || recordingId,
+      segmentId: value.segmentId || segmentId,
+      chunkId: value.chunkId || null,
+      sequence: value.sequence ?? null,
+      captureEpoch,
+      providerEpoch,
+      pcmBytes: value.byteSize ?? null
+    };
+  }
+
+  function trace(stage, fields = {}) {
+    try { onTrace?.({ stage, ...fields }); } catch { /* Diagnostics must never interrupt local recording. */ }
   }
 
   async function assertStoredChunkMatches(record, bytes) {

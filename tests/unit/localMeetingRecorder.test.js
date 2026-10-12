@@ -51,6 +51,41 @@ test('local recorder reserves, writes, and seals chunks before Stop', async () =
   assert.equal((await manifestStore.list('meeting-1')).every((chunk) => chunk.state === 'sealed'), true);
 });
 
+test('local recorder traces reserve, OPFS write, seal, and failure identities', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const chunkStore = fakeChunkStore();
+  const events = [];
+  const recorder = createLocalMeetingRecorder({
+    manifestStore,
+    chunkStore,
+    onTrace: (event) => events.push(event)
+  });
+  await recorder.start('meeting-1', {
+    recordingId: 'recording-1', segmentId: 'segment-1', operationId: 'start-1'
+  });
+  await recorder.appendChunk(chunkInput(1, {
+    meetingId: 'meeting-1', recordingId: 'recording-1', chunkId: 'recording-1:audio-00000001'
+  }), new Uint8Array([1]));
+  await assert.rejects(
+    recorder.appendChunk(chunkInput(1, {
+      meetingId: 'meeting-1', recordingId: 'recording-1', chunkId: 'recording-1:audio-00000001', checksum: 'different'
+    }), new Uint8Array([2])),
+    (error) => error.code === 'local_chunk_identity_conflict'
+  );
+
+  assert.deepEqual(events.slice(0, 4).map((event) => event.stage), [
+    'LOCAL_CHUNK_RESERVED',
+    'LOCAL_CHUNK_WRITE_STARTED',
+    'LOCAL_CHUNK_WRITE_SUCCEEDED',
+    'LOCAL_CHUNK_SEALED'
+  ]);
+  assert.equal(events[0].recordingId, 'recording-1');
+  assert.equal(events[0].segmentId, 'segment-1');
+  assert.equal(events[0].chunkId, 'recording-1:audio-00000001');
+  assert.equal(events.at(-1).stage, 'LOCAL_CHUNK_FAILED');
+  assert.equal(events.at(-1).errorCode, 'local_chunk_identity_conflict');
+});
+
 test('Stop refuses to publish a final sequence with a missing chunk', async () => {
   const manifestStore = createInMemoryLocalMeetingManifestStore();
   const recorder = createLocalMeetingRecorder({ manifestStore, chunkStore: fakeChunkStore() });

@@ -36,6 +36,21 @@ test('records speech transitions, local silence finalize, and provider rollover 
   await session.cleanup({ closeSession: false });
 });
 
+test('provider reconnect advances only provider epoch and preserves capture epoch', async () => {
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-1', segmentId: 'segment-1', connectionEpoch: 7, targetLanguageCode: 'en'
+  });
+  session.connectProvider = async () => true;
+  const captureEpoch = session.captureEpoch;
+  const providerEpoch = session.providerEpoch;
+
+  await session.reconnectProvider({ segmentId: 'segment-2', liveSessionId: 'live-2', forceRefresh: true });
+
+  assert.equal(session.captureEpoch, captureEpoch);
+  assert.equal(session.captureEpoch, 7);
+  assert.ok(session.providerEpoch > providerEpoch);
+});
+
 test('sends the lifecycle memory key with each live-token request and clears it after refresh failure', async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];

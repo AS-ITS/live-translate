@@ -2,6 +2,7 @@ import { createLocalMeetingRecorder } from './localMeetingRecorder.js';
 import { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore } from './localMeetingStorage.js';
 import { composeLocalMeetingAudioArtifact } from './localMeetingAudioExport.js';
 import { createLocalMeetingRetention } from './localMeetingRetention.js';
+import { recordLivePipelineTrace } from './livePipelineTrace.js';
 
 export function createLocalMeetingPersistence({
   manifestStore = createIndexedDbLocalMeetingManifestStore(),
@@ -10,10 +11,11 @@ export function createLocalMeetingPersistence({
   now = () => Date.now(),
   createOperationId = defaultOperationId,
   recordAudio = true,
-  composeAudioArtifact = composeLocalMeetingAudioArtifact
+  composeAudioArtifact = composeLocalMeetingAudioArtifact,
+  trace = recordLivePipelineTrace
 } = {}) {
   if (!cryptoImpl?.subtle || typeof cryptoImpl.subtle.digest !== 'function') throw new Error('Web Crypto is unavailable.');
-  const createRecorder = () => createLocalMeetingRecorder({ manifestStore, chunkStore, now });
+  const createRecorder = () => createLocalMeetingRecorder({ manifestStore, chunkStore, now, onTrace: trace });
   let recorder = createRecorder();
   const retention = typeof manifestStore.getRetention === 'function'
     ? createLocalMeetingRetention({ manifestStore, chunkStore, now })
@@ -231,6 +233,20 @@ export function createLocalMeetingPersistence({
     const descriptor = retryDescriptor
       ? await immutableRetryDescriptor(retryDescriptor, snapshot, bytes, cryptoImpl)
       : await createImmutableChunkDescriptor({ snapshot, bytes, mimeType, receivedAt });
+    try {
+      trace?.({
+        stage: 'LOCAL_CHUNK_RECEIVED',
+        meetingId: descriptor.meetingId,
+        recordingId: descriptor.recordingId,
+        segmentId: descriptor.segmentId,
+        chunkId: descriptor.chunkId,
+        sequence: descriptor.sequence,
+        captureEpoch: snapshot.captureEpoch,
+        providerEpoch: snapshot.providerEpoch,
+        pcmBytes: descriptor.byteSize,
+        receivedAt
+      });
+    } catch { /* Diagnostics must never interrupt local recording. */ }
     nextAudioSequence = Math.max(nextAudioSequence, descriptor.sequence + 1);
     try {
       return await recorder.appendChunk(descriptor, bytes);

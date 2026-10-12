@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createLocalMeetingPersistence } from '../../src/lib/localMeetingPersistence.js';
 import { createInMemoryLocalMeetingManifestStore } from '../../src/lib/localMeetingStorage.js';
+import { createProviderRecoveryCoordinator } from '../../src/lib/providerRecoveryCoordinator.js';
 
 function fakeChunkStore() {
   const files = new Map();
@@ -251,6 +252,69 @@ test('rollover barrier assigns pending chunks to the old Segment and later chunk
   assert.equal(rolled.recordingId, started.recordingId);
   assert.equal(rolled.captureEpoch, started.captureEpoch);
   assert.equal(rolled.providerEpoch, started.providerEpoch + 1);
+});
+
+test('local persistence traces chunk receive and the serialized Segment scope switch', async () => {
+  const events = [];
+  const persistence = createLocalMeetingPersistence({
+    manifestStore: createInMemoryLocalMeetingManifestStore(),
+    chunkStore: fakeChunkStore(),
+    cryptoImpl: fakeCrypto(),
+    createOperationId: operationIds(),
+    composeAudioArtifact: concatenateTestArtifact,
+    trace: (event) => events.push(event)
+  });
+  await persistence.start({ meetingId: 'meeting-1', recordingId: 'recording-1', segmentId: 'segment-1' });
+  await persistence.appendAudioChunk({ data: new Blob(['old']), receivedAt: 10 });
+  await persistence.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' });
+  await persistence.appendAudioChunk({ data: new Blob(['new']), receivedAt: 20 });
+
+  const received = events.filter((event) => event.stage === 'LOCAL_CHUNK_RECEIVED');
+  const switched = events.find((event) => event.stage === 'LOCAL_SEGMENT_SCOPE_SWITCHED');
+  assert.deepEqual(received.map((event) => [event.chunkId, event.segmentId]), [
+    ['recording-1:audio-00000001', 'segment-1'],
+    ['recording-1:audio-00000002', 'segment-2']
+  ]);
+  assert.equal(switched.operationId, 'rollover-1');
+  assert.equal(switched.oldSegmentId, 'segment-1');
+  assert.equal(switched.newSegmentId, 'segment-2');
+  assert.equal(switched.captureEpoch, 1);
+  assert.equal(switched.providerEpoch, 1);
+});
+
+test('exhausted Provider recovery does not block OPFS chunks before or after rollover', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const persistence = createLocalMeetingPersistence({
+    manifestStore,
+    chunkStore: fakeChunkStore(),
+    cryptoImpl: fakeCrypto(),
+    createOperationId: operationIds(),
+    composeAudioArtifact: concatenateTestArtifact,
+    trace: () => {}
+  });
+  const recovery = createProviderRecoveryCoordinator({
+    retryDelaysMs: [0, 0, 0],
+    wait: async () => {},
+    execute: async () => false
+  });
+  await persistence.start({ meetingId: 'meeting-1', recordingId: 'recording-1', segmentId: 'segment-1' });
+  await persistence.appendAudioChunk({ data: new Blob(['before']), receivedAt: 10 });
+  await persistence.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' });
+
+  const [result] = await Promise.all([
+    recovery.run({ operationId: 'provider-recovery-1', segmentId: 'segment-2' }),
+    persistence.appendAudioChunk({ data: new Blob(['during']), receivedAt: 20 })
+  ]);
+  const after = await persistence.appendAudioChunk({ data: new Blob(['after']), receivedAt: 30 });
+  const chunks = await manifestStore.list('meeting-1');
+
+  assert.equal(result.status, 'exhausted');
+  assert.equal(after.state, 'sealed');
+  assert.deepEqual(chunks.map((chunk) => [chunk.sequence, chunk.segmentId, chunk.state]), [
+    [1, 'segment-1', 'sealed'],
+    [2, 'segment-2', 'sealed'],
+    [3, 'segment-2', 'sealed']
+  ]);
 });
 
 test('failed chunk exposes one immutable descriptor for an exact retry', async () => {

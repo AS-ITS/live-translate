@@ -3258,6 +3258,45 @@ test('passes glossary provider config to initial and reconnected Live sessions',
   expect(instructions).toEqual([instruction, instruction]);
 });
 
+test('committed rollover exhausts Provider recovery without stopping local recording and manual retry resumes cues', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__liveTranslateSegmentSwitchIntervalMs = 2_000;
+  });
+  const requests = await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  page.failLiveTokenRequestFrom = 2;
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await expect.poll(() => requests.rolloverRequests.length, { timeout: 7000 }).toBe(1);
+  await expect.poll(() => page.liveTokenRequests.length, { timeout: 7000 }).toBe(4);
+  await expect(page.getByRole('alert')).toContainText('翻譯已停止，可手動重試');
+  await expect(page.locator('.live-meeting-status')).toHaveText('翻譯已停止');
+  expect(await page.evaluate(() => window.__mockAudioProcessors.at(-1)?.onaudioprocess !== null)).toBe(true);
+  expect(requests.rolloverRequests).toHaveLength(1);
+
+  page.failLiveTokenRequestFrom = null;
+  await page.getByRole('button', { name: '重試' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
+  await expect(page.getByText('翻譯已恢復')).toBeVisible();
+  await emitMicrophoneAudio(page);
+  await emitFinalTranscript(page, 'manual recovery source', 'manual recovery translation', { waitMs: 100 });
+  await expect(page.getByText('manual recovery translation')).toBeVisible();
+  expect(requests.rolloverRequests).toHaveLength(1);
+
+  const trace = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  const recoveryAttempts = trace.filter((entry) => entry.stage === 'PROVIDER_RECOVERY_ATTEMPT');
+  expect(recoveryAttempts.map((entry) => entry.reconnectAttempt)).toEqual([1, 2, 3, 1]);
+  expect(new Set(recoveryAttempts.slice(0, 3).map((entry) => entry.operationId)).size).toBe(1);
+  expect(recoveryAttempts[3].operationId).not.toBe(recoveryAttempts[0].operationId);
+  expect(trace.filter((entry) => entry.stage === 'ROLLOVER_COMMITTED')).toHaveLength(1);
+  expect(page.liveTokenRequests).toHaveLength(5);
+});
+
 test('long meeting accelerated 130 minute schedule creates 13 segments without waiting', async ({ page }) => {
   await page.addInitScript(() => {
     window.__liveTranslateSegmentSwitchIntervalMs = 700;

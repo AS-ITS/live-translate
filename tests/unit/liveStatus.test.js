@@ -4,6 +4,8 @@ import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusEr
 
 test('live meeting status follows the current recording state before persisted meeting state', () => {
   assert.equal(liveMeetingStatusLabel({ status: 'interrupted' }, 'listening'), '進行中');
+  assert.equal(liveMeetingStatusLabel({ status: 'active' }, 'provider-recovery'), '進行中');
+  assert.equal(liveMeetingStatusLabel({ status: 'active' }, 'provider-recovery-failed'), '翻譯已停止');
   assert.equal(liveMeetingStatusLabel({ status: 'active' }, 'paused'), '已暫停');
   assert.equal(liveMeetingStatusLabel({ status: 'interrupted' }, 'idle'), '已暫停');
 });

@@ -19,6 +19,7 @@ import { checkpointChunksForTranscriptItems, createMeetingCheckpointSyncCoordina
 import { createReconnectController } from '../../lib/reconnectController.js';
 import { createSegmentSwitchOrchestrator } from '../../lib/segmentSwitchOrchestrator.js';
 import { createRolloverRecoveryCoordinator } from '../../lib/rolloverRecoveryCoordinator.js';
+import { createProviderRecoveryCoordinator } from '../../lib/providerRecoveryCoordinator.js';
 import {
   completeDurableLegacyContinue,
   establishDurableLegacyContinue,
@@ -236,6 +237,8 @@ export function useLiveRecordingController({
   const audioUploadControllerRef = useRef(null);
   const recoverySingleFlightRef = useRef(null);
   const segmentTransitionLockRef = useRef(null);
+  const providerRecoveryCoordinatorRef = useRef(null);
+  const providerRecoveryContextRef = useRef(null);
   const resumeInFlightRef = useRef(false);
   const continueInFlightRef = useRef(false);
   const meetingLifecycleRef = useRef(null);
@@ -765,6 +768,39 @@ export function useLiveRecordingController({
 
     const nextOperationId = (command) => globalThis.crypto?.randomUUID?.() || `${command}-${Date.now()}-${Math.random()}`;
 
+    if (!providerRecoveryCoordinatorRef.current) {
+      providerRecoveryCoordinatorRef.current = createProviderRecoveryCoordinator({
+        execute: async ({ operation, attempt }) => {
+          if (attempt > 1) await audioController.noteProviderReconnect();
+          return operation.session.reconnectProvider({
+            segmentId: operation.segmentId,
+            liveSessionId: operation.liveSessionId,
+            forceRefresh: true
+          });
+        }
+      });
+    }
+    const providerRecoveryCoordinator = providerRecoveryCoordinatorRef.current;
+
+    const runCommittedProviderRecovery = async (context, { manual = false } = {}) => {
+      recovery.setError('');
+      recovery.setStatusLabelOverride(manual ? '正在手動恢復翻譯' : '正在恢復 Gemini 翻譯');
+      recovery.setStatus('provider-recovery');
+      const result = await providerRecoveryCoordinator.run({
+        ...context,
+        operationId: nextOperationId(manual ? 'provider-recovery-manual' : 'provider-recovery'),
+        manual
+      });
+      if (result.status === 'cancelled') return result;
+      if (result.status !== 'ready') {
+        recovery.setStatus('provider-recovery-failed');
+        recovery.setStatusLabelOverride('翻譯已停止，可手動重試');
+        recovery.setError('翻譯已停止，可手動重試');
+        recovery.cancelSegmentSwitch?.();
+      }
+      return result;
+    };
+
     const stopMeetingLifecycleHeartbeats = () => {
       const lifecycle = meetingLifecycleRef.current;
       if (!lifecycle) return;
@@ -844,6 +880,25 @@ export function useLiveRecordingController({
   };
 
   const controller = ({
+    cancelProviderRecovery(reason = 'cancelled') {
+      providerRecoveryContextRef.current = null;
+      providerRecoveryCoordinator.cancel(reason);
+    },
+
+    async retryProviderRecovery() {
+      const context = providerRecoveryContextRef.current;
+      if (!context || recovery.sessionStopRequestedRef.current) return false;
+      const result = await runCommittedProviderRecovery(context, { manual: true });
+      if (result.status !== 'ready') return false;
+      providerRecoveryContextRef.current = null;
+      if (!recovery.activateLiveSessionCallbacks(context.session.callbackGeneration)) return false;
+      recovery.sessionRef.current = context.session;
+      recovery.setStatusLabelOverride('翻譯已恢復');
+      recovery.setStatus('listening');
+      recovery.startSegmentSwitch?.();
+      return true;
+    },
+
     async createCurrentSessionRecord(meetingCheckpoint = recovery.activeMeetingCheckpointRef.current, initialTranscript = null, existingSessionId = null) {
       recovery.polishingSessionIdRef.current = null;
       const sessionBinding = meetingCheckpoint?.meetingId && meetingCheckpoint?.segmentId
@@ -1012,6 +1067,7 @@ export function useLiveRecordingController({
       }
     },
       async interruptActiveMeeting({ failureReason, failureCategory } = {}) {
+      controller.cancelProviderRecovery('interrupted');
         const meetingCheckpoint = recovery.activeMeetingCheckpointRef.current;
         if (!meetingCheckpoint) return null;
         const recoveryKey = recoveryKeyFor(meetingCheckpoint);
@@ -1129,6 +1185,7 @@ export function useLiveRecordingController({
       if (completeMeeting && endedMeetingId) recovery.setMeetingCheckpointStatus?.('ending');
       recovery.sessionStopRequestedRef.current = true;
       recovery.reconnectController().cancel();
+      controller.cancelProviderRecovery(completeMeeting ? 'end' : 'stop');
       recovery.cancelSegmentSwitch?.();
       recovery.segmentSwitchCancelledRef.current = true;
       recovery.suppressReconnectErrorRef.current = false;
@@ -1192,6 +1249,7 @@ export function useLiveRecordingController({
       recovery.invalidateLiveSessionCallbacks();
       recovery.sessionStopRequestedRef.current = false;
       recovery.reconnectController().reset();
+      controller.cancelProviderRecovery('continue');
       clearSettledRecoveryForCheckpoint(recovery.activeMeetingCheckpointRef.current);
       recovery.reconnectFailureDiagnosticRef.current = null;
       recovery.cancelSegmentSwitch?.();
@@ -1395,6 +1453,7 @@ export function useLiveRecordingController({
     },
     async pauseSession() {
       recovery.reconnectController().cancel();
+      controller.cancelProviderRecovery('pause');
       recovery.cancelSegmentSwitch?.();
       recovery.segmentSwitchCancelledRef.current = true;
       recovery.suppressReconnectErrorRef.current = false;
@@ -2086,13 +2145,21 @@ export function useLiveRecordingController({
         operationId,
         nextSegmentId: rollover.segment.id
       });
-      rolloverStage = 'provider-connect';
-      const providerResumed = await previousSession.reconnectProvider({
+      rolloverStage = 'provider-recovery';
+      const providerRecoveryContext = Object.freeze({
+        session: previousSession,
         segmentId: rollover.segment.id,
-        liveSessionId: nextLiveSessionId,
-        forceRefresh: true
+        liveSessionId: nextLiveSessionId
       });
-      if (!providerResumed) throw new Error('無法恢復 Gemini 即時連線。');
+      providerRecoveryContextRef.current = providerRecoveryContext;
+      const providerRecovery = await runCommittedProviderRecovery(providerRecoveryContext);
+      if (providerRecovery.status === 'cancelled') return;
+      if (providerRecovery.status !== 'ready') {
+        const error = new Error('翻譯已停止，可手動重試', { cause: providerRecovery.lastError });
+        error.code = 'provider_recovery_exhausted';
+        throw error;
+      }
+      providerRecoveryContextRef.current = null;
       rolloverStage = 'audio-resume';
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) {
@@ -2128,7 +2195,9 @@ export function useLiveRecordingController({
         if (!rolloverCommandCommitted) previousSession.cancelProviderTransition?.();
         recovery.activateLiveSessionCallbacks(previousSession.callbackGeneration);
         recovery.sessionRef.current = previousSession;
-        recovery.setStatus(rolloverCommandCommitted ? 'reconnecting' : 'listening');
+      recovery.setStatus(cause?.code === 'provider_recovery_exhausted'
+        ? 'provider-recovery-failed'
+        : rolloverCommandCommitted ? 'reconnecting' : 'listening');
         recordLivePipelineTrace({
           stage: 'RECORDING_PIPELINE_STATE',
           meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,

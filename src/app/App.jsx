@@ -316,6 +316,8 @@ const activeMeetingCheckpointRef = useRef(null);
     status === 'listening' ||
     status === 'reconnecting' ||
     status === 'switching-segment' ||
+    status === 'provider-recovery' ||
+    status === 'provider-recovery-failed' ||
     status === 'stopping';
   const controlsLocked = isActive || status === 'paused' || meetingCheckpointStatus === 'ending' || Boolean(controlLeaseSnapshot && !hasSessionControl);
   const isNavigationLocked = isActive;
@@ -517,7 +519,7 @@ const activeMeetingCheckpointRef = useRef(null);
   }, [liveController.meetingStartedAt, routeMeetingId]);
   const webRtcDevice = useWebRtcDeviceSidecar({
     meetingId: routeMeetingId,
-    enabled: Boolean(routeMeetingId && ['listening', 'reconnecting', 'switching-segment'].includes(liveController.status)),
+    enabled: Boolean(routeMeetingId && ['listening', 'reconnecting', 'switching-segment', 'provider-recovery', 'provider-recovery-failed'].includes(liveController.status)),
     lifecycleStatus: liveController.status,
     cues: liveController.subtitleCueState?.finalCues || [],
     segmentId: activeMeetingCheckpointRef.current?.segmentId,
@@ -529,6 +531,7 @@ const activeMeetingCheckpointRef = useRef(null);
     sessionStopRequestedRef.current = true;
     startLiveRecordingInFlightRef.current = false;
     liveController.recovery.reconnectController().cancel();
+    liveController.recovery.cancelProviderRecovery('auth-invalid');
     liveController.segmentSwitch.cancel();
     invalidateLiveSessionCallbacks();
     const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
@@ -601,7 +604,7 @@ const activeMeetingCheckpointRef = useRef(null);
       const canonicalHash = canonicalHashForLocation();
       const next = pageInfoFromLocation();
       const activeMeetingId = activeMeetingCheckpointRef.current?.meetingId || '';
-      const activeSession = ['requesting-permission', 'connecting', 'listening', 'reconnecting', 'switching-segment'].includes(statusRef.current);
+      const activeSession = ['requesting-permission', 'connecting', 'listening', 'reconnecting', 'switching-segment', 'provider-recovery', 'provider-recovery-failed'].includes(statusRef.current);
       const leavesActiveLiveRoute = next.page !== 'live-recording' || (activeMeetingId && next.meetingId !== activeMeetingId);
 
       if (activeSession && leavesActiveLiveRoute) {
@@ -646,7 +649,7 @@ const activeMeetingCheckpointRef = useRef(null);
 
   useEffect(() => {
     const handlePageHide = () => {
-      if (!['requesting-permission', 'connecting', 'listening', 'reconnecting', 'switching-segment'].includes(statusRef.current)) return;
+      if (!['requesting-permission', 'connecting', 'listening', 'reconnecting', 'switching-segment', 'provider-recovery', 'provider-recovery-failed'].includes(statusRef.current)) return;
       void forceStopForNavigation();
     };
     window.addEventListener('pagehide', handlePageHide);
@@ -1419,6 +1422,16 @@ const activeMeetingCheckpointRef = useRef(null);
       endpoint: error?.endpoint || error?.cause?.endpoint || null,
       cause: error?.cause?.name || null
     });
+    if ((error?.code || error?.cause?.code) === 'provider_recovery_exhausted') {
+      setStatus('provider-recovery-failed');
+      setStatusLabelOverride('翻譯已停止，可手動重試');
+      setError('翻譯已停止，可手動重試');
+      setSegmentRolloverStatus('recovery-pending');
+      setMeetingCheckpointStatus('switched');
+      setMeetingCheckpointErrorMessage('新分段已保存；Gemini 翻譯已停止，本機原始錄音仍持續保存。');
+      liveController.segmentSwitch.cancel();
+      return;
+    }
     setStatusLabelOverride('分段切換失敗，錄音持續中');
     setSegmentRolloverStatus('recovery-pending');
     setMeetingCheckpointStatus('error');
@@ -2798,6 +2811,10 @@ const activeMeetingCheckpointRef = useRef(null);
             void loadMeetingDetail(routeMeetingId);
             return;
           }
+          if (liveController.status === 'provider-recovery-failed') {
+            void liveController.recovery.retryProviderRecovery();
+            return;
+          }
           void startLiveRecording();
         }}
       >
@@ -2816,7 +2833,7 @@ const activeMeetingCheckpointRef = useRef(null);
             </div>
 
             <div className="live-toolbar-status">
-              {liveController.meetingStartedAt && ['connecting', 'listening', 'reconnecting', 'switching-segment', 'paused'].includes(liveController.status)
+              {liveController.meetingStartedAt && ['connecting', 'listening', 'reconnecting', 'switching-segment', 'provider-recovery', 'provider-recovery-failed', 'paused'].includes(liveController.status)
                 ? <MeetingElapsedTimer startedAt={liveController.meetingStartedAt} />
                 : null}
               <span className={`live-save-status status-pill checkpoint-note-${meetingCheckpointStatus}`}>
@@ -2858,11 +2875,22 @@ const activeMeetingCheckpointRef = useRef(null);
                       結束會議
                     </button>
                   </>
-                ) : liveController.status === 'reconnecting' || liveController.status === 'switching-segment' ? (
+                ) : ['reconnecting', 'switching-segment', 'provider-recovery'].includes(liveController.status) ? (
                   <button className="button secondary" type="button" onClick={() => liveController.actions.endCurrentSession({ completeMeeting: true })} disabled={meetingCheckpointStatus === 'ending'}>
                     <Square size={18} aria-hidden="true" />
                     結束會議
                   </button>
+                ) : liveController.status === 'provider-recovery-failed' ? (
+                  <>
+                    <button className="button secondary" type="button" onClick={liveController.actions.pauseSession} disabled={meetingCheckpointStatus === 'ending'}>
+                      <Pause size={18} aria-hidden="true" />
+                      停止錄音
+                    </button>
+                    <button className="button secondary" type="button" onClick={() => liveController.actions.endCurrentSession({ completeMeeting: true })} disabled={meetingCheckpointStatus === 'ending'}>
+                      <Square size={18} aria-hidden="true" />
+                      結束會議
+                    </button>
+                  </>
                 ) : liveController.status === 'paused' ? (
                   <>
                     <button className="button primary" type="button" onClick={liveController.actions.continuePausedSession} disabled={meetingCheckpointStatus === 'ending'}>

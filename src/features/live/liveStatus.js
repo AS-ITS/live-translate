@@ -32,9 +32,10 @@ const TRANSLATED_AUDIO_STATUS_LABELS = {
 };
 
 export function liveMeetingStatusLabel(meeting, recordingStatus = '') {
-  if (['requesting-permission', 'connecting', 'listening', 'reconnecting', 'switching-segment'].includes(recordingStatus)) {
+  if (['requesting-permission', 'connecting', 'listening', 'reconnecting', 'switching-segment', 'provider-recovery'].includes(recordingStatus)) {
     return '進行中';
   }
+  if (recordingStatus === 'provider-recovery-failed') return '翻譯已停止';
   if (recordingStatus === 'paused') return '已暫停';
 
   return meeting?.status === 'active'

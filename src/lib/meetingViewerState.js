@@ -41,17 +41,37 @@ export function sortMeetingCues(cues = []) {
       segmentOrders.set(cue.segmentId, order);
     }
   }
-  return cues.map((cue) => {
+  const normalized = cues.map((cue) => {
     const order = positiveSequence(cue?.segmentSequence) ?? segmentOrders.get(cue?.segmentId);
     return order === undefined || order === null ? cue : { ...cue, segmentSequence: order };
-  }).sort((left, right) => {
+  });
+  const segmentPositions = new Map();
+  normalized.forEach((cue, index) => {
+    const key = viewerSegmentKey(cue, index);
+    if (!segmentPositions.has(key)) segmentPositions.set(key, segmentPositions.size);
+  });
+
+  return normalized.sort((left, right) => {
     const leftSegment = positiveSequence(left?.segmentSequence);
     const rightSegment = positiveSequence(right?.segmentSequence);
-    if (leftSegment !== rightSegment) return (leftSegment ?? Infinity) - (rightSegment ?? Infinity);
-    if (leftSegment === null) return 0;
+    if (leftSegment !== null && rightSegment !== null && leftSegment !== rightSegment) {
+      return leftSegment - rightSegment;
+    }
+    const leftKey = viewerSegmentKey(left);
+    const rightKey = viewerSegmentKey(right);
+    if (leftKey !== rightKey) {
+      return (segmentPositions.get(leftKey) ?? Infinity) - (segmentPositions.get(rightKey) ?? Infinity);
+    }
     return (Number(left?.sequence) || 0) - (Number(right?.sequence) || 0)
       || String(left?.cueId || '').localeCompare(String(right?.cueId || ''));
   });
+}
+
+function viewerSegmentKey(cue, index = '') {
+  if (cue?.segmentId) return `id:${cue.segmentId}`;
+  const order = positiveSequence(cue?.segmentSequence);
+  if (order !== null) return `order:${order}`;
+  return `cue:${cue?.cueId || index}`;
 }
 
 export function mergeMeetingCues(existing = [], incoming = []) {

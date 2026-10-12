@@ -96,6 +96,18 @@ test('live Cue without segmentSequence stays after earlier persisted segments', 
   assert.deepEqual(merged.map((item) => item.cueId), ['old-1', 'old-2', 'new-1']);
 });
 
+test('ordered new Segment stays after earlier Cues whose Segment order is unavailable', () => {
+  const previous = [
+    { cueId: 'old-1', segmentId: 'segment-1', sequence: 1 },
+    { cueId: 'old-2', segmentId: 'segment-1', sequence: 2 }
+  ];
+  const live = { ...cue('new-1', 2, 1), segmentId: 'segment-2' };
+
+  const merged = mergeMeetingCues(previous, [live]);
+
+  assert.deepEqual(merged.map((item) => item.cueId), ['old-1', 'old-2', 'new-1']);
+});
+
 test('later partial update keeps a Cue order key and independently newer text', () => {
   const original = { ...cue('cue-1', 2, 1, ''), segmentId: 'segment-2', sourceVersion: 2, translationVersion: 0 };
   const translation = { cueId: 'cue-1', segmentId: 'segment-2', sequence: 1, sourceVersion: 1,

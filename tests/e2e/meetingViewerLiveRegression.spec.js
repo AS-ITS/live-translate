@@ -20,7 +20,7 @@ test('Viewer keeps receiving and following cues when earlier live cues lack segm
   });
 
   const snapshotCues = Array.from({ length: 25 }, (_, index) => ({
-    cueId: `old-${index + 1}`, segmentId: 'segment-1', segmentSequence: 1,
+    cueId: `old-${index + 1}`, segmentId: 'segment-1',
     sequence: index + 1, sourceText: `歷史字幕 ${index + 1}`, sourceVersion: 1,
   }));
   await page.route(/\/api\/shared-meetings\/code\/LIVEORDER(?:\?.*)?$/, (route) => route.fulfill({
@@ -43,7 +43,7 @@ test('Viewer keeps receiving and following cues when earlier live cues lack segm
     });
   }
 
-  // Realtime payloads can omit segmentSequence even when snapshot rows include it.
+  // Compatibility snapshots and realtime payloads may both lack segmentSequence.
   await publish(26, 'old-26', 'segment-1', null, 26, '舊字幕 26');
   await publish(27, 'old-27', 'segment-1', null, 27, '舊字幕 27');
   await expect(viewport.locator('[data-cue-id="old-27"]')).toBeVisible();

@@ -622,7 +622,16 @@ export function createWebRtcSubtitleTransport({
   async function createDevicePeer(viewerId, negotiationId, epoch, signalMeta = {}) {
     if (stopped || epoch !== connectionEpoch || !viewerId || !negotiationId) return;
     const previous = devicePeers.get(viewerId);
-    if (previous?.negotiationId === negotiationId && previous.connected) return;
+    if (previous?.negotiationId === negotiationId
+      && !['failed', 'closed'].includes(previous.pc?.connectionState)) {
+      trace('WEBRTC_SIGNALING', 'viewer-ready.duplicate_ignored', previous, {
+        signalSequence: signalMeta.sequence,
+        messageExpiresAt: signalMeta.expiresAt,
+        decision: 'preserve_in_flight_negotiation',
+        transportResult: previous.connected ? 'already_connected' : 'negotiating',
+      });
+      return;
+    }
     if (previous) cleanupPeer(previous);
     const context = {
       epoch, viewerId, peerId: viewerId, negotiationId,

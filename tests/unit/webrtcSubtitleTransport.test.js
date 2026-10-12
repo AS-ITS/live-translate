@@ -295,6 +295,45 @@ test('Device creates targeted peers for Viewers joining at different times', asy
   function timerClear(timer) { timer.cleared = true; }
 });
 
+test('Device deduplicates repeated viewer-ready backlog for one in-flight negotiation', async () => {
+  FakePeerConnection.instances = [];
+  const requests = [];
+  const timers = [];
+  const repeatedReady = [1, 2, 3].map((sequence) => ({
+    sequence,
+    participantId: 'viewer-waiting',
+    type: 'viewer-ready',
+    negotiationId: 'negotiation-waiting',
+    payload: {},
+  }));
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'device', participantId: 'device-starting',
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      requests.push({ url, body });
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.includes('/signal?')) return response(200, { messages: repeatedReady, after: 3 });
+      if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 4 });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, {});
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+  });
+
+  transport.start(); await flush(); await flush();
+  const poll = timers.find((timer) => timer.ms === 2_000 && !timer.cleared);
+  assert.ok(poll, 'Recorder polls the signaling backlog after starting');
+  poll.cleared = true;
+  await poll.fn(); await flush(); await flush();
+
+  const offers = requests.filter(({ body }) => body?.type === 'offer');
+  assert.equal(offers.length, 1, 'one negotiation must create exactly one offer');
+  assert.equal(FakePeerConnection.instances.length, 1, 'duplicate ready messages must not replace the in-flight peer');
+  await transport.stop();
+});
+
 test('Viewer rebuilds its channel after a transient failure and drops late old packets', async () => {
   FakePeerConnection.instances = [];
   const timers = [];

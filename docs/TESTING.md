@@ -12,7 +12,7 @@ node --test tests/integration/webrtcLateJoin.integration.test.js
 npm run build
 ```
 
-`webrtcSubtitleTransport.test.js` 另覆蓋 Viewer 在 Recorder 出現前持續 discovery、Device 成功 join 重設 recovery budget，以及 persistence 故障域隔離：已開啟的
+`webrtcSubtitleTransport.test.js` 另覆蓋 Viewer 在 Recorder 出現前持續 discovery、等待期間累積的同一 `viewerId + negotiationId` `viewer-ready` backlog 只建立一個 in-flight PeerConnection／offer、Device 成功 join 重設 recovery budget，以及 persistence 故障域隔離：已開啟的
 DataChannel 在 signaling heartbeat 回 `503` 時不得 teardown、不得切換為
 `reconnecting`，Cue 2／Cue 3 必須沿用同一 transport generation 繼續發布；雲端
 control-plane 恢復後只恢復 heartbeat，不得重複發布已送達的 Cue。

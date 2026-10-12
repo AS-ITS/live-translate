@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 修正 Viewer 先等待、Recorder 後開始時，相同 negotiation 的多筆 `viewer-ready` backlog 讓 Recorder 反覆關閉並重建尚在協商中的 PeerConnection、送出多個 offer 的問題；Recorder 現在保留第一個有效 in-flight negotiation，只有新 negotiation 或已 failed/closed 的 peer 才重建。未改動 recovery 次數、signaling cursor、Cue、Meeting 或 Gemini lifecycle。
 - 補齊 Recorder／Viewer WebRTC paired transport trace：Preview 診斷模式可由 DevTools Console 匯出 recovery 後仍保留的 JSON，加入 generation、negotiation、signaling sequence/cursor/TTL、DataChannel 與 scheduled retry 語意；不恢復診斷 UI、不記錄憑證、SDP、ICE 敏感內容，也不改動既有 recovery state machine。
 
 - 修正 Pause → Continue 時 Gemini Live provider 在 setup 階段關閉仍被標記為 `listening` 的 silent failure；Continue 現在必須確認新 session 完成啟動，否則停止該 session、顯示可診斷錯誤，且不啟用 Recorder callback 或 Cue 更新。

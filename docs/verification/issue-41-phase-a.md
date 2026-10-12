@@ -117,6 +117,7 @@ Rollback is commit-local: remove instrumentation wiring without touching storage
 - `fcad972` — isolated WebM continuity harness and Chromium E2E.
 - `a28efa2` — Viewer recovery evidence and bounded source counts.
 - `43cc74e` — explicit p95 overflow semantics.
+- `2adb829` — refresh O(1) collection counts immediately before each sample.
 
 Commands:
 

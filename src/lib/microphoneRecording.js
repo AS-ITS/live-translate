@@ -77,7 +77,7 @@ export function createMicrophoneRecordingController(options = {}) {
       return getState();
     }
 
-    await stopRecorder();
+    await stopAndDrainRecorder();
     if (state.status !== 'error') {
       setState({ status: 'paused' });
     }
@@ -108,7 +108,7 @@ export function createMicrophoneRecordingController(options = {}) {
 
     if (recorder) {
       setState({ status: 'finalizing' });
-      await stopRecorder();
+      await stopAndDrainRecorder();
     }
 
     await chunkWriteQueue;
@@ -141,7 +141,7 @@ export function createMicrophoneRecordingController(options = {}) {
 
   async function cleanup({ discard = false } = {}) {
     if (recorder) {
-      await stopRecorder();
+      await stopAndDrainRecorder();
     }
 
     recorder = null;
@@ -250,6 +250,12 @@ export function createMicrophoneRecordingController(options = {}) {
         resolve();
       }
     });
+  }
+
+  async function stopAndDrainRecorder() {
+    await stopRecorder();
+    await chunkWriteQueue;
+    captureEpoch += 1;
   }
 
   function fail(message) {

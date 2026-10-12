@@ -13,7 +13,8 @@ export function createLocalMeetingPersistence({
   composeAudioArtifact = composeLocalMeetingAudioArtifact
 } = {}) {
   if (!cryptoImpl?.subtle || typeof cryptoImpl.subtle.digest !== 'function') throw new Error('Web Crypto is unavailable.');
-  const recorder = createLocalMeetingRecorder({ manifestStore, chunkStore, now });
+  const createRecorder = () => createLocalMeetingRecorder({ manifestStore, chunkStore, now });
+  let recorder = createRecorder();
   const retention = typeof manifestStore.getRetention === 'function'
     ? createLocalMeetingRetention({ manifestStore, chunkStore, now })
     : { check: async () => {}, assertReadable: async () => {}, withRead: async (_meetingId, work) => work() };
@@ -32,6 +33,11 @@ export function createLocalMeetingPersistence({
     async start({ meetingId, recordingId, segmentId } = {}) {
       await retention.check(meetingId);
       await retention.assertReadable(meetingId);
+      await appendQueue;
+      if (activeMeetingId && activeMeetingId !== meetingId) {
+        recorder = createRecorder();
+        appendQueue = Promise.resolve();
+      }
       if (!recordingEnabled) {
         activeMeetingId = meetingId || null;
         return Object.freeze({ state: 'disabled', meetingId: activeMeetingId, recordingId: recordingId || null, segmentId: segmentId || null });
@@ -73,6 +79,19 @@ export function createLocalMeetingPersistence({
       return recorder.providerRollover({ operationId: createOperationId('provider-rollover') });
     },
 
+    rolloverLocalSegment({ operationId, nextSegmentId } = {}) {
+      if (!recordingEnabled) return Promise.resolve({ state: 'disabled', meetingId: activeMeetingId });
+      const task = appendQueue.then(async () => {
+        await retention.assertReadable(activeMeetingId);
+        return recorder.rolloverLocalSegment({
+          operationId: operationId || createOperationId('local-segment-rollover'),
+          nextSegmentId
+        });
+      });
+      appendQueue = task.catch(() => {});
+      return task;
+    },
+
     appendAudioChunk(chunk = {}) {
       if (!recordingEnabled) return Promise.resolve(null);
       const task = appendQueue.then(async () => {
@@ -109,7 +128,8 @@ export function createLocalMeetingPersistence({
     async listFinalizedAudioArtifacts(meetingId = activeMeetingId) {
       if (!meetingId) return [];
       return retention.withRead(meetingId, async () => {
-      const recording = await recorder.restore(meetingId);
+      const targetRecorder = activeMeetingId === meetingId ? recorder : createRecorder();
+      const recording = await targetRecorder.restore(meetingId);
       if (recording.state !== 'stopped_local') return [];
       const chunks = (await manifestStore.list(meetingId))
         .filter((chunk) => chunk.state === 'sealed')
@@ -147,7 +167,8 @@ export function createLocalMeetingPersistence({
       if (!meetingId) return 'idle';
       await retention.check(meetingId);
       await retention.assertReadable(meetingId);
-      const [recording, chunks] = await Promise.all([recorder.restore(meetingId), manifestStore.list(meetingId)]);
+      const targetRecorder = activeMeetingId === meetingId ? recorder : createRecorder();
+      const [recording, chunks] = await Promise.all([targetRecorder.restore(meetingId), manifestStore.list(meetingId)]);
       const sealedChunks = chunks.filter((chunk) => chunk.state === 'sealed');
       if (recording.state === 'stopped_local' && sealedChunks.length > 0) return 'ready';
       if (['capturing', 'paused', 'stopping', 'stop_incomplete'].includes(recording.state) || chunks.length > 0) return 'processing';
@@ -184,6 +205,11 @@ export function createLocalMeetingPersistence({
     async restore(meetingId) {
       await retention.check(meetingId);
       await retention.assertReadable(meetingId);
+      await appendQueue;
+      if (activeMeetingId && activeMeetingId !== meetingId) {
+        recorder = createRecorder();
+        appendQueue = Promise.resolve();
+      }
       const [recording, cues, chunks] = await Promise.all([
         recorder.restore(meetingId),
         manifestStore.listCues(meetingId),
@@ -197,28 +223,57 @@ export function createLocalMeetingPersistence({
     snapshot: () => recorder.snapshot()
   });
 
-  async function appendAudioChunkLocked({ data, mimeType = 'audio/webm', receivedAt = now() } = {}) {
+  async function appendAudioChunkLocked({ data, mimeType = 'audio/webm', receivedAt = now(), descriptor: retryDescriptor = null } = {}) {
     if (!data || typeof data.arrayBuffer !== 'function') throw new TypeError('audio chunk data must be a Blob.');
     const bytes = new Uint8Array(await data.arrayBuffer());
     if (bytes.byteLength === 0) return null;
-    const sequence = nextAudioSequence;
-    const checksum = await sha256(bytes, cryptoImpl);
     const snapshot = recorder.snapshot();
-    const sealed = await recorder.appendChunk({
+    const descriptor = retryDescriptor
+      ? await immutableRetryDescriptor(retryDescriptor, snapshot, bytes, cryptoImpl)
+      : await createImmutableChunkDescriptor({ snapshot, bytes, mimeType, receivedAt });
+    nextAudioSequence = Math.max(nextAudioSequence, descriptor.sequence + 1);
+    try {
+      return await recorder.appendChunk(descriptor, bytes);
+    } catch (error) {
+      if (error && typeof error === 'object') error.localChunkDescriptor = descriptor;
+      throw error;
+    }
+  }
+
+  async function createImmutableChunkDescriptor({ snapshot, bytes, mimeType, receivedAt }) {
+    const sequence = nextAudioSequence;
+    return Object.freeze({
       meetingId: snapshot.meetingId,
       recordingId: snapshot.recordingId,
       segmentId: snapshot.segmentId,
-      chunkId: `audio-${String(sequence).padStart(8, '0')}`,
+      chunkId: `${snapshot.recordingId}:audio-${String(sequence).padStart(8, '0')}`,
       sequence,
       startedAt: receivedAt,
       endedAt: receivedAt,
       byteSize: bytes.byteLength,
-      checksum,
+      checksum: await sha256(bytes, cryptoImpl),
       mimeType: normalizeAudioMimeType(mimeType)
-    }, bytes);
-    nextAudioSequence += 1;
-    return sealed;
+    });
   }
+}
+
+async function immutableRetryDescriptor(value, snapshot, bytes, cryptoImpl) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('audio chunk descriptor must be an object.');
+  }
+  const descriptor = Object.freeze({ ...value });
+  if (descriptor.meetingId !== snapshot.meetingId
+    || descriptor.recordingId !== snapshot.recordingId
+    || !Number.isSafeInteger(descriptor.sequence)
+    || descriptor.sequence < 1
+    || descriptor.byteSize !== bytes.byteLength
+    || descriptor.checksum !== await sha256(bytes, cryptoImpl)) {
+    const error = new Error('local_chunk_retry_identity_conflict');
+    error.code = 'local_chunk_retry_identity_conflict';
+    error.status = 409;
+    throw error;
+  }
+  return descriptor;
 }
 
 async function sha256(bytes, cryptoImpl) {

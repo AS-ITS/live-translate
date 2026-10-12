@@ -188,6 +188,23 @@ test('provider rollover changes only provider epoch and is idempotent', async ()
   assert.deepEqual(replayed, rolled);
 });
 
+test('local segment rollover keeps recording and capture identity while replaying one operation', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const recorder = createLocalMeetingRecorder({ manifestStore, chunkStore: fakeChunkStore() });
+  const started = await recorder.start('meeting-1', {
+    operationId: 'start-1', recordingId: 'recording-1', segmentId: 'segment-1'
+  });
+
+  const rolled = await recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' });
+  const replayed = await recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-untrusted' });
+
+  assert.equal(rolled.recordingId, started.recordingId);
+  assert.equal(rolled.segmentId, 'segment-2');
+  assert.equal(rolled.captureEpoch, started.captureEpoch);
+  assert.equal(rolled.providerEpoch, started.providerEpoch + 1);
+  assert.deepEqual(replayed, rolled);
+});
+
 test('successful Finalize clears stale stop error and replays the clean result', async () => {
   const manifestStore = createInMemoryLocalMeetingManifestStore();
   const recorder = createLocalMeetingRecorder({ manifestStore, chunkStore: fakeChunkStore() });

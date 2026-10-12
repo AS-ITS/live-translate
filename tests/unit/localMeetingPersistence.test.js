@@ -137,3 +137,195 @@ test('stale construction follows hydrated recording enablement without replacing
   persistence.setRecordingEnabled(false);
   assert.equal((await persistence.listFinalizedAudioArtifacts('meeting-stale')).length, 1);
 });
+
+test('a new meeting gets a distinct chunk identity and preserves the interrupted meeting audio', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const persistence = createLocalMeetingPersistence({
+    manifestStore,
+    chunkStore: fakeChunkStore(),
+    cryptoImpl: fakeCrypto(),
+    createOperationId: operationIds(),
+    composeAudioArtifact: concatenateTestArtifact
+  });
+
+  await persistence.start({ meetingId: 'meeting-1', recordingId: 'recording-1', segmentId: 'segment-1' });
+  await persistence.appendAudioChunk({ data: new Blob(['old']), receivedAt: 10 });
+  await persistence.pause();
+
+  await persistence.start({ meetingId: 'meeting-2', recordingId: 'recording-2', segmentId: 'segment-2' });
+  await persistence.appendAudioChunk({ data: new Blob(['new']), receivedAt: 20 });
+  const finalized = await persistence.finalizeAudio();
+
+  assert.equal(await finalized.blob.text(), 'new');
+  assert.deepEqual((await manifestStore.list('meeting-1')).map((chunk) => chunk.chunkId), ['recording-1:audio-00000001']);
+  assert.deepEqual((await manifestStore.list('meeting-2')).map((chunk) => chunk.chunkId), ['recording-2:audio-00000001']);
+  assert.equal((await manifestStore.list('meeting-1'))[0].state, 'sealed');
+});
+
+test('starting the next meeting waits for the previous OPFS chunk write barrier', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  let releaseWrite;
+  const writeBarrier = new Promise((resolve) => { releaseWrite = resolve; });
+  const chunkStore = fakeChunkStore();
+  const originalWrite = chunkStore.write;
+  chunkStore.write = async (...args) => {
+    await writeBarrier;
+    return originalWrite(...args);
+  };
+  const persistence = createLocalMeetingPersistence({
+    manifestStore,
+    chunkStore,
+    cryptoImpl: fakeCrypto(),
+    createOperationId: operationIds(),
+    composeAudioArtifact: concatenateTestArtifact
+  });
+
+  await persistence.start({ meetingId: 'meeting-1', recordingId: 'recording-1', segmentId: 'segment-1' });
+  const append = persistence.appendAudioChunk({ data: new Blob(['old']), receivedAt: 10 });
+  let nextStarted = false;
+  const nextStart = persistence.start({ meetingId: 'meeting-2', recordingId: 'recording-2', segmentId: 'segment-2' })
+    .then((result) => { nextStarted = true; return result; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(nextStarted, false);
+
+  releaseWrite();
+  await append;
+  assert.equal((await nextStart).meetingId, 'meeting-2');
+  assert.equal((await manifestStore.list('meeting-1'))[0].state, 'sealed');
+});
+
+test('rapid pause and continue keeps one recording identity and monotonic chunk sequence', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const persistence = createLocalMeetingPersistence({
+    manifestStore,
+    chunkStore: fakeChunkStore(),
+    cryptoImpl: fakeCrypto(),
+    createOperationId: operationIds(),
+    composeAudioArtifact: concatenateTestArtifact
+  });
+  const started = await persistence.start({ meetingId: 'meeting-1', recordingId: 'recording-1', segmentId: 'segment-1' });
+
+  for (let sequence = 1; sequence <= 3; sequence += 1) {
+    await persistence.appendAudioChunk({ data: new Blob([String(sequence)]), receivedAt: sequence });
+    await persistence.pause();
+    await persistence.resume();
+  }
+  const finalized = await persistence.finalizeAudio();
+  const chunks = await manifestStore.list('meeting-1');
+
+  assert.equal((await persistence.restore('meeting-1')).recording.recordingId, started.recordingId);
+  assert.deepEqual(chunks.map((chunk) => chunk.sequence), [1, 2, 3]);
+  assert.equal(await finalized.blob.text(), '123');
+});
+
+test('rollover barrier assigns pending chunks to the old Segment and later chunks to the committed Segment', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const chunkStore = fakeChunkStore();
+  const originalWrite = chunkStore.write;
+  let releaseFirstWrite;
+  let writeCount = 0;
+  const firstWriteBarrier = new Promise((resolve) => { releaseFirstWrite = resolve; });
+  chunkStore.write = async (...args) => {
+    writeCount += 1;
+    if (writeCount === 1) await firstWriteBarrier;
+    return originalWrite(...args);
+  };
+  const persistence = createLocalMeetingPersistence({
+    manifestStore, chunkStore, cryptoImpl: fakeCrypto(), createOperationId: operationIds(), composeAudioArtifact: concatenateTestArtifact
+  });
+  const started = await persistence.start({ meetingId: 'meeting-1', recordingId: 'recording-1', segmentId: 'segment-1' });
+
+  const pending = persistence.appendAudioChunk({ data: new Blob(['old']), receivedAt: 10 });
+  const rollover = persistence.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' });
+  const afterRollover = persistence.appendAudioChunk({ data: new Blob(['new']), receivedAt: 20 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await manifestStore.list('meeting-1'))[0].segmentId, 'segment-1');
+
+  releaseFirstWrite();
+  const [, rolled] = await Promise.all([pending, rollover, afterRollover]);
+  const chunks = await manifestStore.list('meeting-1');
+  assert.deepEqual(chunks.map(({ sequence, segmentId }) => ({ sequence, segmentId })), [
+    { sequence: 1, segmentId: 'segment-1' },
+    { sequence: 2, segmentId: 'segment-2' }
+  ]);
+  assert.equal(rolled.recordingId, started.recordingId);
+  assert.equal(rolled.captureEpoch, started.captureEpoch);
+  assert.equal(rolled.providerEpoch, started.providerEpoch + 1);
+});
+
+test('failed chunk exposes one immutable descriptor for an exact retry', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const chunkStore = fakeChunkStore();
+  const originalWrite = chunkStore.write;
+  let failFirstWrite = true;
+  chunkStore.write = async (...args) => {
+    if (failFirstWrite) {
+      failFirstWrite = false;
+      throw new Error('transient OPFS failure');
+    }
+    return originalWrite(...args);
+  };
+  const persistence = createLocalMeetingPersistence({
+    manifestStore, chunkStore, cryptoImpl: fakeCrypto(), createOperationId: operationIds(), composeAudioArtifact: concatenateTestArtifact
+  });
+  await persistence.start({ meetingId: 'meeting-1', recordingId: 'recording-1', segmentId: 'segment-1' });
+  const data = new Blob(['retry-me']);
+
+  let descriptor;
+  await assert.rejects(
+    persistence.appendAudioChunk({ data, receivedAt: 10 }),
+    (error) => {
+      descriptor = error.localChunkDescriptor;
+      return error.message === 'transient OPFS failure' && Object.isFrozen(descriptor);
+    }
+  );
+  const retried = await persistence.appendAudioChunk({ data, descriptor });
+  const next = await persistence.appendAudioChunk({ data: new Blob(['next']), receivedAt: 20 });
+
+  assert.equal(retried.sequence, 1);
+  assert.equal(next.sequence, 2);
+  assert.equal(retried.chunkId, 'recording-1:audio-00000001');
+});
+
+test('identity conflict consumes only its allocated sequence and later chunks continue saving', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  await manifestStore.reserve({
+    meetingId: 'meeting-old', recordingId: 'different-recording', segmentId: 'segment-old',
+    chunkId: 'recording-1:audio-00000001', sequence: 1, startedAt: 1
+  });
+  const persistence = createLocalMeetingPersistence({
+    manifestStore, chunkStore: fakeChunkStore(), cryptoImpl: fakeCrypto(), createOperationId: operationIds(), composeAudioArtifact: concatenateTestArtifact
+  });
+  await persistence.start({ meetingId: 'meeting-1', recordingId: 'recording-1', segmentId: 'segment-1' });
+
+  await assert.rejects(
+    persistence.appendAudioChunk({ data: new Blob(['conflict']), receivedAt: 10 }),
+    (error) => error.code === 'local_chunk_identity_conflict'
+  );
+  const saved = await persistence.appendAudioChunk({ data: new Blob(['continues']), receivedAt: 20 });
+  assert.equal(saved.sequence, 2);
+  assert.equal(saved.state, 'sealed');
+});
+
+test('legacy unscoped chunk IDs remain readable without rewriting IndexedDB or OPFS', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const chunkStore = fakeChunkStore();
+  const legacy = await manifestStore.reserve({
+    meetingId: 'meeting-legacy', recordingId: 'recording-legacy', segmentId: 'segment-1',
+    chunkId: 'audio-00000001', sequence: 1, startedAt: 10, endedAt: 10,
+    byteSize: 6, checksum: 'sha256:legacy', mimeType: 'audio/webm'
+  });
+  await chunkStore.write(legacy.path, new TextEncoder().encode('legacy'));
+  await manifestStore.seal(legacy.chunkId, { byteSize: 6, checksum: 'sha256:legacy', endedAt: 10 });
+  await manifestStore.saveRecording({
+    meetingId: 'meeting-legacy', recordingId: 'recording-legacy', segmentId: 'segment-1', segmentNumber: 1,
+    captureEpoch: 1, providerEpoch: 0, finalSequence: 1, state: 'stopped_local', terminal: true, finalized: true
+  });
+  const persistence = createLocalMeetingPersistence({
+    manifestStore, chunkStore, cryptoImpl: fakeCrypto(), createOperationId: operationIds(), composeAudioArtifact: concatenateTestArtifact
+  });
+
+  const [artifact] = await persistence.listFinalizedAudioArtifacts('meeting-legacy');
+  assert.equal(await artifact.blob.text(), 'legacy');
+  assert.equal(artifact.segments[0].chunkId, 'audio-00000001');
+});

@@ -107,6 +107,19 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       return advanceProviderEpoch(operationId, 'provider_rollover');
     },
 
+    async rolloverLocalSegment({ operationId, nextSegmentId } = {}) {
+      const replayed = await replay(operationId, 'local_segment_rollover');
+      if (replayed) return replayed;
+      assertActiveRecording();
+      const normalizedSegmentId = requiredIdentity(nextSegmentId, 'nextSegmentId');
+      if (segmentId !== normalizedSegmentId) {
+        segmentId = normalizedSegmentId;
+        segmentNumber += 1;
+        providerEpoch += 1;
+      }
+      return persist(operationId, 'local_segment_rollover');
+    },
+
     appendChunk(input, bytes) {
       const task = appendQueue.then(() => appendChunkLocked(input, bytes));
       appendQueue = task.catch(() => {});
@@ -194,6 +207,12 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
 
   function assertCapturing() {
     if (state !== 'capturing') throw conflict('local_recorder_not_capturing');
+  }
+
+  function assertActiveRecording() {
+    if (state !== 'capturing' && state !== 'paused') {
+      throw conflict('local_recorder_not_active');
+    }
   }
 
   function continueRecording() {
@@ -334,6 +353,13 @@ async function toUint8Array(value) {
 
 function assertOperationType(operation, type) {
   if (operation.type !== type) throw conflict('local_recorder_operation_conflict');
+}
+
+function requiredIdentity(value, name) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw invalid(`${name} must be a non-empty string.`);
+  }
+  return value;
 }
 
 function invalid(message) {

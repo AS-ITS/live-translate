@@ -317,11 +317,15 @@ export function useLiveRecordingController({
         audio.setRecordingState?.(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
         return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
       }
-      const nextState = await this.recordingController().pause().catch((error) => ({
-        status: 'error', blob: null, mimeType: '', extension: '', fileName: '',
-        errorMessage: error?.message || '原始語音錄音無法暫停。'
-      }));
-      if (nextState.status !== 'error') await audio.getLocalMeetingPersistence?.().pause();
+      const nextState = await this.recordingController().pause()
+        .then(async (recordingState) => {
+          if (recordingState.status !== 'error') await audio.getLocalMeetingPersistence?.().pause();
+          return recordingState;
+        })
+        .catch((error) => ({
+          status: 'error', blob: null, mimeType: '', extension: '', fileName: '',
+          errorMessage: error?.message || '原始語音錄音無法暫停。'
+        }));
       audio.setRecordingState?.(nextState);
       return nextState;
     },
@@ -330,11 +334,12 @@ export function useLiveRecordingController({
         audio.setRecordingState?.(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
         return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
       }
-      await audio.getLocalMeetingPersistence?.().resume();
-      const nextState = await this.recordingController().resume({ stream: audio.pendingMicrophoneStreamRef?.current }).catch((error) => ({
-        status: 'error', blob: null, mimeType: '', extension: '', fileName: '',
-        errorMessage: error?.message || '原始語音錄音無法繼續。'
-      }));
+      const nextState = await Promise.resolve(audio.getLocalMeetingPersistence?.().resume())
+        .then(() => this.recordingController().resume({ stream: audio.pendingMicrophoneStreamRef?.current }))
+        .catch((error) => ({
+          status: 'error', blob: null, mimeType: '', extension: '', fileName: '',
+          errorMessage: error?.message || '原始語音錄音無法繼續。'
+        }));
       audio.setRecordingState?.(nextState);
       return nextState;
     },
@@ -359,6 +364,9 @@ export function useLiveRecordingController({
     },
     noteProviderRollover() {
       return audio.getLocalMeetingPersistence?.().providerRollover();
+    },
+    rolloverLocalSegment({ operationId, nextSegmentId } = {}) {
+      return audio.getLocalMeetingPersistence?.().rolloverLocalSegment({ operationId, nextSegmentId });
     },
     prepareTranslatedAudioDownload(record) {
       audio.translationMetadataRef.current = { sessionId: record?.id || '', startedAt: record?.startedAt ?? Date.now() };
@@ -2073,6 +2081,11 @@ export function useLiveRecordingController({
         });
       }
       cueController.flushSubtitleCues('segment-rollover');
+      rolloverStage = 'local-audio-scope';
+      await audioController.rolloverLocalSegment({
+        operationId,
+        nextSegmentId: rollover.segment.id
+      });
       rolloverStage = 'provider-connect';
       const providerResumed = await previousSession.reconnectProvider({
         segmentId: rollover.segment.id,
@@ -2081,7 +2094,6 @@ export function useLiveRecordingController({
       });
       if (!providerResumed) throw new Error('無法恢復 Gemini 即時連線。');
       rolloverStage = 'audio-resume';
-      await audioController.noteProviderRollover();
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) {
         return;

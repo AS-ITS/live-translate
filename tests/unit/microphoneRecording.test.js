@@ -207,6 +207,59 @@ test('rapid duplicate Start creates one MediaRecorder owner and stale callbacks 
   assert.deepEqual(writes, ['current']);
 });
 
+test('pause waits for the final dataavailable chunk and its asynchronous writer before continuing', async () => {
+  const recorderInstances = [];
+  const BaseMediaRecorder = mockMediaRecorderClass({ instances: recorderInstances });
+  let releaseWrite;
+  const writeBarrier = new Promise((resolve) => { releaseWrite = resolve; });
+  class FinalChunkMediaRecorder extends BaseMediaRecorder {
+    stop() {
+      this.state = 'inactive';
+      queueMicrotask(() => {
+        this.emitChunk(new Blob(['final'], { type: 'audio/webm' }));
+        this.onstop?.({});
+      });
+    }
+  }
+  const writes = [];
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: FinalChunkMediaRecorder,
+    BlobImpl: Blob,
+    onChunk: async (chunk) => {
+      await writeBarrier;
+      writes.push(await chunk.data.text());
+    }
+  });
+
+  await controller.start({ stream: fakeStream(), sessionId: 'session-final-chunk' });
+  let paused = false;
+  const pause = controller.pause().then((state) => { paused = true; return state; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(paused, false);
+
+  releaseWrite();
+  assert.equal((await pause).status, 'paused');
+  assert.deepEqual(writes, ['final']);
+});
+
+test('failed input replacement can resume the previous stream without accepting stale callbacks', async () => {
+  const recorderInstances = [];
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob
+  });
+  const originalStream = fakeStream();
+
+  await controller.start({ stream: originalStream, sessionId: 'session-device-recovery' });
+  await controller.pause();
+  assert.equal((await controller.resume({ stream: null })).status, 'error');
+  assert.equal((await controller.resume({ stream: originalStream })).status, 'recording');
+  recorderInstances[0].emitChunk(new Blob(['stale'], { type: 'audio/webm' }));
+  recorderInstances[1].emitChunk(new Blob(['recovered'], { type: 'audio/webm' }));
+
+  assert.equal(await (await controller.finalize()).blob.text(), 'recovered');
+});
+
 test('recorder error becomes independent error state', async () => {
   const recorderInstances = [];
   const controller = createMicrophoneRecordingController({

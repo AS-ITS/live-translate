@@ -2,6 +2,43 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMeetingViewerRealtimeController } from '../../src/lib/meetingViewerRealtime.js';
 
+test('old subscription completion cannot claim a newer connection', async () => {
+  const callbacks = [];
+  const timers = [];
+  let releaseOld;
+  let oldIsCurrent;
+  const client = {
+    realtime: { async setAuth() {} },
+    channel() { return { on() { return this; }, subscribe(callback) { callbacks.push(callback); return this; } }; },
+    async removeChannel() {},
+  };
+  const controller = createMeetingViewerRealtimeController({
+    basePath: '/api/shared-meetings/share-token', client,
+    fetchImpl: async () => ({ ok: true, async json() { return { accessToken: 'jwt', channel: 'meeting:m', expiresAt: Date.now() + 60_000 }; } }),
+    onSubscribed: async ({ isCurrent }) => {
+      if (!oldIsCurrent) {
+        oldIsCurrent = isCurrent;
+        await new Promise((resolve) => { releaseOld = resolve; });
+      }
+    },
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+    random: () => 0.5,
+  });
+  controller.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  void callbacks[0]('SUBSCRIBED');
+  await new Promise((resolve) => setImmediate(resolve));
+  callbacks[0]('CHANNEL_ERROR');
+  await timers.find((timer) => timer.ms === 1_000 && !timer.cleared).fn();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(oldIsCurrent(), false);
+  releaseOld();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 2);
+  await controller.stop();
+});
+
 test('viewer realtime subscribes privately before delivering persisted cue broadcasts', async () => {
   let subscriptionCallback;
   let broadcastCallback;
@@ -133,5 +170,23 @@ test('viewer realtime requests JSON when replaying missed events', async () => {
     options: { headers: { Accept: 'application/json' } }
   });
   assert.deepEqual(replayed, { events: [{ eventId: 8 }], cursor: { eventId: 8 } });
+  await controller.stop();
+});
+
+test('viewer realtime does not retry terminal share errors', async () => {
+  const timers = [];
+  const errors = [];
+  const controller = createMeetingViewerRealtimeController({
+    basePath: '/api/shared-meetings/revoked',
+    fetchImpl: async () => ({ ok: false, status: 410, async json() { return { error: { code: 'meeting_revoked' } }; } }),
+    client: { realtime: { async setAuth() {} }, channel() { throw new Error('must not subscribe'); }, async removeChannel() {} },
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+    onError: (error) => errors.push(error),
+  });
+  controller.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(errors[0].code, 'meeting_revoked');
+  assert.equal(timers.length, 0);
   await controller.stop();
 });

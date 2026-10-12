@@ -1,4 +1,4 @@
-export const LOCAL_MEETING_SCHEMA_VERSION = 4;
+export const LOCAL_MEETING_SCHEMA_VERSION = 5;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
   'writing',
@@ -143,6 +143,21 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
       const value = operations.get(operationKey(meetingId, operationId));
       return value ? projectLocalOperation(value) : null;
     },
+    saveContinueOperation(input) {
+      const operation = projectContinueOperation(input);
+      const existing = operations.get(operation.key);
+      if (existing && !sameContinueIdentity(existing, operation)) throw conflict('local_continue_operation_conflict');
+      operations.set(operation.key, operation);
+      return operation;
+    },
+    getPendingContinueOperation(meetingId) {
+      const values = [...operations.values()]
+        .filter((value) => value.meetingId === meetingId
+          && value.type === 'legacy_continue'
+          && value.state !== 'complete')
+        .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+      return values[0] ? projectContinueOperation(values[0]) : null;
+    },
     commitRecordingOperation({ recording: recordingInput, operation: operationInput }) {
       const recording = projectLocalRecording(recordingInput);
       const operation = projectLocalOperation(operationInput);
@@ -223,6 +238,62 @@ export function createIndexedDbLocalMeetingManifestStore({
   let databasePromise;
 
   return Object.freeze({
+    async getRetention(meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'retentions', 'readonly', async (transaction) =>
+        (await request(transaction.objectStore('retentions').get(meetingId))) || null);
+    },
+    async listRetentions() {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'retentions', 'readonly', async (transaction) =>
+        request(transaction.objectStore('retentions').getAll()));
+    },
+    async saveRetention(input) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'retentions', 'readwrite', async (transaction) => {
+        const store = transaction.objectStore('retentions');
+        const previous = await request(store.get(input.meetingId));
+        const previousExpiry = Date.parse(previous?.expiresAt || '');
+        const nextExpiry = Date.parse(input.expiresAt || '');
+        const record = {
+          ...previous,
+          ...input,
+          recordingId: previous?.recordingId || input.recordingId || null,
+          expiresAt: Number.isFinite(previousExpiry) && Number.isFinite(nextExpiry)
+            ? new Date(Math.min(previousExpiry, nextExpiry)).toISOString()
+            : previous?.expiresAt || input.expiresAt || null,
+          deleted: Boolean(previous?.deleted || input.deleted),
+          physicalCleared: Boolean(previous?.physicalCleared)
+        };
+        await request(store.put(record));
+        return record;
+      });
+    },
+    async listLocalMeetingIds() {
+      const database = await openDatabase();
+      return runNamedTransaction(database, ['recordings', 'chunks', 'cues', 'checkpoints'], 'readonly', async (transaction) => {
+        const records = await Promise.all(['recordings', 'chunks', 'cues', 'checkpoints']
+          .map((name) => request(transaction.objectStore(name).getAll())));
+        return [...new Set(records.flat().map((row) => row.meetingId).filter(Boolean))];
+      });
+    },
+    async clearMeetingContent(meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database,
+        ['recordings', 'chunks', 'operations', 'cues', 'checkpoints', 'retentions'], 'readwrite',
+        async (transaction) => {
+          for (const name of ['recordings', 'chunks', 'operations', 'cues', 'checkpoints']) {
+            const store = transaction.objectStore(name);
+            const records = await request(store.getAll());
+            for (const row of records) {
+              if (row.meetingId === meetingId) await request(store.delete(name === 'recordings' ? meetingId : row.key || row.chunkId));
+            }
+          }
+          const retentions = transaction.objectStore('retentions');
+          const record = await request(retentions.get(meetingId));
+          if (record) await request(retentions.put({ ...record, physicalCleared: true, cleanupError: null }));
+        });
+    },
     async getRecording(meetingId) {
       const database = await openDatabase();
       return runNamedTransaction(database, 'recordings', 'readwrite', async (transaction) => {
@@ -251,6 +322,30 @@ export function createIndexedDbLocalMeetingManifestStore({
         const projected = projectLocalOperation(raw);
         if (!sameProjection(raw, projected)) await request(store.put(projected));
         return projected;
+      });
+    },
+    async saveContinueOperation(input) {
+      const operation = projectContinueOperation(input);
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'operations', 'readwrite', async (transaction) => {
+        const store = transaction.objectStore('operations');
+        const existing = await request(store.get(operation.key));
+        if (existing && !sameContinueIdentity(existing, operation)) throw conflict('local_continue_operation_conflict');
+        await request(store.put(operation));
+        return operation;
+      });
+    },
+    async getPendingContinueOperation(meetingId) {
+      normalizeRequiredString(meetingId, 'meetingId');
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'operations', 'readonly', async (transaction) => {
+        const values = await request(transaction.objectStore('operations').getAll());
+        const matches = values
+          .filter((value) => value.meetingId === meetingId
+            && value.type === 'legacy_continue'
+            && value.state !== 'complete')
+          .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+        return matches[0] ? projectContinueOperation(matches[0]) : null;
       });
     },
     async commitRecordingOperation({ recording: recordingInput, operation: operationInput }) {
@@ -402,6 +497,9 @@ export function createIndexedDbLocalMeetingManifestStore({
           if (!database.objectStoreNames.contains('checkpoints')) {
             database.createObjectStore('checkpoints', { keyPath: 'key' });
           }
+          if (!database.objectStoreNames.contains('retentions')) {
+            database.createObjectStore('retentions', { keyPath: 'meetingId' });
+          }
         };
         requestHandle.onsuccess = () => resolve(requestHandle.result);
         requestHandle.onerror = () => reject(requestHandle.error || new Error('IndexedDB open failed.'));
@@ -441,6 +539,23 @@ export function createOpfsChunkStore({ rootDirectory = null } = {}) {
     async remove(path) {
       const { directory, name } = await parentDirectory(rootDirectory, path, false);
       await directory.removeEntry(name);
+    },
+    async removeMeeting(meetingId) {
+      const name = safePathPart(meetingId, 'meetingId');
+      const root = rootDirectory || await globalThis.navigator?.storage?.getDirectory?.();
+      if (!root) throw new Error('OPFS is unavailable.');
+      let meetings;
+      try {
+        meetings = await root.getDirectoryHandle('meetings');
+      } catch (error) {
+        if (error?.name === 'NotFoundError') return;
+        throw error;
+      }
+      try {
+        await meetings.removeEntry(name, { recursive: true });
+      } catch (error) {
+        if (error?.name !== 'NotFoundError') throw error;
+      }
     }
   });
 }
@@ -481,6 +596,43 @@ function projectLocalRecording(value = {}) {
     terminal: value.terminal === true,
     finalized: value.finalized === true
   });
+}
+
+function projectContinueOperation(value = {}) {
+  const meetingId = normalizeRequiredString(value.meetingId, 'meetingId');
+  const operationId = normalizeRequiredString(value.operationId, 'operationId');
+  const sourceSegmentId = normalizeRequiredString(value.sourceSegmentId, 'sourceSegmentId');
+  const nextLiveSessionId = normalizeRequiredString(value.nextLiveSessionId, 'nextLiveSessionId');
+  const payloadHash = normalizeRequiredString(value.payloadHash, 'payloadHash');
+  const timestamp = normalizeRequiredString(value.updatedAt || value.createdAt || new Date().toISOString(), 'updatedAt');
+  return Object.freeze({
+    schemaVersion: 1,
+    key: operationKey(meetingId, operationId),
+    type: 'legacy_continue',
+    operationId,
+    meetingId,
+    sourceSegmentId,
+    nextLiveSessionId,
+    expectedSessionId: value.expectedSessionId ? String(value.expectedSessionId) : null,
+    payloadHash,
+    checkpoint: value.checkpoint && typeof value.checkpoint === 'object' ? structuredClone(value.checkpoint) : {},
+    attempt: Number.isSafeInteger(value.attempt) && value.attempt >= 0 ? value.attempt : 0,
+    state: String(value.state || 'pending'),
+    committedSuccessor: value.committedSuccessor && typeof value.committedSuccessor === 'object'
+      ? structuredClone(value.committedSuccessor)
+      : null,
+    createdAt: String(value.createdAt || timestamp),
+    updatedAt: timestamp
+  });
+}
+
+function sameContinueIdentity(left, right) {
+  return left.operationId === right.operationId
+    && left.meetingId === right.meetingId
+    && left.sourceSegmentId === right.sourceSegmentId
+    && left.nextLiveSessionId === right.nextLiveSessionId
+    && left.expectedSessionId === right.expectedSessionId
+    && left.payloadHash === right.payloadHash;
 }
 
 function projectLocalOperation(value = {}) {

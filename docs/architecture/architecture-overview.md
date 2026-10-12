@@ -37,6 +37,13 @@ and approved Preview/Production Origin/CORS checks.
 
 ## Meeting lifecycle v2
 
+Current expiry policy: `purge_at` is an immutable visibility deadline, not an
+automatic deletion trigger. Ordinary users and Viewer shares lose access at the
+deadline; active `super_admin` users retain a derived pending-delete metadata
+view and may invoke the canonical manual deletion flow. No GET-triggered worker
+or Cron physically deletes expired Meeting content. This supersedes older
+automatic-cleanup wording retained later in this historical overview.
+
 Supabase is the lifecycle source of truth for new Meetings. A single database
 transaction owns each start, pause, resume, rollover, recover, takeover, and
 stop transition. Partial transitions cannot be observed by another Vercel
@@ -50,20 +57,21 @@ Function invocation.
   optimistic `lifecycle_version` for competing commands.
 - Recorder liveness is renewed every 3 seconds; Meeting liveness is persisted
   at most once per 30 seconds and retains the 15-minute lost-recorder policy.
-- The CRON worker calls `expire_stale_meetings` in bounded batches. A v2
-  Meeting with no persisted heartbeat for 15 minutes ends atomically: its active
-  Segment becomes `interrupted`, its open Session stops, Viewer shares and the
-  recorder lease are revoked, and retention is scheduled for 30 minutes later.
-- Terminal v2 Meetings reject new lifecycle, Segment, share, and Cue writes.
-  `retention_policy_version` and the purge claim fields provide a
-  `FOR UPDATE SKIP LOCKED` handoff to the bounded CRON purge worker. The
-  worker deletes private audio/export Storage objects before deleting the
-  Meeting row; database cascades remove dependent transcript, Session,
-  Segment, share, and artifact metadata. Failed claims remain retryable.
-- The read model exposes `purge_at` as `purgeAt` for owner UI deadline
-  guidance. Expired v2 content uses stable `410 meeting_content_expired` before
-  physical deletion. Purge counters and latency use low-cardinality
-  `retention` observability labels; metric failures never affect cleanup.
+- Lost-recorder handling may interrupt a stale active Meeting, but does not
+  start the 30-minute countdown. Only successful completion freezes one
+  database-generated `ended_at` and `purge_at` per recording. The stable
+  `meeting_recordings.id` groups every related Session/rollover Segment;
+  provider Session IDs are not recording IDs.
+- A protected deletion tombstone and restrictive table/Storage policies reject
+  late writes and direct reads after deletion or expiration. Meeting settings,
+membership, glossary, and audit history remain until manual deletion.
+Before expiry, manual deletion remains owner/super-admin-authorized; after
+expiry, only an active super-admin may delete. Cleanup may require several
+bounded Storage batches before the Meeting row is removed.
+- Expiry does not schedule a cleanup worker or Cron job. Legacy cleanup claim
+  RPCs are service-role-only no-ops retained for deployment compatibility.
+  Storage deletion uses the Storage API; DB cleanup remains phased and retryable.
+  Local OPFS/IndexedDB cleanup uses persisted deadlines and browser locks.
 - v2 repository writes leave legacy `sessions.segment_id`,
   `meeting_segments.live_session_id`, and `sessions.transcript_items` empty or
   null while retaining read compatibility for v1 rows.
@@ -73,8 +81,14 @@ Function invocation.
 - An audio upload may begin only with the active recorder fence. An artifact
   that already began may complete or fail after the Meeting stops, but not at or
   after its `purge_at` deadline.
-- Provider reconnect stays inside the current Segment. User pause/resume,
-  rollover, and browser-crash recovery create Segment boundaries.
+- Provider reconnect stays inside the current Segment and retains its provider
+  glossary revision. User pause/resume, rollover, and browser-crash recovery
+  create Segment boundaries. Resume confirms the authoritative Segment before
+  token issuance. Token and Gemini instruction use the Segment-immutable
+  provider glossary snapshot. Local deterministic correction has an independent
+  SHA-256 revision that hot reloads after a successful glossary save and binds
+  each Turn/Cue on first accepted event; refresh failure preserves the last
+  confirmed snapshot and never blocks a legal recording resume.
 
 Meetings already active on lifecycle v1 remain on the legacy flow until they
 stop. Legacy relationship columns remain readable during that compatibility

@@ -7,11 +7,19 @@ Live pipeline trace vocabulary: use `TRANSCRIPT_NORMALIZED`, `TURN_ASSIGNED`, `C
 最小自動化驗證：
 
 ```bash
-node --test tests/unit/webrtcSignalingRoute.test.js tests/unit/webrtcSubtitleDataChannel.test.js tests/unit/webrtcSubtitleTransport.test.js tests/unit/meetingViewerState.test.js tests/unit/webrtcPocPage.test.js
+node --test tests/unit/webrtcSignalingRoute.test.js tests/unit/webrtcSubtitleDataChannel.test.js tests/unit/webrtcSubtitleTransport.test.js tests/unit/viewerLongSessionRecovery.test.js tests/unit/meetingViewerSnapshot.test.js tests/unit/meetingViewerState.test.js tests/unit/meetingViewerRealtime.test.js tests/unit/webrtcPocPage.test.js
+node --test tests/integration/webrtcLateJoin.integration.test.js
 npm run build
 ```
 
-這些測試涵蓋 Viewer code/token 分流、Device `canRecord` 授權邊界、拒絕 expired/revoked/mismatch/stopped、Viewer 禁止 offer/stop、sidecar 清理、snapshot/update/replay 與去重。跨網路實機仍依 [WebRTC Preview runbook](verification/webrtc-browser-deployment.md) 執行，不得以單元測試替代。
+`webrtcSubtitleTransport.test.js` 另覆蓋 Viewer 在 Recorder 出現前持續 discovery、Device 成功 join 重設 recovery budget，以及 persistence 故障域隔離：已開啟的
+DataChannel 在 signaling heartbeat 回 `503` 時不得 teardown、不得切換為
+`reconnecting`，Cue 2／Cue 3 必須沿用同一 transport generation 繼續發布；雲端
+control-plane 恢復後只恢復 heartbeat，不得重複發布已送達的 Cue。
+
+`webrtcLateJoin.integration.test.js` 使用 fake clock 驗證 Recorder 維持 60 分鐘 signaling lease 後，第一個 Viewer 仍能完成定向 `viewer-ready -> offer`；這不等同真實 60 分鐘手機測試。
+
+這些測試涵蓋 Viewer code/token 分流、Device `canRecord` 授權邊界、拒絕 expired/revoked/mismatch/stopped、Viewer 禁止 offer/stop、participant heartbeat、8 秒 signaling timeout、暫時 poll 失敗、5 秒 disconnected grace、ICE restart、DataChannel close/error、舊 epoch、6 次重試耗盡、Realtime token refresh 與故障 reconnect timer 隔離、reconnect snapshot/replay、Segment sequence domain、snapshot 503 retry、same-source replay、sidecar 清理與 Cue 去重。跨網路實機仍依 [WebRTC Preview runbook](verification/webrtc-browser-deployment.md) 執行，不得以單元測試替代。
 
 ## Vercel Relay PoC verification boundary
 
@@ -217,6 +225,21 @@ npm run test:e2e:cloud -- tests/cloud/issue35StorageLifecycle.spec.js
 The manual workflow `.github/workflows/cloud-validation.yml` is production-only and requires `PRODUCTION_BASE_URL`. It does not require staging secrets. Real Gemini smoke remains a separate explicit opt-in.
 
 ## Account permissions
+
+Account role management uses the following deterministic service, HTTP, migration, domain-activation, and browser checks:
+
+```bash
+node --test tests/unit/adminService.test.js tests/unit/auditLogService.test.js tests/unit/accountRoleHttpApi.test.js tests/unit/accountRoleManagementMigration.test.js tests/unit/domainAutoActivationMigration.test.js tests/unit/profileService.test.js
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/accountRoleManagement.spec.js
+```
+
+After local Supabase migrations are applied, run the real concurrent cross-demotion regression:
+
+```bash
+RUN_SUPABASE_ROLE_TESTS=true node --test tests/integration/accountRoleConcurrency.integration.test.js
+```
+
+It starts two active `super_admin` profiles, concurrently attempts A→B and B→A demotions, and verifies exactly one succeeds, at least one administrator remains, the loser receives `auth_forbidden`, and only the successful audit event exists.
 
 Coverage includes actor/resource-owner separation, disabled-profile refresh, member recording scope, owner-only private resources, atomic transfer rollback, credential exclusion, and safe audit failures. Local DB validation uses `supabase migration up --local` followed by `supabase db lint --local`.
 
@@ -425,6 +448,25 @@ Run Long Meeting checkpoint and reliability unit tests:
 node --test tests/unit/meetingCheckpointService.test.js
 node --test tests/unit/segmentSwitchOrchestrator.test.js
 ```
+
+Run the focused Auth/rollover isolation regression without a real Supabase or
+Gemini request:
+
+```bash
+node --test tests/unit/authState.test.js tests/unit/accessToken.test.js \
+  tests/unit/livePipelineTrace.test.js tests/unit/segmentSwitchOrchestrator.test.js \
+  tests/unit/rolloverRecoveryCoordinator.test.js tests/unit/liveSessionProviderTransition.test.js
+
+npx playwright test --config tests/e2e/playwright.config.js \
+  tests/e2e/liveTranslate.spec.js \
+  -g "lifecycle v2 rollover survives|keeps Recorder mounted when one-sided cues|real auth sign-out revokes|auth-invalid profile revalidation|newer same-user auth state"
+```
+
+The accelerated rollover case injects same-user `TOKEN_REFRESHED` while the
+rollover request is in flight. It must preserve the mounted recorder, audio
+capture, replacement Gemini session, canonical Cue persistence, and Viewer
+DataChannel publication. Explicit `SIGNED_OUT` and `auth_invalid` cases must
+still stop microphone capture and unmount the protected App.
 
 Current unit coverage:
 
@@ -749,6 +791,36 @@ These tests verify the 30-minute deadline read model, stable `410` expiry
 contract, v1 read compatibility with v2 legacy-column write suppression, and
 best-effort purge metrics. They do not call Gemini or remote Supabase.
 
+## Mobile diagnostic export
+
+Focused deterministic coverage:
+
+```bash
+node --test tests/unit/livePipelineTrace.test.js tests/unit/clientDiagnostics.test.js tests/unit/webrtcSubtitleTransport.test.js tests/unit/viewerLongSessionRecovery.test.js
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/liveTranslate.spec.js -g "diagnostic export|viewer diagnostics"
+```
+
+The unit tests verify ring-buffer bounds, schema/version fields, timestamp/Meeting/generation/negotiation correlation, allowlist filtering, Web Share and Blob download paths, visibility lifecycle events, and sensitive-value exclusion. Playwright verifies that Recorder export does not stop an active session, Paused Recorder and Viewer can still export, export failure remains isolated, and the control fits a 412×915 viewport in Chromium and mobile WebKit. Native iPhone Safari and Android Chrome share-sheet/file-save behavior remains a real-device Preview acceptance item.
+
+## Local raw translation comparison
+
+Use only a local development build, or a diagnostic test build explicitly compiled with `LIVE_TRANSLATE_DIAGNOSTICS=true`. In browser DevTools:
+
+```js
+window.__liveTranslateDebug.enableTranslationComparison()
+window.__liveTranslateDebug.getTranslationComparisons()
+const json = window.__liveTranslateDebug.exportTranslationComparisons()
+copy(json)
+window.__liveTranslateDebug.clearTranslationComparisons()
+window.__liveTranslateDebug.disableTranslationComparison()
+```
+
+Reloading also clears the in-memory records. Use a non-Production meeting, synthetic speech, and an explicitly authorized test Gemini key. Never use Production meetings, Production keys, sensitive recordings, or real confidential subtitles.
+
+The controlled manual matrix must cover: (1) repeated words, `你好你好你好。`; (2) numbers, `車子 123。`; (3) the long sentence `現在正在進行會議測試，請確認每一句翻譯是否完整。`; (4) at least 30 seconds of continuous speech; (5) pause then continue; (6) glossary enabled and disabled; and (7) partial plus late-final revision.
+
+For each event, inspect identity fields, provider raw/normalized/glossary-corrected/canonical text, source and translation versions, final/late-final status, authoritative snapshot application, and revision analysis. Source coverage remains `unverified` unless independent alignment evidence exists; neither the longer nor shorter translation is automatically correct.
+
 ## Spoken turn trace and real-microphone acceptance
 
 Automated coverage must use the mock Gemini adapter. For a local or Vercel
@@ -795,3 +867,19 @@ Mocks, unit tests, Playwright, and DOM inspection cannot mark these real-device
 cases as passing. Each case passes only after the spoken text is confirmed
 through PCM, provider, normalized transcript, Cue state, React render, and the
 visible subtitle.
+# Recording retention and completed Meeting deletion
+
+Current policy (2026-10-07): expiry is an authorization boundary only. Targeted
+tests must verify ordinary-user hiding, Viewer `410 meeting_content_expired`,
+active `super_admin` pending-delete visibility, and explicit canonical deletion.
+Legacy cleanup-worker tests cover dormant compatibility code; no GET or timer
+may invoke that worker.
+
+Run focused tests with `node --test tests/unit/localMeetingRetention.test.js tests/unit/supabaseMeetingCleanupWorker.test.js tests/unit/meetingDeletionService.test.js tests/unit/meetingDeletionHttpApi.test.js tests/unit/meetingReadQueryService.test.js`.
+With local Supabase running and migrations applied, execute
+`psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -v ON_ERROR_STOP=1 -f tests/integration/recording_retention_local.sql`
+and the equivalent `meeting_deletion_local.sql`. Both fixtures roll back;
+they do not call Production, wait 30 minutes, or invoke Gemini. The SQL test
+checks direct RLS/Storage visibility, immutable deadlines, late writes,
+authorization, persisted cleanup throttling, and bounded continuation.
+Browser UI regression: `playwright test tests/e2e/meetingManagementDelete.spec.js --config tests/e2e/playwright.config.js`.

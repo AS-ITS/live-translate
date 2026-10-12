@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMeetingDeletionService } from '../../src/application/meetingDeletionService.js';
 
-function dependencies({ meetingStatus = 'completed', sessionStatuses = ['stopped'] } = {}) {
+function dependencies({ meetingStatus = 'completed', sessionStatuses = ['stopped'], meetingOverrides = {} } = {}) {
   const deletedSessions = [];
   const deletedAudio = [];
   const deletedMeetingAudio = [];
   const deletedShares = [];
-  const meeting = { id: 'meeting-1', status: meetingStatus };
+  const meeting = { id: 'meeting-1', status: meetingStatus, ...meetingOverrides };
   const segments = [
     { id: 'segment-1', status: 'completed', sequence: 0 },
     { id: 'segment-2', status: 'completed', sequence: 1 }
@@ -55,15 +55,46 @@ test('deletes all sessions, audio, segments, and shares for a meeting', async ()
   assert.deepEqual(setup.deletedShares, ['meeting-1']);
 });
 
-test('rejects deletion while a meeting or session is active', async () => {
+test('rejects deletion while a resumable meeting or session is active', async () => {
   await assert.rejects(
     dependencies({ meetingStatus: 'active' }).service.deleteMeeting({ meetingId: 'meeting-1' }),
     (error) => error.code === 'meeting_delete_active_not_allowed'
   );
   await assert.rejects(
-    dependencies({ sessionStatuses: ['active'] }).service.deleteMeeting({ meetingId: 'meeting-1' }),
+    dependencies({ meetingStatus: 'created', sessionStatuses: ['active'] }).service.deleteMeeting({ meetingId: 'meeting-1' }),
     (error) => error.code === 'meeting_delete_active_not_allowed'
   );
+});
+
+test('deletes a completed meeting even when an older session snapshot remains active', async () => {
+  const setup = dependencies({ meetingStatus: 'completed', sessionStatuses: ['active'] });
+  const result = await setup.service.deleteMeeting({ meetingId: 'meeting-1' });
+  assert.equal(result.deletedSessionCount, 1);
+  assert.deepEqual(setup.deletedSessions, ['session-1']);
+});
+
+test('allows only a system administrator to delete an expired meeting', async () => {
+  const expiredMeeting = {
+    retentionPolicyVersion: 2,
+    purgeAt: '2000-01-01T00:00:00.000Z'
+  };
+
+  await assert.rejects(
+    dependencies({ meetingOverrides: expiredMeeting }).service.deleteMeeting({
+      meetingId: 'meeting-1',
+      actorUserId: 'owner-1',
+      actorRole: 'member'
+    }),
+    (error) => error.code === 'auth_forbidden'
+  );
+
+  const setup = dependencies({ meetingOverrides: expiredMeeting });
+  const result = await setup.service.deleteMeeting({
+    meetingId: 'meeting-1',
+    actorUserId: 'admin-1',
+    actorRole: 'super_admin'
+  });
+  assert.equal(result.deletedSessionCount, 1);
 });
 
 test('returns meeting_not_found without attempting cascade deletion', async () => {

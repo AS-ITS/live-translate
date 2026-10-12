@@ -6,6 +6,20 @@ import { createSupabaseContextClient, requireSupabaseContextClient } from './sup
 export function createSupabaseMeetingEventRepository({ env = process.env, fetchImpl = globalThis.fetch, idFactory = randomUUID, clock = () => Date.now() } = {}) {
   const clientForContext = createSupabaseContextClient({ env, fetchImpl });
   const client = { request: (...args) => requireSupabaseContextClient(clientForContext).request(...args) };
+  const segmentOrders = new Map();
+
+  async function segmentOrder(userId, meetingId, segmentId) {
+    if (!segmentId) return null;
+    const key = `${userId}:${meetingId}:${segmentId}`;
+    if (segmentOrders.has(key)) return segmentOrders.get(key);
+    const rows = await client.request('meeting_segments', {
+      query: `?select=sequence&${eq('id', segmentId)}&${eq('meeting_id', meetingId)}&${eq('owner_user_id', userId)}&limit=1`
+    });
+    const sequence = Number(rows[0]?.sequence);
+    if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error('Meeting Segment order is unavailable.');
+    segmentOrders.set(key, sequence);
+    return sequence;
+  }
 
   function owner(explicitOwner) {
     const userId = explicitOwner || currentRequestOwnerId();
@@ -22,7 +36,8 @@ export function createSupabaseMeetingEventRepository({ env = process.env, fetchI
     async append({ meetingId, segmentId = null, cue, occurredAt = clock(), ownerUserId } = {}) {
       if (!meetingId || !cue?.cueId) throw new TypeError('meetingId and cue.cueId are required.');
       const userId = owner(ownerUserId);
-      const payload = sanitizeCuePayload(cue);
+      const sequence = await segmentOrder(userId, meetingId, segmentId || cue.segmentId);
+      const payload = sanitizeCuePayload({ ...cue, ...(sequence ? { segmentSequence: sequence } : {}) });
       const eventKey = `${cue.cueId}:${Number(cue.translationVersion) || 0}:${Number(cue.sourceVersion) || 0}`;
       const rows = await client.request('meeting_events', {
         method: 'POST',
@@ -57,5 +72,5 @@ function eventFromRow(row) {
 }
 
 function sanitizeCuePayload(cue) {
-  return Object.fromEntries(Object.entries({ cueId: cue.cueId, sessionId: cue.sessionId, segmentId: cue.segmentId, sequence: cue.sequence, status: 'final', sourceText: cue.sourceText || '', translatedText: cue.translatedText || '', sourceStatus: cue.sourceStatus || (cue.sourceText ? 'finalized' : 'pending'), translationStatus: cue.translationStatus || (cue.translatedText ? 'finalized' : 'pending'), sourceVersion: Number.isInteger(cue.sourceVersion) ? cue.sourceVersion : (cue.sourceText ? 1 : 0), translationVersion: Number.isInteger(cue.translationVersion) ? cue.translationVersion : (cue.translatedText ? 1 : 0), startTimeMs: cue.startTimeMs, endTimeMs: cue.endTimeMs, sourceLanguageCode: cue.sourceLanguageCode, targetLanguageCode: cue.targetLanguageCode }).filter(([, value]) => value !== undefined));
+  return Object.fromEntries(Object.entries({ cueId: cue.cueId, sessionId: cue.sessionId, segmentId: cue.segmentId, segmentSequence: cue.segmentSequence, sequence: cue.sequence, status: 'final', sourceText: cue.sourceText || '', translatedText: cue.translatedText || '', sourceStatus: cue.sourceStatus || (cue.sourceText ? 'finalized' : 'pending'), translationStatus: cue.translationStatus || (cue.translatedText ? 'finalized' : 'pending'), sourceVersion: Number.isInteger(cue.sourceVersion) ? cue.sourceVersion : (cue.sourceText ? 1 : 0), translationVersion: Number.isInteger(cue.translationVersion) ? cue.translationVersion : (cue.translatedText ? 1 : 0), startTimeMs: cue.startTimeMs, endTimeMs: cue.endTimeMs, sourceLanguageCode: cue.sourceLanguageCode, targetLanguageCode: cue.targetLanguageCode }).filter(([, value]) => value !== undefined));
 }

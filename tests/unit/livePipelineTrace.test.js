@@ -47,13 +47,88 @@ test('development pipeline trace records bounded structured turn entries', () =>
   assert.deepEqual(trace.get(), []);
 });
 
-test('trace bounds text fields and isolates logger failures', () => {
+test('trace records text lengths without retaining transcript content and isolates logger failures', () => {
   const trace = createLivePipelineTrace({ enabled: true, logger: () => { throw new Error('sink down'); } });
   const entry = trace.record({ stage: 'TRANSCRIPT_NORMALIZED', sourceText: 'x'.repeat(2000), translationText: 'y'.repeat(2000), reason: 'z'.repeat(2000) });
-  assert.match(entry.sourceText, /\.\.\.\[truncated\]$/u);
-  assert.match(entry.translationText, /\.\.\.\[truncated\]$/u);
+  assert.equal(entry.sourceTextLength, 2000);
+  assert.equal(entry.translationTextLength, 2000);
+  assert.equal(Object.hasOwn(entry, 'sourceText'), false);
+  assert.equal(Object.hasOwn(entry, 'translationText'), false);
   assert.match(entry.reason, /\.\.\.\[truncated\]$/u);
   assert.doesNotThrow(() => trace.record({ stage: 'CUE_UPDATED', cueId: 'cue-1' }));
+});
+
+test('trace derives meeting and provider session elapsed time without changing event ordering', () => {
+  let nowMs = 4_663_000;
+  const trace = createLivePipelineTrace({
+    enabled: true,
+    nowMs: () => nowMs,
+    getElapsedContext: () => ({ meetingStartedAtMs: 0, sessionStartedAtMs: 4_080_000 }),
+    logger: () => {}
+  });
+
+  trace.record({ stage: 'SESSION_ROLLOVER_START' });
+  nowMs += 2_000;
+  trace.record({ stage: 'CHECKPOINT_FAILED' });
+
+  assert.deepEqual(trace.get().map(({ stage, traceSequence, meetingElapsedMs, sessionElapsedMs }) => ({
+    stage,
+    traceSequence,
+    meetingElapsedMs,
+    sessionElapsedMs
+  })), [
+    { stage: 'SESSION_ROLLOVER_START', traceSequence: 1, meetingElapsedMs: 4_663_000, sessionElapsedMs: 583_000 },
+    { stage: 'CHECKPOINT_FAILED', traceSequence: 2, meetingElapsedMs: 4_665_000, sessionElapsedMs: 585_000 }
+  ]);
+});
+
+test('persistence and Viewer transport traces preserve causal state fields', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  trace.record({
+    stage: 'CLOUD_CUE_SAVE_FAILED',
+    meetingId: 'meeting-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    cueId: 'cue-58',
+    operationId: 'operation-58',
+    recorderEpoch: 7,
+    providerEpoch: 8,
+    transportGeneration: 9,
+    reconnectAttempt: 2,
+    reconnectReason: 'ice_disconnected',
+    lastReceivedCueSequence: 58,
+    cueDeliverySource: 'replay',
+    connectionState: 'connected',
+    iceConnectionState: 'connected',
+    dataChannelState: 'open',
+    realtimeState: 'connected',
+    persistenceState: 'retrying',
+    httpStatus: 503,
+    errorCode: 'cloud_capability_unavailable'
+  });
+
+  assert.deepEqual(trace.get()[0], {
+    ...trace.get()[0],
+    meetingId: 'meeting-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    cueId: 'cue-58',
+    operationId: 'operation-58',
+    recorderEpoch: 7,
+    providerEpoch: 8,
+    transportGeneration: 9,
+    reconnectAttempt: 2,
+    reconnectReason: 'ice_disconnected',
+    lastReceivedCueSequence: 58,
+    cueDeliverySource: 'replay',
+    connectionState: 'connected',
+    iceConnectionState: 'connected',
+    dataChannelState: 'open',
+    realtimeState: 'connected',
+    persistenceState: 'retrying',
+    httpStatus: 503,
+    errorCode: 'cloud_capability_unavailable'
+  });
 });
 
 test('production-disabled pipeline trace retains and logs nothing', () => {
@@ -76,6 +151,37 @@ test('runtime opt-in enables trace independently of build mode and disabling dis
   assert.deepEqual(trace.get(), []);
 });
 
+test('auth and rollover lifecycle traces keep explicit non-secret identities', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  trace.record({
+    stage: 'AUTH_STATE_CHANGED',
+    meetingId: 'meeting-1',
+    recordingId: 'recording-1',
+    recorderSessionId: 'recorder-session-1',
+    geminiSessionId: 'gemini-session-2',
+    segmentId: 'segment-2',
+    rolloverGeneration: 3,
+    authEvent: 'TOKEN_REFRESHED',
+    recordingState: 'switching-segment',
+    httpStatus: 200,
+    errorCode: null,
+    reason: 'same-user',
+    accessToken: 'must-not-be-recorded'
+  });
+
+  const [entry] = trace.get();
+  assert.equal(entry.meetingId, 'meeting-1');
+  assert.equal(entry.recordingId, 'recording-1');
+  assert.equal(entry.recorderSessionId, 'recorder-session-1');
+  assert.equal(entry.geminiSessionId, 'gemini-session-2');
+  assert.equal(entry.segmentId, 'segment-2');
+  assert.equal(entry.rolloverGeneration, 3);
+  assert.equal(entry.authEvent, 'TOKEN_REFRESHED');
+  assert.equal(entry.recordingState, 'switching-segment');
+  assert.equal(entry.reason, 'same-user');
+  assert.equal(Object.hasOwn(entry, 'accessToken'), false);
+});
+
 test('trace allowlist excludes secrets and PCM audio content', () => {
   const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
   trace.record({
@@ -95,6 +201,48 @@ test('trace allowlist excludes secrets and PCM audio content', () => {
   assert.equal(serialized.includes('Bearer secret'), false);
   assert.equal(serialized.includes('password'), false);
   assert.equal(serialized.includes('pcmAudioContent'), false);
+});
+
+test('PCM trace allowlist preserves numeric continuity fields without payloads or credentials', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  trace.record({
+    stage: 'PCM_CAPTURED',
+    pcmSequence: 7,
+    pcmBytes: 320,
+    pcmSampleCount: 160,
+    pcmDurationMs: 10,
+    pcmCaptureTimestampMs: 1234.5,
+    payload: 'audio-payload',
+    base64: 'encoded-audio',
+    token: 'secret-token'
+  });
+  trace.record({
+    stage: 'PCM_SENT',
+    pcmSequence: 7,
+    pcmBytes: 320,
+    pcmSampleCount: 160,
+    pcmDurationMs: 10,
+    pcmCaptureTimestampMs: 1234.5,
+    transportResult: 'sync-return',
+    payload: { audio: { data: 'encoded-audio' } },
+    Authorization: 'Bearer secret-token'
+  });
+
+  const entries = trace.get();
+  assert.deepEqual(entries.map((entry) => ({
+    stage: entry.stage,
+    pcmSampleCount: entry.pcmSampleCount,
+    pcmDurationMs: entry.pcmDurationMs,
+    pcmCaptureTimestampMs: entry.pcmCaptureTimestampMs
+  })), [
+    { stage: 'PCM_CAPTURED', pcmSampleCount: 160, pcmDurationMs: 10, pcmCaptureTimestampMs: 1234.5 },
+    { stage: 'PCM_SENT', pcmSampleCount: 160, pcmDurationMs: 10, pcmCaptureTimestampMs: 1234.5 }
+  ]);
+  const serialized = JSON.stringify(entries);
+  assert.equal(serialized.includes('audio-payload'), false);
+  assert.equal(serialized.includes('encoded-audio'), false);
+  assert.equal(serialized.includes('secret-token'), false);
+  assert.equal(serialized.includes('Authorization'), false);
 });
 
 test('full debug trace API is exposed only while runtime trace is enabled', () => {
@@ -132,7 +280,7 @@ test('trace does not infer logical-turn identity from Cue identity', () => {
   assert.equal(entry.audioTurnId, null);
 });
 
-test('trace export preserves bounded sequence and before/after transcript evidence', () => {
+test('trace export preserves bounded sequence and before/after transcript lengths', () => {
   const trace = createLivePipelineTrace({ enabled: true, limit: 2, logger: () => {} });
   trace.record({ stage: 'TRANSCRIPT_NORMALIZED', eventSequence: 7, sourceText: '這一句' });
   trace.record({
@@ -147,15 +295,48 @@ test('trace export preserves bounded sequence and before/after transcript eviden
 
   const entries = trace.get();
   assert.deepEqual(entries.map((entry) => entry.traceSequence), [2, 3]);
-  assert.equal(entries[0].beforeSourceText, '這一句');
-  assert.equal(entries[0].afterSourceText, '這一句不能消失。');
-  assert.equal(entries[0].beforeTranslationText, 'this sentence');
-  assert.equal(entries[0].afterTranslationText, 'this sentence cannot disappear');
+  assert.equal(entries[0].beforeSourceTextLength, '這一句'.length);
+  assert.equal(entries[0].afterSourceTextLength, '這一句不能消失。'.length);
+  assert.equal(entries[0].beforeTranslationTextLength, 'this sentence'.length);
+  assert.equal(entries[0].afterTranslationTextLength, 'this sentence cannot disappear'.length);
 
   const exported = JSON.parse(trace.exportJson());
+  assert.equal(exported.schemaVersion, 'live-pipeline-trace/v1');
+  assert.equal(exported.capacity, 2);
+  assert.equal(exported.droppedCount, 1);
   assert.equal(exported.entryCount, 2);
   assert.deepEqual(exported.entries, entries);
   assert.equal(JSON.stringify(exported).includes('undefined'), false);
+  assert.equal(JSON.stringify(exported).includes('this sentence'), false);
+});
+
+test('trace export includes correlation fields and redacts sensitive free-form values', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  trace.record({
+    stage: 'WEBRTC_SIGNALING',
+    role: 'viewer',
+    eventType: 'offer.received',
+    meetingId: 'meeting-1',
+    connectionEpoch: 4,
+    negotiationId: 'negotiation-1',
+    reason: 'Bearer secret-token from 192.168.1.20',
+    shareToken: 'share-token-must-not-appear',
+    shareCode: 'share-code-must-not-appear',
+    turnCredential: 'turn-password-must-not-appear',
+    sdp: 'v=0 secret-sdp',
+    candidate: 'candidate:1 1 UDP 2122260223 192.168.1.20 5000 typ host'
+  });
+
+  const exported = JSON.parse(trace.exportJson());
+  const [entry] = exported.entries;
+  assert.equal(entry.role, 'viewer');
+  assert.equal(entry.event, 'WEBRTC_SIGNALING.offer.received');
+  assert.equal(entry.meetingId, 'meeting-1');
+  assert.equal(entry.generation, 4);
+  assert.equal(entry.negotiationId, 'negotiation-1');
+  assert.match(entry.reason, /\[redacted\]/u);
+  const serialized = JSON.stringify(exported);
+  assert.doesNotMatch(serialized, /secret-token|192\.168\.1\.20|share-token-must-not-appear|share-code-must-not-appear|turn-password-must-not-appear|secret-sdp|candidate:1/u);
 });
 
 test('trace preserves bounded local terminal replay provenance', () => {

@@ -68,6 +68,217 @@ test('live-token authorizes against the authoritative session record', async () 
   assert.equal(readModelCalls, 0);
 });
 
+test('lifecycle v2 live-token binds the validated authoritative Resume Segment', async () => {
+  const validations = [];
+  let tokenOptions;
+  const handler = createRequestHandler({
+    accessControl: { validateRequest: async () => ({ id: 'recorder-1', role: 'member', status: 'active' }) },
+    profileService: { async getProfile() { return { role: 'member', status: 'active' }; } },
+    meetingMembershipService: {
+      async canRecord() { return true; },
+      async getMeetingOwner() { return 'owner-1'; }
+    },
+    meetingRepository: {
+      async getMeeting() {
+        return { id: 'meeting-1', lifecycleContractVersion: 2, lifecycleVersion: 8 };
+      },
+      async listMeetingSegments() {
+        return [{
+          id: 'segment-resumed',
+          status: 'active',
+          settingsSnapshot: {
+            glossaryEntries: [],
+            privateGlossaryEntries: [{ source: '你好', target: 'B', replacementAliases: [] }]
+          }
+        }];
+      }
+    },
+    meetingLifecycleService: {
+      async validateWrite(input) {
+        validations.push(input);
+        return { valid: true };
+      }
+    },
+    sessionRepository: {
+      async getSessionRecord() {
+        return {
+          sessionRecord: {
+            id: 'session-1',
+            meetingId: 'meeting-1',
+            segmentId: 'segment-before-resume',
+            targetLanguageCode: 'en',
+            sourceLanguageCode: 'zh-Hant'
+          },
+          transcriptItems: []
+        };
+      }
+    },
+    liveTokenCreator: async (_body, options) => {
+      tokenOptions = options;
+      return {
+        token: 'ephemeral-token',
+        expiresAt: '2026-09-24T10:00:00.000Z',
+        liveGlossaryEntries: [{ source: '你好', target: 'B', replacementAliases: [] }],
+        effectiveGlossaryRevision: 'revision-b',
+        glossaryEntryCount: 1,
+        authoritativeSegment: options.authoritativeBinding
+      };
+    }
+  });
+  const req = liveTokenRequest({
+    body: {
+      meetingId: 'meeting-1',
+      sessionId: 'session-1',
+      segmentId: 'segment-resumed',
+      geminiApiKey: 'request-only-secret',
+      targetLanguageCode: 'en',
+      sourceLanguageCode: 'zh-Hant'
+    },
+    headers: {
+      'x-meeting-session-id': 'session-1',
+      'x-meeting-segment-id': 'segment-resumed',
+      'x-meeting-lease-id': 'lease-1',
+      'x-meeting-fence-token': '3',
+      'x-meeting-lifecycle-version': '8'
+    }
+  });
+  const res = responseRecorder();
+
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(validations, [{
+    meetingId: 'meeting-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-resumed',
+    leaseId: 'lease-1',
+    fenceToken: 3
+  }]);
+  assert.equal(tokenOptions.authoritativeSegment.id, 'segment-resumed');
+  assert.deepEqual(JSON.parse(res.body).authoritativeSegment, {
+    meetingId: 'meeting-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-resumed',
+    lifecycleVersion: 8
+  });
+});
+
+test('lifecycle v2 live-token rejects stale Segment identity before token creation', async () => {
+  let tokenCreates = 0;
+  const handler = createRequestHandler({
+    accessControl: { validateRequest: async () => ({ id: 'recorder-1', role: 'member', status: 'active' }) },
+    profileService: { async getProfile() { return { role: 'member', status: 'active' }; } },
+    meetingMembershipService: {
+      async canRecord() { return true; },
+      async getMeetingOwner() { return 'owner-1'; }
+    },
+    meetingRepository: {
+      async getMeeting() { return { id: 'meeting-1', lifecycleContractVersion: 2, lifecycleVersion: 8 }; }
+    },
+    meetingLifecycleService: { async validateWrite() { throw new Error('must not validate stale identity'); } },
+    sessionRepository: {
+      async getSessionRecord() {
+        return { sessionRecord: { id: 'session-1', meetingId: 'meeting-1', targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant' } };
+      }
+    },
+    liveTokenCreator: async () => { tokenCreates += 1; return { token: 'unexpected' }; }
+  });
+  const req = liveTokenRequest({
+    body: {
+      meetingId: 'meeting-1', sessionId: 'session-1', segmentId: 'segment-stale',
+      geminiApiKey: 'request-only-secret', targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant'
+    },
+    headers: {
+      'x-meeting-session-id': 'session-1',
+      'x-meeting-segment-id': 'segment-authoritative',
+      'x-meeting-lease-id': 'lease-1',
+      'x-meeting-fence-token': '3',
+      'x-meeting-lifecycle-version': '8'
+    }
+  });
+  const res = responseRecorder();
+
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 403);
+  assert.equal(JSON.parse(res.body).error.code, 'recorder_session_mismatch');
+  assert.equal(tokenCreates, 0);
+});
+
+test('lifecycle v2 live-token rejects recorder capability before token creation', async () => {
+  let tokenCreates = 0;
+  const capabilityError = Object.assign(new Error('Recorder capability is no longer valid.'), {
+    statusCode: 409,
+    code: 'recorder_lease_invalid'
+  });
+  const handler = createRequestHandler({
+    accessControl: { validateRequest: async () => ({ id: 'recorder-1', role: 'member', status: 'active' }) },
+    profileService: { async getProfile() { return { role: 'member', status: 'active' }; } },
+    meetingMembershipService: {
+      async canRecord() { return true; },
+      async getMeetingOwner() { return 'owner-1'; }
+    },
+    meetingRepository: {
+      async getMeeting() {
+        return { id: 'meeting-1', lifecycleContractVersion: 2, lifecycleVersion: 8 };
+      },
+      async listMeetingSegments() {
+        return [{
+          id: 'segment-resumed', sessionId: 'session-1', status: 'active', sequence: 2,
+          settingsSnapshot: { privateGlossaryEntries: [] }
+        }];
+      }
+    },
+    sessionRepository: {
+      async getSessionRecord() {
+        return {
+          sessionRecord: {
+            id: 'session-1', meetingId: 'meeting-1', segmentId: 'segment-resumed',
+            targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant'
+          },
+          transcriptItems: []
+        };
+      }
+    },
+    meetingLifecycleService: {
+      async validateWrite() { throw capabilityError; }
+    },
+    liveTokenCreator: async () => {
+      tokenCreates += 1;
+      return { token: 'must-not-be-created' };
+    }
+  });
+  const req = liveTokenRequest({
+    body: {
+      meetingId: 'meeting-1', sessionId: 'session-1', segmentId: 'segment-resumed',
+      geminiApiKey: 'request-only-secret', targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant'
+    },
+    headers: {
+      'x-meeting-session-id': 'session-1',
+      'x-meeting-segment-id': 'segment-resumed',
+      'x-meeting-lease-id': 'expired-lease',
+      'x-meeting-fence-token': '2',
+      'x-meeting-lifecycle-version': '8'
+    }
+  });
+  const res = responseRecorder();
+
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 409);
+  assert.equal(JSON.parse(res.body).error.code, 'recorder_lease_invalid');
+  assert.equal(tokenCreates, 0);
+});
+
+function liveTokenRequest({ body, headers = {} }) {
+  const req = Readable.from([JSON.stringify(body)]);
+  req.method = 'POST';
+  req.url = '/api/live-token';
+  req.headers = { authorization: 'Bearer signed-token', ...headers };
+  req.socket = { remoteAddress: '127.0.0.1' };
+  return req;
+}
+
 function responseRecorder() {
   return {
     statusCode: 0,

@@ -3,21 +3,40 @@ import { authenticatedFetch } from '../lib/accessToken.js';
 import { mergeMeetingCues } from '../lib/meetingViewerState.js';
 import { createWebRtcSubtitleTransport } from './subtitleTransport.js';
 
-export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = 'idle', cues = [] } = {}) {
+export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = 'idle', cues = [], segmentId = null, segmentSequence = null, segments = [] } = {}) {
   const [connection, setConnection] = useState({ value: 'idle' });
   const [retryVersion, setRetryVersion] = useState(0);
   const transportRef = useRef(null);
-  const cueHistoryRef = useRef({ meetingId: null, cues: [] });
+  const cueHistoryRef = useRef({ meetingId: null, cues: [], segmentOrders: new Map() });
   const cuesRef = useRef(cues);
+  const segmentMetaRef = useRef({ segmentId, segmentSequence, segments });
   const lifecycleStatusRef = useRef(lifecycleStatus);
   cuesRef.current = cues;
+  segmentMetaRef.current = { segmentId, segmentSequence, segments };
   lifecycleStatusRef.current = lifecycleStatus;
 
-  useEffect(() => {
+  function rememberCues(nextCues, meta) {
     if (cueHistoryRef.current.meetingId !== meetingId) {
-      cueHistoryRef.current = { meetingId, cues: [] };
+      cueHistoryRef.current = { meetingId, cues: [], segmentOrders: new Map() };
     }
-    cueHistoryRef.current.cues = mergeMeetingCues(cueHistoryRef.current.cues, cuesRef.current);
+    const history = cueHistoryRef.current;
+    for (const segment of meta.segments || []) {
+      if (segment?.id && Number.isSafeInteger(segment.sequence) && segment.sequence > 0) {
+        history.segmentOrders.set(segment.id, segment.sequence);
+      }
+    }
+    if (meta.segmentId && Number.isSafeInteger(meta.segmentSequence) && meta.segmentSequence > 0) {
+      history.segmentOrders.set(meta.segmentId, meta.segmentSequence);
+    }
+    const ordered = (items) => items.map((cue) => {
+      const order = cue?.segmentSequence || history.segmentOrders.get(cue?.segmentId);
+      return order ? { ...cue, segmentSequence: order } : cue;
+    });
+    history.cues = mergeMeetingCues(ordered(history.cues), ordered(nextCues));
+  }
+
+  useEffect(() => {
+    rememberCues(cuesRef.current, segmentMetaRef.current);
     if (!enabled || !meetingId || typeof RTCPeerConnection !== 'function') {
       setConnection({ value: 'idle' });
       return undefined;
@@ -33,25 +52,25 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
     });
     transportRef.current = transport;
     const getStats = () => transport.getStats();
+    const publishTestCue = (cue) => transport.publishCue(cue);
     globalThis.__liveTranslateWebRtcGetStats = getStats;
+    if (import.meta.env.DEV) globalThis.__liveTranslateWebRtcPublishTestCue = publishTestCue;
     transport.start();
     return () => {
       disposed = true;
       if (globalThis.__liveTranslateWebRtcGetStats === getStats) delete globalThis.__liveTranslateWebRtcGetStats;
+      if (globalThis.__liveTranslateWebRtcPublishTestCue === publishTestCue) delete globalThis.__liveTranslateWebRtcPublishTestCue;
       if (transportRef.current === transport) transportRef.current = null;
       void transport.stop({ revoke: lifecycleStatusRef.current === 'stopped' });
     };
   }, [enabled, meetingId, retryVersion]);
 
   useEffect(() => {
-    if (cueHistoryRef.current.meetingId !== meetingId) {
-      cueHistoryRef.current = { meetingId, cues: [] };
-    }
-    cueHistoryRef.current.cues = mergeMeetingCues(cueHistoryRef.current.cues, cues);
+    rememberCues(cues, segmentMetaRef.current);
     const transport = transportRef.current;
     if (!transport) return;
     cueHistoryRef.current.cues.forEach((cue) => transport.publishCue(cue));
-  }, [cues, meetingId]);
+  }, [cues, meetingId, segmentId, segmentSequence, segments]);
 
   return Object.freeze({
     ...connection,
@@ -65,9 +84,12 @@ export function webRtcConnectionLabel(value, { device = false } = {}) {
     connecting: '連線中',
     waiting: '等待錄音開始',
     connected: '已連線',
-    reconnecting: '重新連線中',
+    reconnecting: '正在重新連線',
+    restored: '已恢復連線',
     invalid: '分享已失效',
     stopped: '會議已停止',
+    disconnected: '已中斷連線',
+    recovery_failed: '即時字幕連線異常',
     failed: '無法連線',
   };
   return labels[value] || labels.failed;

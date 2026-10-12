@@ -11,11 +11,19 @@ import {
 import { missingNumericIntegrity } from '../../lib/numericIntegrity.js';
 import { enqueueLiveCueEvent } from '../../lib/liveCueEventQueue.js';
 import { applyGlossaryCorrectionsToCueState } from '../../lib/glossaryReplacement.js';
-import { recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
+import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
+import { effectiveTranslationForCue } from '../../lib/cueContent.js';
+import { translationComparisonDiagnostics } from '../../lib/translationComparisonDiagnostics.js';
 import { createSessionSnapshotSyncCoordinator } from '../../lib/sessionSnapshotSyncCoordinator.js';
 import { checkpointChunksForTranscriptItems, createMeetingCheckpointSyncCoordinator } from '../../lib/meetingCheckpointSyncCoordinator.js';
 import { createReconnectController } from '../../lib/reconnectController.js';
 import { createSegmentSwitchOrchestrator } from '../../lib/segmentSwitchOrchestrator.js';
+import { createRolloverRecoveryCoordinator } from '../../lib/rolloverRecoveryCoordinator.js';
+import {
+  completeDurableLegacyContinue,
+  establishDurableLegacyContinue,
+  isRecoverableLegacyContinueError
+} from '../../lib/durableLegacyContinue.js';
 import { selectedMeetingGlossaryEntries } from '../../lib/meetingGlossary.js';
 import { appendNewFinalTranscriptItems, buildSessionRecordInput, createActiveSessionRecord } from '../../lib/sessionRecordLifecycle.js';
 import { clearMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
@@ -24,6 +32,7 @@ import { createRecoverySingleFlight } from '../../lib/recoverySingleFlight.js';
 import { createSegmentTransitionLock } from '../../lib/segmentTransitionLock.js';
 import { stopSessionSafely } from '../../lib/stopSessionSafely.js';
 import { clearMeetingLifecycleWriteFence, setMeetingLifecycleWriteFence } from '../../lib/meetingLifecycleWriteFence.js';
+import { isMissingSelectedInputError, requestAudioInputStream } from '../../lib/mediaDevices.js';
 
 const INPUT_AUDIO_RECORDING_SKIPPED_STATE = {
   status: 'skipped',
@@ -43,6 +52,55 @@ const TRANSLATED_AUDIO_IDLE_STATE = {
 
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
 const SESSION_SNAPSHOT_SYNC_FINAL_ITEM_BATCH_SIZE = 20;
+
+export async function warmUpMicrophoneInput({
+  inputDeviceId = '',
+  requestStream = requestAudioInputStream,
+  onInputDeviceFallback = () => {}
+} = {}) {
+  try {
+    return await requestStream(inputDeviceId);
+  } catch (error) {
+    if (!inputDeviceId || !isMissingSelectedInputError(error)) throw error;
+    onInputDeviceFallback();
+    return requestStream('');
+  }
+}
+
+function stopMicrophoneStream(stream) {
+  for (const track of stream?.getTracks?.() || []) track.stop?.();
+}
+
+export function activateRecoveredMeetingSegment({
+  meetingId,
+  recoveryResult,
+  activeMeetingCheckpointRef,
+  startCheckpointSync
+} = {}) {
+  const segmentId = recoveryResult?.segment?.id;
+  if (!meetingId || !segmentId || !activeMeetingCheckpointRef || typeof startCheckpointSync !== 'function') {
+    throw new TypeError('Recovered meeting segment activation requires meetingId, segment, ref, and sync callback.');
+  }
+  const checkpoint = { meetingId, segmentId,
+    ...(Number.isSafeInteger(recoveryResult.segment.sequence) ? { segmentSequence: recoveryResult.segment.sequence } : {}) };
+  activeMeetingCheckpointRef.current = checkpoint;
+  startCheckpointSync(checkpoint);
+  return checkpoint;
+}
+
+export function meetingRequestErrorMessage(error, fallback = '會議操作失敗。') {
+  if (!error?.operation) return error?.message || fallback;
+  const operation = error.operation === 'recover-segment' ? 'recover'
+    : error.operation === 'update-checkpoint' || error.operation === 'get-checkpoint' ? 'checkpoint'
+      : error.operation;
+  const status = error.status ? ` HTTP ${error.status}` : '';
+  const code = error.code ? `（${error.code}）` : '';
+  const requestId = error.requestId ? `；requestId：${error.requestId}` : '';
+  const action = error.status === 409
+    ? '會議狀態有衝突，已停止自動重試；請從會議管理重新進入此會議，仍失敗時提供 requestId。'
+    : '本機錄音資料未清除；請確認網路後再按「繼續錄製」。';
+  return `${operation}${status}${code} 失敗${requestId}。${action}`;
+}
 const MEETING_CHECKPOINT_SYNC_DELAY_MS = 5000;
 
 /**
@@ -85,6 +143,12 @@ export function sessionSnapshotPayloadForRecording({ session, transcriptItems = 
     session,
     transcriptItems: lifecycleContractVersion === 2 ? [] : transcriptItems
   };
+}
+
+export function recordingLifecycleContractVersion({ lifecycle, sessionRecord, meeting } = {}) {
+  return [lifecycle, sessionRecord, meeting].some((value) => (
+    Number(value?.lifecycleContractVersion ?? value?.lifecycle_contract_version) === 2
+  )) ? 2 : 1;
 }
 
 export async function completeMeetingAfterRecordingFinalize({
@@ -172,7 +236,22 @@ export function useLiveRecordingController({
   const audioUploadControllerRef = useRef(null);
   const recoverySingleFlightRef = useRef(null);
   const segmentTransitionLockRef = useRef(null);
+  const resumeInFlightRef = useRef(false);
+  const continueInFlightRef = useRef(false);
   const meetingLifecycleRef = useRef(null);
+  const meetingTimingRef = useRef({ meetingId: null, startedAt: null });
+  if (meetingTimingRef.current.meetingId !== routeMeetingId) {
+    meetingTimingRef.current = {
+      meetingId: routeMeetingId,
+      startedAt: selectedMeetingDetail?.meeting?.startedAt
+        ?? meetingRecords.find((meeting) => meeting.id === routeMeetingId)?.startedAt
+        ?? null
+    };
+  } else if (!meetingTimingRef.current.startedAt) {
+    meetingTimingRef.current.startedAt = selectedMeetingDetail?.meeting?.startedAt
+      ?? meetingRecords.find((meeting) => meeting.id === routeMeetingId)?.startedAt
+      ?? null;
+  }
   const audioUpload = useMemo(() => {
     if (!audioUploadControllerRef.current && audio.upload) {
       audioUploadControllerRef.current = createLiveAudioBindings(audio.upload);
@@ -207,7 +286,7 @@ export function useLiveRecordingController({
       }
       await audio.getLocalMeetingPersistence?.().start({
         meetingId: meetingCheckpoint.meetingId,
-        recordingId: record?.id,
+        recordingId: record?.recordingId,
         segmentId: meetingCheckpoint.segmentId
       });
       const nextState = await this.recordingController().start({
@@ -330,12 +409,14 @@ export function useLiveRecordingController({
       }
       const current = cue.stateRef.current;
       const wasProcessed = Boolean(event?.eventId && current.processedEventIds?.includes(event.eventId));
+      let dropReason = null;
       let next = applySubtitleCueEvent(current, event, {
         targetLanguageCode,
         sourceLanguageCode,
         sessionId: cue.getSessionId?.(),
         segmentId: cue.getSegmentId?.() || null,
-        sessionClock: () => cue.getSessionTime?.() ?? 0
+        sessionClock: () => cue.getSessionTime?.() ?? 0,
+        onDrop: ({ reason }) => { dropReason = reason; }
       });
       if (event?.localFinalize) {
         next = finalizePendingSubtitleCue(next, {
@@ -345,7 +426,11 @@ export function useLiveRecordingController({
           sourceLanguageCode
         });
       }
-      next = applyGlossaryCorrectionsToCueState(next, cue.getLiveGlossaryEntries?.() || []);
+      next = applyGlossaryCorrectionsToCueState(
+        next,
+        cue.getLiveGlossaryEntries?.() || [],
+        { entriesForCue: cue.getGlossaryEntriesForCue }
+      );
       if (import.meta.env?.DEV) {
         const previousFinalIds = new Set((current.finalCues || []).map((item) => item.cueId));
         const nextFinalIds = new Set((next.finalCues || []).map((item) => item.cueId));
@@ -381,7 +466,9 @@ export function useLiveRecordingController({
           finalCueSequences: (next.finalCues || []).map((item) => item.sequence)
         }));
       }
-      const transition = describeCueTransition(current, next, event, { wasProcessed });
+      const transition = dropReason
+        ? { cueAction: 'drop', dropReason }
+        : describeCueTransition(current, next, event, { wasProcessed });
       recordCueTrace({ cue, event, previous: current, next, ...transition });
       if (next === current) return;
       cue.stateRef.current = next;
@@ -487,7 +574,14 @@ export function useLiveRecordingController({
       checkpoint.pendingSnapshotIdsRef.current.set(sessionId, pendingIds);
     },
     isLifecycleV2Session(sessionId) {
-      return meetingLifecycleRef.current?.sessionId === sessionId;
+    const sessionRecord = checkpoint.sessionRepositoryRef.current
+      .getSessionRecord(sessionId)?.sessionRecord;
+    return recordingLifecycleContractVersion({
+      lifecycle: meetingLifecycleRef.current?.sessionId === sessionId
+        ? { lifecycleContractVersion: 2 }
+        : null,
+      sessionRecord
+    }) === 2;
     },
     sessionSnapshotSyncCoordinator() {
       if (!sessionSnapshotControllerRef.current) {
@@ -515,12 +609,62 @@ export function useLiveRecordingController({
     meetingCheckpointSyncCoordinator() {
       if (!checkpointControllerRef.current) {
         checkpointControllerRef.current = createMeetingCheckpointSyncCoordinator({
-          updateCheckpoint: (payload) => checkpoint.getLocalMeetingPersistence().updateCheckpoint(payload),
+          updateCheckpoint: async (payload) => {
+            const cloudOperationId = `checkpoint:${payload.meetingId}:${payload.segmentId}:${payload.idempotencyKey}`;
+            checkpoint.cloudSaveCoordinator?.begin({ id: cloudOperationId, kind: 'checkpoint' });
+            recordLivePipelineTrace({
+              stage: 'CHECKPOINT_SAVE_STARTED',
+              meetingId: payload.meetingId,
+              segmentId: payload.segmentId,
+              operationId: payload.idempotencyKey,
+              persistenceState: 'saving'
+            });
+            recordLivePipelineTrace({
+              stage: 'CHECKPOINT_REQUEST',
+              meetingId: payload.meetingId,
+              segmentId: payload.segmentId,
+              operationId: payload.idempotencyKey,
+              persistenceState: 'saving'
+            });
+            try {
+              const result = await checkpoint.getLocalMeetingPersistence().updateCheckpoint(payload);
+              checkpoint.cloudSaveCoordinator?.succeed(cloudOperationId);
+              return result;
+            } catch (error) {
+              checkpoint.cloudSaveCoordinator?.fail(cloudOperationId, error);
+              recordLivePipelineTrace({
+                stage: 'CHECKPOINT_SAVE_FAILED',
+                meetingId: payload.meetingId,
+                segmentId: payload.segmentId,
+                operationId: payload.idempotencyKey,
+                persistenceState: 'retrying',
+                httpStatus: error?.status,
+                errorCode: error?.code
+              });
+              recordLivePipelineTrace({
+                stage: 'CHECKPOINT_FAILED',
+                meetingId: payload.meetingId,
+                segmentId: payload.segmentId,
+                operationId: payload.idempotencyKey,
+                persistenceState: 'retrying',
+                httpStatus: error?.status,
+                errorCode: error?.code
+              });
+              throw error;
+            }
+          },
           getCheckpoint: (payload) => checkpoint.getLocalMeetingPersistence().getCheckpoint(payload),
           delayMs: MEETING_CHECKPOINT_SYNC_DELAY_MS,
           onStatusChange: (status) => {
-            checkpoint.setMeetingCheckpointStatus?.(status);
-            if (status === 'synced') checkpoint.clearCheckpointError?.();
+            if (['idle', 'ready'].includes(status)
+              && checkpoint.cloudSaveCoordinator?.snapshot().failedCount === 0) {
+              checkpoint.setMeetingCheckpointStatus?.(status);
+              return;
+            }
+            if (!checkpoint.cloudSaveCoordinator) {
+              checkpoint.setMeetingCheckpointStatus?.(status);
+              if (status === 'synced') checkpoint.clearCheckpointError?.();
+            }
           },
           onError: checkpoint.reportCheckpointError
         });
@@ -622,14 +766,14 @@ export function useLiveRecordingController({
       lifecycle.livenessTimer = null;
     };
 
-    const executeMeetingLifecycleCommand = async (command, payload = {}) => {
+    const executeMeetingLifecycleCommand = async (command, payload = {}, identity = {}) => {
       const lifecycle = meetingLifecycleRef.current;
       if (!lifecycle) return null;
       const result = await recovery.meetingCheckpointApiClientRef.current.executeRecordingCommand({
         meetingId: lifecycle.meetingId,
         command,
-        operationId: nextOperationId(command),
-        expectedLifecycleVersion: lifecycle.lifecycleVersion,
+        operationId: identity.operationId || nextOperationId(command),
+        expectedLifecycleVersion: identity.expectedLifecycleVersion ?? lifecycle.lifecycleVersion,
         leaseId: lifecycle.leaseId,
         fenceToken: lifecycle.fenceToken,
         ...payload
@@ -654,6 +798,43 @@ export function useLiveRecordingController({
         recovery.meetingCheckpointApiClientRef.current.heartbeatMeeting(lifecycle).catch(() => {});
       }, 30_000);
     };
+
+  const resumeLifecycleV2 = async () => {
+    if (meetingLifecycleRef.current) return executeMeetingLifecycleCommand('resume');
+
+    const sessionRecord = recovery.sessionRepositoryRef.current
+      .getSessionRecord(recovery.activeSessionRecordIdRef.current)?.sessionRecord;
+    const meeting = [
+      selectedMeetingDetail?.meeting,
+      meetingRecords.find((item) => item.id === routeMeetingId)
+    ].find((item) => item?.id === routeMeetingId);
+    if (recordingLifecycleContractVersion({ sessionRecord, meeting }) !== 2) {
+      const error = new Error('Unable to restore lifecycle v2 recording identity.');
+      error.code = 'meeting_lifecycle_conflict';
+      throw error;
+    }
+
+    const resumed = await recovery.meetingCheckpointApiClientRef.current.executeRecordingCommand({
+      meetingId: meeting.id,
+      command: 'resume',
+      operationId: nextOperationId('resume'),
+      expectedLifecycleVersion: meeting.lifecycleVersion ?? meeting.lifecycle_version ?? 0
+    });
+    meetingLifecycleRef.current = {
+      meetingId: resumed.meeting.id,
+      sessionId: resumed.session.id,
+      segmentId: resumed.segment?.id || null,
+      lifecycleVersion: resumed.meeting.lifecycle_version ?? resumed.meeting.lifecycleVersion,
+      leaseId: resumed.lease.leaseId,
+      fenceToken: resumed.lease.fenceToken,
+      leaseTimer: null,
+      livenessTimer: null
+    };
+    setMeetingLifecycleWriteFence(meetingLifecycleRef.current);
+    startMeetingLifecycleHeartbeats();
+    return resumed;
+  };
+
   const controller = ({
     async createCurrentSessionRecord(meetingCheckpoint = recovery.activeMeetingCheckpointRef.current, initialTranscript = null, existingSessionId = null) {
       recovery.polishingSessionIdRef.current = null;
@@ -690,6 +871,7 @@ export function useLiveRecordingController({
           echoTargetLanguage,
           shouldRecordInputAudio,
           meetingId: meetingCheckpoint?.meetingId,
+          recordingId: persisted?.session?.recordingId || null,
           segmentId: meetingCheckpoint?.segmentId,
           meetingGlossaryEntries: recovery.currentMeetingGlossaryEntries(),
           ...recovery.selectedInputDeviceSnapshot()
@@ -767,7 +949,8 @@ export function useLiveRecordingController({
         const result = await recovery.meetingCheckpointApiClientRef.current.createMeeting({ liveSessionId, glossaryEntries, privateGlossaryEntries });
         const meetingCheckpoint = {
           meetingId: result.meeting.id,
-          segmentId: result.segment.id
+        segmentId: result.segment.id,
+        segmentSequence: result.segment.sequence
         };
         recovery.activeMeetingCheckpointRef.current = meetingCheckpoint;
         checkpointController.meetingCheckpointSyncCoordinator().start(meetingCheckpoint);
@@ -911,7 +1094,13 @@ export function useLiveRecordingController({
         clearMeetingLifecycleWriteFence(currentMeetingId);
         meetingLifecycleRef.current = null;
         recovery.activeMeetingCheckpointRef.current = null;
-        recovery.setMeetingCheckpointStatus('synced');
+        const cloudState = checkpoint.cloudSaveCoordinator?.snapshot().state;
+        recovery.setMeetingCheckpointStatus({
+          cloud_failed: 'error',
+          cloud_retrying: 'retrying',
+          cloud_pending: 'syncing',
+          cloud_synced: 'synced'
+        }[cloudState] || 'synced');
         await recovery.refreshMeetingRecords();
         window.location.hash = '#meetings';
       } catch {
@@ -981,7 +1170,17 @@ export function useLiveRecordingController({
       if (redirectHash) window.location.hash = redirectHash;
     },
     async continuePausedSession() {
-      if (state.status !== 'paused') return;
+      if (state.status !== 'paused' || continueInFlightRef.current) return;
+      continueInFlightRef.current = true;
+      const continueStartedAt = Date.now();
+      recordLivePipelineTrace({
+        stage: 'CONTINUE_REQUESTED',
+        meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+        sessionId: recovery.activeSessionRecordIdRef.current,
+        segmentId: recovery.activeMeetingCheckpointRef.current?.segmentId,
+        continueElapsedMs: 0,
+        timestamp: new Date().toISOString()
+      });
       recovery.invalidateLiveSessionCallbacks();
       recovery.sessionStopRequestedRef.current = false;
       recovery.reconnectController().reset();
@@ -999,34 +1198,190 @@ export function useLiveRecordingController({
       cue.stateRef.current = preparedCueState;
       cue.setState?.(preparedCueState);
       let session;
+      let legacyContinue = null;
+      let legacyPersistence = null;
       try {
-        if (meetingLifecycleRef.current) {
-          const resumed = await executeMeetingLifecycleCommand('resume');
-          const nextCheckpoint = { meetingId: resumed.meeting.id, segmentId: resumed.segment.id };
+      const activeSessionRecord = recovery.sessionRepositoryRef.current
+        .getSessionRecord(recovery.activeSessionRecordIdRef.current)?.sessionRecord;
+      const routeMeeting = [
+        selectedMeetingDetail?.meeting,
+        meetingRecords.find((item) => item.id === routeMeetingId)
+      ].find((item) => item?.id === routeMeetingId);
+      const lifecycleContractVersion = recordingLifecycleContractVersion({
+        lifecycle: meetingLifecycleRef.current
+          ? { lifecycleContractVersion: 2 }
+          : null,
+        sessionRecord: activeSessionRecord,
+        meeting: routeMeeting
+      });
+      if (lifecycleContractVersion === 2) {
+        const resumed = await resumeLifecycleV2();
+          const nextCheckpoint = { meetingId: resumed.meeting.id, segmentId: resumed.segment.id, segmentSequence: resumed.segment.sequence };
           recovery.activeMeetingCheckpointRef.current = nextCheckpoint;
           checkpointController.meetingCheckpointSyncCoordinator().start(nextCheckpoint);
+          recordLivePipelineTrace({
+            stage: 'RESUME_SEGMENT_CONFIRMED',
+            meetingId: resumed.meeting.id,
+            sessionId: resumed.session.id,
+            segmentId: resumed.segment.id,
+            lifecycleVersion: resumed.meeting.lifecycle_version ?? resumed.meeting.lifecycleVersion,
+            continueElapsedMs: Date.now() - continueStartedAt,
+            timestamp: new Date().toISOString()
+          });
+        } else {
+          const sourceCheckpoint = recovery.activeMeetingCheckpointRef.current;
+          if (!sourceCheckpoint?.meetingId || !sourceCheckpoint?.segmentId) {
+            const error = new Error('Legacy Continue 缺少來源 Segment。');
+            error.code = 'meeting_segment_not_found';
+            throw error;
+          }
+          await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
+          const checkpointFlushed = await checkpointController.flushMeetingCheckpointSync();
+          if (checkpointFlushed === false) {
+            const error = new Error('Checkpoint durability barrier failed.');
+            error.code = 'checkpoint_conflict';
+            throw error;
+          }
+          recordLivePipelineTrace({
+            stage: 'CONTINUE_BARRIER_COMPLETE',
+            meetingId: sourceCheckpoint.meetingId,
+            sessionId: recovery.activeSessionRecordIdRef.current,
+            segmentId: sourceCheckpoint.segmentId,
+            continueElapsedMs: Date.now() - continueStartedAt
+          });
+          legacyPersistence = checkpoint.getLocalMeetingPersistence();
+          const durableCheckpoint = await legacyPersistence.getCheckpoint(sourceCheckpoint);
+          legacyContinue = await establishDurableLegacyContinue({
+            persistence: legacyPersistence,
+            api: recovery.meetingCheckpointApiClientRef.current,
+            meetingId: sourceCheckpoint.meetingId,
+            sourceSegmentId: sourceCheckpoint.segmentId,
+            expectedSessionId: recovery.activeSessionRecordIdRef.current,
+            checkpoint: durableCheckpoint?.checkpoint || {},
+            liveSessionIdFactory: recovery.generateLiveSessionId,
+            shouldContinue: () => !recovery.sessionStopRequestedRef.current
+          });
+          const resumed = legacyContinue.result;
+          if (!resumed?.segment?.id || !resumed?.effectiveGlossaryRevision) {
+            const error = new Error('Legacy resume did not return an authoritative Segment binding.');
+            error.code = 'meeting_lifecycle_conflict';
+            throw error;
+          }
+          const nextCheckpoint = {
+            meetingId: resumed.meeting.id,
+            segmentId: resumed.segment.id,
+            segmentSequence: resumed.segment.sequence
+          };
+          recovery.activeMeetingCheckpointRef.current = nextCheckpoint;
+          checkpointController.meetingCheckpointSyncCoordinator().start(nextCheckpoint);
+          recordLivePipelineTrace({
+            stage: 'RESUME_SEGMENT_CONFIRMED',
+            meetingId: resumed.meeting.id,
+            sessionId: resumed.segment.sessionId,
+            segmentId: resumed.segment.id,
+            revision: resumed.effectiveGlossaryRevision,
+            glossaryEntryCount: resumed.glossaryEntryCount,
+            operationId: legacyContinue.operation.operationId,
+            continueElapsedMs: Date.now() - continueStartedAt,
+            timestamp: new Date().toISOString()
+          });
         }
-        const checkpoint = recovery.activeMeetingCheckpointRef.current;
+        const activeCheckpoint = recovery.activeMeetingCheckpointRef.current;
         session = await recovery.createSession({
           preserveTranscript: true,
-          liveSessionId: recovery.generateLiveSessionId(),
-          meetingId: checkpoint?.meetingId,
-          segmentId: checkpoint?.segmentId
+          startupStartedAt: continueStartedAt,
+          continueStartedAt,
+          liveSessionId: legacyContinue?.operation.nextLiveSessionId || recovery.generateLiveSessionId(),
+          meetingId: activeCheckpoint?.meetingId,
+          segmentId: activeCheckpoint?.segmentId
         });
         recovery.sessionRef.current = session;
-        await session.start();
+        const started = await session.start();
+        if (started !== true) {
+          const error = new Error('無法繼續即時字幕：Gemini Live 連線未完成，請重試。');
+          error.code = 'continue_provider_not_ready';
+          error.reasonHint = 'provider_start_incomplete';
+          error.startupStage = 'provider';
+          error.userMessage = '無法繼續即時字幕：Gemini Live 連線未完成，請重試。';
+          throw error;
+        }
+        recordLivePipelineTrace({
+          stage: 'CONTINUE_PROVIDER_READY',
+          meetingId: activeCheckpoint?.meetingId,
+          sessionId: recovery.activeSessionRecordIdRef.current,
+          segmentId: activeCheckpoint?.segmentId,
+          continueElapsedMs: Date.now() - continueStartedAt
+        });
+        if (legacyContinue
+          && session.effectiveGlossaryRevision !== legacyContinue.result.effectiveGlossaryRevision) {
+          const error = new Error('Legacy Continue glossary revision mismatch.');
+          error.code = 'glossary_revision_mismatch';
+          throw error;
+        }
         recovery.setTranscriptTimeOriginValue();
         if (!recovery.activateLiveSessionCallbacks(session.callbackGeneration)) throw new Error('即時字幕 callback 啟動失敗。');
         await audioController.resumeRawAudioRecording();
+        recordLivePipelineTrace({
+          stage: 'CONTINUE_AUDIO_RESUMED',
+          meetingId: activeCheckpoint?.meetingId,
+          sessionId: recovery.activeSessionRecordIdRef.current,
+          segmentId: activeCheckpoint?.segmentId,
+          continueElapsedMs: Date.now() - continueStartedAt
+        });
         recovery.setLiveCueUpdatesAllowed(true);
+        if (legacyContinue) {
+          await completeDurableLegacyContinue(legacyPersistence, legacyContinue.operation);
+        }
         await recovery.updateCurrentSessionStatus('active', { lastLifecycleState: 'listening' });
         recovery.clearSessionSnapshotSyncError();
+        recordLivePipelineTrace({
+          stage: 'CONTINUE_READY',
+          meetingId: checkpoint?.meetingId,
+          sessionId: recovery.activeSessionRecordIdRef.current,
+          segmentId: checkpoint?.segmentId,
+          revision: session.effectiveGlossaryRevision,
+          glossaryEntryCount: session.liveGlossaryEntries.length,
+          continueElapsedMs: Date.now() - continueStartedAt,
+          timestamp: new Date().toISOString()
+        });
         recovery.setStatus('listening');
         recovery.startSegmentSwitch?.();
+        continueInFlightRef.current = false;
       } catch (error) {
         await stopSessionSafely(session);
+        continueInFlightRef.current = false;
         if (recovery.sessionStopRequestedRef.current) return;
         recovery.sessionRef.current = null;
+        if (!meetingLifecycleRef.current && isRecoverableLegacyContinueError(error)) {
+          recovery.setError(meetingRequestErrorMessage(error, '雲端暫時無法確認續錄結果，請重試。'));
+          recovery.setStatus('paused');
+          return;
+        }
+        if ([
+          'glossary_revision_mismatch',
+          'token_segment_mismatch',
+          'recorder_session_mismatch',
+          'recorder_lease_invalid',
+          'meeting_lifecycle_conflict'
+        ].includes(error?.code)) {
+          if (meetingLifecycleRef.current) {
+            await executeMeetingLifecycleCommand('pause').catch(() => {});
+          }
+          recordLivePipelineTrace({
+            stage: 'CONTINUE_CONFIGURATION_FAILED',
+            meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+            sessionId: recovery.activeSessionRecordIdRef.current,
+            segmentId: recovery.activeMeetingCheckpointRef.current?.segmentId,
+            revision: session?.effectiveGlossaryRevision,
+            glossaryEntryCount: session?.liveGlossaryEntries?.length ?? 0,
+            reason: error.code,
+            errorCode: error.code,
+            timestamp: new Date().toISOString()
+          });
+          recovery.setError(error.userMessage || '字典設定同步失敗，請重試。');
+          recovery.setStatus('paused');
+          return;
+        }
         recovery.applyStartFailure(error, '無法繼續即時字幕。');
       }
     },
@@ -1037,6 +1392,7 @@ export function useLiveRecordingController({
       recovery.suppressReconnectErrorRef.current = false;
       recovery.cancelLiveCueIdleTimers?.();
       recovery.setStatusLabelOverride('');
+      recovery.setStatus('stopping');
       const reconnectingSession = recovery.reconnectSessionRef.current;
       recovery.reconnectSessionRef.current = null;
       await audioController.pauseRawAudioRecording();
@@ -1047,11 +1403,16 @@ export function useLiveRecordingController({
       recovery.setLiveCueUpdatesAllowed(false);
       await recovery.finalizePendingTranscriptItemsForStop();
       cueController.flushSubtitleCues('pause');
-      await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
+      await recovery.flushMeetingCuePublishes?.(
+        recovery.activeSessionRecordIdRef.current,
+        { forceCloud: true }
+      );
       await checkpointController.flushMeetingCheckpointSync();
+      if (recovery.sessionStopRequestedRef.current) return;
       if (meetingLifecycleRef.current) {
         await executeMeetingLifecycleCommand('pause');
       }
+      if (recovery.sessionStopRequestedRef.current) return;
       await recovery.updateCurrentSessionStatus('paused');
       const pausedMeetingId = recovery.activeMeetingCheckpointRef.current?.meetingId || routeMeetingId;
       if (pausedMeetingId) {
@@ -1076,6 +1437,8 @@ export function useLiveRecordingController({
       });
     },
     async startSessionLifecycle() {
+      let microphoneWarmupPromise = null;
+      let microphoneStreamClaimed = false;
       const status = state.status ?? 'idle';
       const isActive = Boolean(state.isActive);
       if (status === 'active' || status === 'paused' || isActive || recovery.sessionRef.current || recovery.activeSessionRecordIdRef.current) {
@@ -1115,7 +1478,17 @@ export function useLiveRecordingController({
         audioController.resetInputAudioDownload();
         audioController.resetTranslatedAudioDownload();
         recovery.pendingMicrophoneStreamRef.current = null;
-      const liveSessionId = recovery.generateLiveSessionId();
+        microphoneWarmupPromise = warmUpMicrophoneInput({
+          inputDeviceId: selectedInputDeviceId,
+          onInputDeviceFallback: () => {
+            recovery.setSelectedInputDeviceId?.('');
+            recovery.setDeviceMessage?.('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
+          }
+        }).then(
+          (stream) => ({ stream, error: null }),
+          (error) => ({ stream: null, error })
+        );
+        const liveSessionId = recovery.generateLiveSessionId();
       let meetingCheckpoint;
       let lifecycleSessionId = null;
       if (routeMeetingId && selectedResumableMeeting.lifecycleContractVersion === 2) {
@@ -1125,6 +1498,11 @@ export function useLiveRecordingController({
           operationId: nextOperationId('start'),
           expectedLifecycleVersion: selectedResumableMeeting.lifecycleVersion ?? 0
         });
+        meetingTimingRef.current = {
+          meetingId: routeMeetingId,
+          startedAt: lifecycle.meeting.started_at ?? lifecycle.meeting.startedAt ?? meetingTimingRef.current.startedAt
+        };
+        configureLivePipelineElapsedContext({ meetingStartedAt: meetingTimingRef.current.startedAt });
         meetingLifecycleRef.current = {
           meetingId: routeMeetingId,
           sessionId: lifecycle.session.id,
@@ -1137,7 +1515,7 @@ export function useLiveRecordingController({
         };
         setMeetingLifecycleWriteFence(meetingLifecycleRef.current);
         lifecycleSessionId = lifecycle.session.id;
-        meetingCheckpoint = { meetingId: routeMeetingId, segmentId: lifecycle.segment.id };
+        meetingCheckpoint = { meetingId: routeMeetingId, segmentId: lifecycle.segment.id, segmentSequence: lifecycle.segment.sequence };
         recovery.activeMeetingCheckpointRef.current = meetingCheckpoint;
         checkpointController.meetingCheckpointSyncCoordinator().start(meetingCheckpoint);
         startMeetingLifecycleHeartbeats();
@@ -1146,7 +1524,12 @@ export function useLiveRecordingController({
           const segment = [...segmentsResult.segments].reverse().find((item) => ['created', 'active'].includes(item.status) && !item.liveSessionId);
           if (!segment) throw new Error('此會議目前沒有可開始的錄音段落。');
           const started = await recovery.meetingCheckpointApiClientRef.current.startMeeting({ meetingId: routeMeetingId, segmentId: segment.id, liveSessionId });
-          meetingCheckpoint = { meetingId: started.meeting.id, segmentId: started.segment.id };
+        meetingTimingRef.current = {
+          meetingId: routeMeetingId,
+          startedAt: started.meeting.startedAt ?? started.meeting.started_at ?? meetingTimingRef.current.startedAt
+        };
+        configureLivePipelineElapsedContext({ meetingStartedAt: meetingTimingRef.current.startedAt });
+        meetingCheckpoint = { meetingId: started.meeting.id, segmentId: started.segment.id, segmentSequence: started.segment.sequence };
           recovery.activeMeetingCheckpointRef.current = meetingCheckpoint;
           checkpointController.meetingCheckpointSyncCoordinator().start(meetingCheckpoint);
         } else {
@@ -1167,7 +1550,11 @@ export function useLiveRecordingController({
           segmentId: meetingCheckpoint?.segmentId
         });
         recovery.sessionRef.current = session;
-        const started = await session.start();
+        const microphoneResult = await microphoneWarmupPromise;
+        if (microphoneResult.error) throw microphoneResult.error;
+        recovery.pendingMicrophoneStreamRef.current = microphoneResult.stream;
+        microphoneStreamClaimed = true;
+        const started = await session.start({ inputStream: microphoneResult.stream });
         if (!started) throw new Error('首個音訊資料未成功送出。');
         recovery.activateLiveSessionCallbacks(session.callbackGeneration);
         const activeRecord = recovery.sessionRepositoryRef.current.updateSessionRecord(record.id, { status: 'active', startedAt: record.startedAt || Date.now(), lastLifecycleState: 'listening' });
@@ -1177,6 +1564,9 @@ export function useLiveRecordingController({
         recovery.updateLiveMeetingUrl(meetingCheckpoint.meetingId);
         recovery.startSegmentSwitch?.();
       } catch (error) {
+        if (!microphoneStreamClaimed && microphoneWarmupPromise) {
+          void microphoneWarmupPromise.then(({ stream }) => stopMicrophoneStream(stream));
+        }
         await stopSessionSafely(session);
         if (recovery.sessionStopRequestedRef.current) return;
         if (error?.code === 'meeting_segment_invalid_state' && routeMeetingId) {
@@ -1184,7 +1574,7 @@ export function useLiveRecordingController({
             const latestSegments = await recovery.meetingCheckpointApiClientRef.current.listSegments({ meetingId: routeMeetingId });
             const resumableSegment = [...latestSegments.segments].reverse().find((segment) => segment.status === 'active' && segment.liveSessionId);
             if (resumableSegment) {
-              recovery.activeMeetingCheckpointRef.current = { meetingId: routeMeetingId, segmentId: resumableSegment.id };
+        recovery.activeMeetingCheckpointRef.current = { meetingId: routeMeetingId, segmentId: resumableSegment.id, segmentSequence: resumableSegment.sequence };
               recovery.setResumeDraft?.({
                 sessionId: await recovery.findActiveMeetingSessionId?.(routeMeetingId),
                 meetingId: routeMeetingId,
@@ -1246,17 +1636,9 @@ export function useLiveRecordingController({
 
       const nextLiveSessionId = recovery.generateLiveSessionId();
       let recoveredSegment;
-      let reconnectStage = 'create_session';
+      let reconnectStage = 'flush_audio';
       let session = null;
       try {
-        session = await recovery.createSession({
-          preserveTranscript: true,
-          liveSessionId: nextLiveSessionId,
-          meetingId: meetingCheckpoint?.meetingId,
-          segmentId: meetingCheckpoint?.segmentId
-        });
-        recovery.reconnectSessionRef.current = session;
-
         try {
           if (!meetingCheckpoint) throw new Error('Missing active meeting checkpoint.');
         reconnectStage = 'flush_audio';
@@ -1276,24 +1658,41 @@ export function useLiveRecordingController({
         reconnectStage = 'recover_segment';
         const recoveryKey = recoveryKeyFor(meetingCheckpoint);
         if (!recoveryKey) throw new Error('Missing active meeting checkpoint key.');
-        recoveredSegment = meetingLifecycleRef.current
-          ? { segment: { id: meetingCheckpoint.segmentId } }
-          : await recoverySingleFlight.run(`${recoveryKey}:recover`, () => (
-            recovery.meetingCheckpointApiClientRef.current.recoverSegment({
+          recoveredSegment = meetingLifecycleRef.current
+            ? { segment: { id: meetingCheckpoint.segmentId } }
+            : await recoverySingleFlight.run(`${recoveryKey}:recover`, () => (
+              recovery.meetingCheckpointApiClientRef.current.recoverSegment({
+                meetingId: meetingCheckpoint.meetingId,
+                segmentId: meetingCheckpoint.segmentId,
+                idempotencyKey: `recover:${meetingCheckpoint.segmentId}:${nextLiveSessionId}`,
+                checkpoint: {
+                  idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:recover:${nextLiveSessionId}`,
+                  durableChunks: [],
+                  pendingPartial: null
+                },
+                nextLiveSessionId,
+                failureReason: classification.reason,
+                failureCategory: classification.category,
+                outcome: 'interrupted'
+              })
+            ));
+          if (!recovery.isCurrentGeneration?.(generationId) || recovery.sessionStopRequestedRef.current) return;
+          if (!meetingLifecycleRef.current) {
+            activateRecoveredMeetingSegment({
+              meetingId: meetingCheckpoint.meetingId,
+              recoveryResult: recoveredSegment,
+              activeMeetingCheckpointRef: recovery.activeMeetingCheckpointRef,
+              startCheckpointSync: (checkpoint) => checkpointController.meetingCheckpointSyncCoordinator().start(checkpoint)
+            });
+          }
+          reconnectStage = 'create_session';
+          session = await recovery.createSession({
+            preserveTranscript: true,
+            liveSessionId: nextLiveSessionId,
             meetingId: meetingCheckpoint.meetingId,
-            segmentId: meetingCheckpoint.segmentId,
-            idempotencyKey: `recover:${meetingCheckpoint.segmentId}:${nextLiveSessionId}`,
-            checkpoint: {
-              idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:recover:${nextLiveSessionId}`,
-              durableChunks: [],
-              pendingPartial: null
-            },
-            nextLiveSessionId,
-            failureReason: classification.reason,
-            failureCategory: classification.category,
-            outcome: 'interrupted'
-            })
-          ));
+            segmentId: recoveredSegment.segment.id
+          });
+          recovery.reconnectSessionRef.current = session;
 
         if (!recovery.isCurrentGeneration?.(generationId) || recovery.sessionStopRequestedRef.current) {
           await stopSessionSafely(session);
@@ -1321,7 +1720,9 @@ export function useLiveRecordingController({
         const diagnostic = recovery.safeReconnectDiagnostic({ source: 'reconnect_session', stage: reconnectStage, rawError: error, reasonHint: classification.reason }, classification);
         recovery.reconnectFailureDiagnosticRef.current = diagnostic;
         void recovery.appendSessionFailureDiagnostic(diagnostic, classification);
-        recovery.setError(recovery.reconnectErrorMessage({ decision: { stopReason: 'reconnect_session_failed' } }, diagnostic));
+        recovery.setError(error?.operation
+          ? meetingRequestErrorMessage(error, '無法重新連線。')
+          : recovery.reconnectErrorMessage({ decision: { stopReason: 'reconnect_session_failed' } }, diagnostic));
         recovery.setStatus('error');
         void controller.finalizeFailedSession({ status: 'failed', failureReason: classification.reason, failureCategory: classification.category });
         return;
@@ -1333,9 +1734,6 @@ export function useLiveRecordingController({
       }
       recovery.reconnectSessionRef.current = null;
       recovery.sessionRef.current = session;
-      const nextMeetingCheckpoint = { meetingId: meetingCheckpoint.meetingId, segmentId: recoveredSegment.segment.id };
-      recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
-      checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
       recovery.startSegmentSwitch?.();
       recovery.setStatusLabelOverride('');
       recovery.setStatus('listening');
@@ -1344,7 +1742,8 @@ export function useLiveRecordingController({
       }
     },
     async resumeMeetingSession() {
-      if (!recovery.resumeDraft || recovery.isActive) return;
+      if (!recovery.resumeDraft || recovery.isActive || resumeInFlightRef.current) return;
+      resumeInFlightRef.current = true;
       const draft = recovery.resumeDraft;
       recovery.resetReconnect?.();
       recovery.reconnectFailureDiagnosticRef.current = null;
@@ -1363,6 +1762,10 @@ export function useLiveRecordingController({
       let recoveredMeetingCheckpoint = null;
       let resumedSessionRecordId = null;
       let resumedLiveSessionId = null;
+      let selectedResumeSegmentId = draft.segmentId;
+      let legacyContinue = null;
+      let legacyPersistence = null;
+      let legacyResumeFlow = false;
       try {
         const nextLiveSessionId = recovery.generateLiveSessionId();
         resumedLiveSessionId = nextLiveSessionId;
@@ -1384,6 +1787,11 @@ export function useLiveRecordingController({
             operationId: nextOperationId('takeover'),
             expectedLifecycleVersion: lifecycleMeeting.lifecycleVersion ?? 0
           });
+          meetingTimingRef.current = {
+            meetingId: draft.meetingId,
+            startedAt: lifecycle.meeting.started_at ?? lifecycle.meeting.startedAt ?? lifecycleMeeting.startedAt ?? meetingTimingRef.current.startedAt
+          };
+          configureLivePipelineElapsedContext({ meetingStartedAt: meetingTimingRef.current.startedAt });
           meetingLifecycleRef.current = {
             meetingId: draft.meetingId,
             sessionId: lifecycle.session.id,
@@ -1398,30 +1806,27 @@ export function useLiveRecordingController({
           startMeetingLifecycleHeartbeats();
           resumed = { segment: { id: lifecycle.segment.id } };
         } else {
-        const segmentsResult = await recovery.meetingCheckpointApiClientRef.current.listSegments({ meetingId: draft.meetingId });
-        const currentSegment = segmentsResult.segments.find((segment) => segment.id === draft.segmentId);
-        resumed = currentSegment?.status === 'created'
-          ? await recovery.meetingCheckpointApiClientRef.current.startMeeting({ meetingId: draft.meetingId, segmentId: draft.segmentId, liveSessionId: nextLiveSessionId })
-          : await recoverySingleFlight.run(`${draft.meetingId}:${draft.segmentId}:recover`, () => (
-            recovery.meetingCheckpointApiClientRef.current.recoverSegment({
-              meetingId: draft.meetingId,
-              segmentId: draft.segmentId,
-              idempotencyKey: `recover:${draft.segmentId}:${nextLiveSessionId}`,
-              checkpoint: {
-                idempotencyKey: `checkpoint:${draft.segmentId}:resume:${nextLiveSessionId}`,
-                durableChunks: [],
-                pendingPartial: null,
-                finalCues: preparedCueState.finalCues.filter((item) => item.segmentId === draft.segmentId && isPersistableFinalCue(item)),
-                cueCheckpoint: recovery.cueCheckpointForState(preparedCueState)
-              },
-              nextLiveSessionId,
-              failureReason: 'manual_resume',
-              failureCategory: 'user_intent',
-              outcome: 'interrupted'
-            })
-          ));
+          legacyResumeFlow = true;
+          legacyPersistence = checkpoint.getLocalMeetingPersistence();
+          const durableCheckpoint = await legacyPersistence.getCheckpoint({
+            meetingId: draft.meetingId,
+            segmentId: draft.segmentId
+          });
+          legacyContinue = await establishDurableLegacyContinue({
+            persistence: legacyPersistence,
+            api: recovery.meetingCheckpointApiClientRef.current,
+            meetingId: draft.meetingId,
+            sourceSegmentId: draft.segmentId,
+            expectedSessionId: draft.sessionId,
+            checkpoint: durableCheckpoint?.checkpoint || {},
+            liveSessionIdFactory: recovery.generateLiveSessionId,
+            shouldContinue: () => !recovery.sessionStopRequestedRef.current
+          });
+          resumed = legacyContinue.result;
+          resumedLiveSessionId = legacyContinue.operation.nextLiveSessionId;
         }
-        const nextMeetingCheckpoint = { meetingId: draft.meetingId, segmentId: resumed.segment.id };
+        selectedResumeSegmentId = resumed.segment.id;
+        const nextMeetingCheckpoint = { meetingId: draft.meetingId, segmentId: resumed.segment.id, segmentSequence: resumed.segment.sequence };
         recoveredMeetingCheckpoint = nextMeetingCheckpoint;
         recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
         checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
@@ -1430,15 +1835,24 @@ export function useLiveRecordingController({
         recovery.resetActiveTranscriptForNextSegment(draft.transcriptState.nextSequence);
         session = await recovery.createSession({
           preserveTranscript: true,
-          liveSessionId: nextLiveSessionId,
+          liveSessionId: legacyContinue?.operation.nextLiveSessionId || nextLiveSessionId,
           meetingId: nextMeetingCheckpoint.meetingId,
           segmentId: nextMeetingCheckpoint.segmentId
         });
         recovery.sessionRef.current = session;
         await session.start();
+        if (legacyContinue
+          && session.effectiveGlossaryRevision !== legacyContinue.result.effectiveGlossaryRevision) {
+          const error = new Error('Legacy Continue glossary revision mismatch.');
+          error.code = 'glossary_revision_mismatch';
+          throw error;
+        }
         recovery.setTranscriptTimeOriginValue();
         if (!recovery.activateLiveSessionCallbacks(session.callbackGeneration)) throw new Error('即時字幕 callback 啟動失敗。');
         recovery.setLiveCueUpdatesAllowed(true);
+        if (legacyContinue) {
+          await completeDurableLegacyContinue(legacyPersistence, legacyContinue.operation);
+        }
         recovery.sessionRepositoryRef.current.updateSessionRecord(recovery.activeSessionRecordIdRef.current, { status: 'active', startedAt: Date.now(), lastLifecycleState: 'listening' });
         const snapshotSynced = await checkpointController.flushSessionSnapshot(recovery.activeSessionRecordIdRef.current);
         if (snapshotSynced) recovery.clearSessionSnapshotSyncError();
@@ -1449,8 +1863,8 @@ export function useLiveRecordingController({
         if (meetingLifecycleRef.current) {
           await executeMeetingLifecycleCommand('pause').catch(() => {});
           stopMeetingLifecycleHeartbeats();
-        } else if (recoveredMeetingCheckpoint) {
-          await recoverySingleFlight.run(`${recoveredMeetingCheckpoint.meetingId}:${recoveredMeetingCheckpoint.segmentId}:recover`, () => (
+        } else if (recoveredMeetingCheckpoint && !legacyContinue) {
+          const cleanupResult = await recoverySingleFlight.run(`${recoveredMeetingCheckpoint.meetingId}:${recoveredMeetingCheckpoint.segmentId}:recover`, () => (
             recovery.meetingCheckpointApiClientRef.current.recoverSegment({
               meetingId: recoveredMeetingCheckpoint.meetingId,
               segmentId: recoveredMeetingCheckpoint.segmentId,
@@ -1461,7 +1875,8 @@ export function useLiveRecordingController({
               failureCategory: 'startup',
               outcome: 'interrupted'
             })
-          )).catch(() => {});
+          )).catch(() => null);
+          if (cleanupResult?.segment?.id) selectedResumeSegmentId = cleanupResult.segment.id;
         }
         const failedSessionRecordId = resumedSessionRecordId || recovery.activeSessionRecordIdRef.current;
         if (failedSessionRecordId) {
@@ -1479,11 +1894,14 @@ export function useLiveRecordingController({
         recovery.activeMeetingCheckpointRef.current = null;
         checkpointController.cancel();
         recovery.cancelSegmentSwitch?.();
-        recovery.setError(error.message || '無法續錄長會議。');
-        recovery.setStatus('error');
+        recovery.setResumeDraft({ ...draft, segmentId: selectedResumeSegmentId });
+        recovery.setError(meetingRequestErrorMessage(error, '無法續錄長會議。'));
+        recovery.setStatus(legacyResumeFlow && isRecoverableLegacyContinueError(error) ? 'idle' : 'error');
+      } finally {
+        resumeInFlightRef.current = false;
       }
     },
-    async switchMeetingSegment() {
+    async switchMeetingSegment({ generation: rolloverGeneration } = {}) {
       const meetingCheckpoint = recovery.activeMeetingCheckpointRef.current;
       const previousSession = recovery.sessionRef.current;
       if (!meetingCheckpoint || !previousSession || recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
@@ -1493,53 +1911,176 @@ export function useLiveRecordingController({
       const releaseTransition = segmentTransitionLock.tryAcquire(transitionKey);
       if (!releaseTransition) return;
 
+      let rolloverStage = 'prepare';
+      let rolloverCommandCommitted = false;
       try {
+        recordLivePipelineTrace({
+          stage: 'SESSION_ROLLOVER_START',
+          meetingId: meetingCheckpoint.meetingId,
+          recorderSessionId: recovery.activeSessionRecordIdRef.current,
+          geminiSessionId: previousSession.liveSessionId,
+          oldSessionId: recovery.activeSessionRecordIdRef.current,
+          oldSegmentId: meetingCheckpoint.segmentId,
+          rolloverGeneration,
+          recordingState: 'switching-segment',
+          captureEpoch: previousSession.captureEpoch,
+          providerEpoch: previousSession.providerEpoch
+        });
         recovery.reconnectController().cancel();
-        recovery.invalidateLiveSessionCallbacks();
         recovery.setError('');
         recovery.setStatusLabelOverride('切換下一段中');
         recovery.setStatus('switching-segment');
         const nextLiveSessionId = recovery.generateLiveSessionId();
 
-      await recovery.finalizePendingTranscriptItemsForStop();
-      cueController.flushSubtitleCues('segment-rollover');
-      await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
-      if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
+        rolloverStage = 'provider-drain';
+        const drain = await previousSession.beginProviderTransition?.({ maxWaitMs: 3_000 });
+        recordLivePipelineTrace({
+          stage: 'PROVIDER_TRANSITION_DRAINED',
+          meetingId: meetingCheckpoint.meetingId,
+          oldSegmentId: meetingCheckpoint.segmentId,
+          providerEpoch: drain?.providerEpoch ?? previousSession.providerEpoch,
+          audioTurnId: drain?.audioTurnId,
+          eventSequence: drain?.eventSequence,
+          queueDepth: previousSession.pendingInputAudioChunks?.length,
+          reason: drain?.timedOut ? 'bounded_timeout' : 'provider_boundary'
+        });
+        await recovery.finalizePendingTranscriptItemsForStop();
+        cueController.flushSubtitleCues('segment-rollover');
+        await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
+        if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
 
-    const flushed = await checkpointController.flushMeetingCheckpointSync();
-    if (!flushed) throw new Error('無法同步目前段落 checkpoint。');
+        rolloverStage = 'checkpoint';
+        const flushed = await checkpointController.flushMeetingCheckpointSync();
+        if (!flushed) {
+          recovery.setMeetingCheckpointStatus?.('error');
+          recovery.setMeetingCheckpointErrorMessage?.('長會議同步暫時失敗，錄音與本機字幕仍會繼續，未同步資料會保留重試。');
+        }
     if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
-    recovery.archiveActiveTranscriptSegment();
 
-      const rollover = meetingLifecycleRef.current
-        ? await executeMeetingLifecycleCommand('rollover')
-        : await recovery.meetingCheckpointApiClientRef.current.rolloverSegment({
+        rolloverStage = 'rollover-command';
+        const lifecycle = meetingLifecycleRef.current;
+        const operationId = lifecycle
+          ? nextOperationId('rollover')
+          : `rollover:${meetingCheckpoint.segmentId}:${previousSession.liveSessionId}`;
+        const lifecycleIdentity = lifecycle
+          ? { operationId, expectedLifecycleVersion: lifecycle.lifecycleVersion }
+          : null;
+        const legacyPayload = {
           meetingId: meetingCheckpoint.meetingId,
           segmentId: meetingCheckpoint.segmentId,
-          idempotencyKey: `rollover:${meetingCheckpoint.segmentId}:${previousSession.liveSessionId}`,
+          idempotencyKey: operationId,
           checkpoint: {
             idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:rollover`,
             durableChunks: [],
             pendingPartial: null
           },
           nextLiveSessionId
+        };
+        const operation = {
+          operationId,
+          payload: lifecycle
+            ? {
+                meetingId: lifecycle.meetingId,
+                command: 'rollover',
+                expectedLifecycleVersion: lifecycleIdentity.expectedLifecycleVersion,
+                leaseId: lifecycle.leaseId,
+                fenceToken: lifecycle.fenceToken,
+                nextLiveSessionId
+              }
+            : legacyPayload
+        };
+        const rolloverCoordinator = createRolloverRecoveryCoordinator({
+          execute: () => lifecycle
+            ? executeMeetingLifecycleCommand('rollover', { nextLiveSessionId }, lifecycleIdentity)
+            : recovery.meetingCheckpointApiClientRef.current.rolloverSegment(legacyPayload),
+          reconcile: async () => {
+            const authoritative = await recovery.meetingCheckpointApiClientRef.current.listSegments({ meetingId: meetingCheckpoint.meetingId });
+            const committedSegment = authoritative.segments.find((segment) => (
+              segment.id !== meetingCheckpoint.segmentId
+              && segment.status === 'active'
+              && (!Number.isSafeInteger(meetingCheckpoint.segmentSequence)
+                || segment.sequence === meetingCheckpoint.segmentSequence + 1)
+            ));
+            if (committedSegment) {
+              if (!lifecycle) {
+                return { status: 'committed', result: { segment: committedSegment }, authoritativeSegment: committedSegment };
+              }
+              // The lifecycle RPC is idempotent by operationId and returns the stored
+              // response. Replaying it here retrieves the authoritative lease/session
+              // after a lost ACK; it does not create another Segment.
+              const result = await executeMeetingLifecycleCommand('rollover', { nextLiveSessionId }, lifecycleIdentity);
+              return { status: 'committed', result, authoritativeSegment: result.segment };
+            }
+            const sourceSegment = authoritative.segments.find((segment) => segment.id === meetingCheckpoint.segmentId);
+            return sourceSegment?.status === 'active'
+              ? { status: 'source-active', authoritativeSegment: sourceSegment }
+              : { status: 'conflict', authoritativeSegment: sourceSegment || null };
+          },
+          onStateChange: (rolloverState) => recordLivePipelineTrace({
+            stage: 'SESSION_ROLLOVER_RECOVERY',
+            meetingId: meetingCheckpoint.meetingId,
+            oldSegmentId: meetingCheckpoint.segmentId,
+            operationId,
+            rolloverGeneration: rolloverState.attempt,
+            retryAttempt: rolloverState.attempt,
+            authoritativeSegmentId: rolloverState.authoritativeSegment?.id,
+            reason: rolloverState.status,
+            httpStatus: rolloverState.lastError?.status,
+            serverErrorCode: rolloverState.lastError?.code
+          })
+        });
+        const rollover = await rolloverCoordinator.run(operation);
+        rolloverCommandCommitted = true;
+        recordLivePipelineTrace({
+          stage: 'ROLLOVER_COMMITTED',
+          meetingId: meetingCheckpoint.meetingId,
+          recorderSessionId: recovery.activeSessionRecordIdRef.current,
+          geminiSessionId: nextLiveSessionId,
+          oldSegmentId: meetingCheckpoint.segmentId,
+          newSegmentId: rollover.segment.id,
+          rolloverGeneration,
+          recordingState: 'switching-segment',
+          reason: 'authoritative_segment_committed'
         });
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
+      recovery.archiveActiveTranscriptSegment();
+      const nextMeetingCheckpoint = { meetingId: meetingCheckpoint.meetingId, segmentId: rollover.segment.id, segmentSequence: rollover.segment.sequence };
+      recordLivePipelineTrace({
+        stage: 'SESSION_CREATED',
+        meetingId: meetingCheckpoint.meetingId,
+        oldSessionId: recovery.activeSessionRecordIdRef.current,
+        newSessionId: rollover.session?.id || recovery.activeSessionRecordIdRef.current,
+        oldSegmentId: meetingCheckpoint.segmentId,
+        newSegmentId: rollover.segment.id
+      });
+      recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
+      checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
+      recordLivePipelineTrace({
+        stage: 'SESSION_SCOPE_SWITCHED',
+        meetingId: meetingCheckpoint.meetingId,
+        oldSessionId: recovery.activeSessionRecordIdRef.current,
+        newSessionId: rollover.session?.id || recovery.activeSessionRecordIdRef.current,
+        oldSegmentId: meetingCheckpoint.segmentId,
+        newSegmentId: rollover.segment.id
+      });
       const sessionId = recovery.activeSessionRecordIdRef.current;
-      if (sessionId) {
+      if (sessionId && !meetingLifecycleRef.current) {
+        rolloverStage = 'session-metadata';
         await recovery.sessionCommandApiClientRef.current.update(sessionId, {
           status: 'active',
           segmentId: rollover.segment.id
         });
       }
       cueController.flushSubtitleCues('segment-rollover');
+      rolloverStage = 'provider-connect';
       const providerResumed = await previousSession.reconnectProvider({
         segmentId: rollover.segment.id,
         liveSessionId: nextLiveSessionId,
         forceRefresh: true
       });
       if (!providerResumed) throw new Error('無法恢復 Gemini 即時連線。');
+      rolloverStage = 'audio-resume';
       await audioController.noteProviderRollover();
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) {
@@ -1548,11 +2089,52 @@ export function useLiveRecordingController({
 
       recovery.activateLiveSessionCallbacks(previousSession.callbackGeneration);
       recovery.sessionRef.current = previousSession;
-      const nextMeetingCheckpoint = { meetingId: meetingCheckpoint.meetingId, segmentId: rollover.segment.id };
-    recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
-    checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
-        recovery.setStatusLabelOverride('下一段已開始');
-        recovery.setStatus('listening');
+      recovery.setStatusLabelOverride('下一段已開始');
+      recovery.setStatus('listening');
+      recordLivePipelineTrace({
+        stage: 'RECORDING_PIPELINE_STATE',
+        meetingId: nextMeetingCheckpoint.meetingId,
+        sessionId: recovery.activeSessionRecordIdRef.current,
+        segmentId: nextMeetingCheckpoint.segmentId,
+        captureEpoch: previousSession.captureEpoch,
+        providerEpoch: previousSession.providerEpoch,
+        reason: 'rollover_continued'
+      });
+      } catch (cause) {
+        recordLivePipelineTrace({
+          stage: 'ROLLOVER_FAILED',
+          meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+          recorderSessionId: recovery.activeSessionRecordIdRef.current,
+          geminiSessionId: previousSession.liveSessionId,
+          segmentId: recovery.activeMeetingCheckpointRef.current?.segmentId,
+          rolloverGeneration,
+          recordingState: rolloverCommandCommitted ? 'reconnecting' : 'listening',
+          httpStatus: cause?.status,
+          errorCode: cause?.code,
+          reason: rolloverStage
+        });
+        if (!rolloverCommandCommitted) previousSession.cancelProviderTransition?.();
+        recovery.activateLiveSessionCallbacks(previousSession.callbackGeneration);
+        recovery.sessionRef.current = previousSession;
+        recovery.setStatus(rolloverCommandCommitted ? 'reconnecting' : 'listening');
+        recordLivePipelineTrace({
+          stage: 'RECORDING_PIPELINE_STATE',
+          meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+          sessionId: recovery.activeSessionRecordIdRef.current,
+          segmentId: recovery.activeMeetingCheckpointRef.current?.segmentId,
+          captureEpoch: previousSession.captureEpoch,
+          providerEpoch: previousSession.providerEpoch,
+          httpStatus: cause?.status,
+          serverErrorCode: cause?.code,
+          reason: 'rollover_failed_recording_continues'
+        });
+        const failure = new Error('Meeting segment rollover failed.', { cause });
+        failure.rolloverStage = rolloverStage;
+        failure.status = cause?.status;
+        failure.code = cause?.code;
+        failure.requestId = cause?.requestId;
+        failure.endpoint = cause?.endpoint;
+        throw failure;
       } finally {
         releaseTransition();
       }
@@ -1599,12 +2181,14 @@ export function useLiveRecordingController({
     recordingState: state.recordingState,
     translatedAudioState: state.translatedAudioState,
     meetingCheckpointStatus: state.meetingCheckpointStatus ?? 'idle',
+    segmentRolloverStatus: state.segmentRolloverStatus ?? 'idle',
     meetingViewStats: state.meetingViewStats ?? { archivedSegmentCount: 0, loadedSegmentCount: 0 },
     resumeDraft: state.resumeDraft ?? null,
     controlLeaseSnapshot: state.controlLeaseSnapshot ?? null,
     hasSessionControl: Boolean(state.hasSessionControl),
     isActive: Boolean(state.isActive),
     controlsLocked: Boolean(state.controlsLocked),
+    meetingStartedAt: meetingTimingRef.current.startedAt,
     routeMeetingId,
     targetLanguageCode,
     sourceLanguageCode,
@@ -1698,6 +2282,42 @@ export function recordCueTransitionTrace({ cue, event = {}, previous, next, cueA
       : [];
   const matchedCue = matchedIds.length === 1 ? nextCues.get(matchedIds[0]) : null;
   const previousMatchedCue = matchedCue?.cueId ? previousCues.get(matchedCue.cueId) : null;
+  if (event.translationComparisonEventId) {
+    const canonicalTranslation = matchedCue ? effectiveTranslationForCue(matchedCue) : null;
+    const previousCanonicalTranslation = previousMatchedCue
+      ? effectiveTranslationForCue(previousMatchedCue)
+      : null;
+    translationComparisonDiagnostics.record({
+      stage: 'cue_canonical',
+      eventIdentity: event.translationComparisonEventId,
+      meetingId: event.meetingId,
+      segmentId: matchedCue?.segmentId || event.segmentId || cue.getSegmentId?.() || null,
+      cueId: matchedCue?.cueId || null,
+      cueSequence: matchedCue?.sequence,
+      audioTurnId: event.audioTurnId || matchedCue?.audioTurnId || null,
+      providerEpoch: event.providerEpoch,
+      providerEventSequence: event.eventSequence,
+      providerEventId: event.providerEventId,
+      normalizedEventId: event.eventId,
+      turnKey: event.turnKey || matchedCue?.turnKey || null,
+      associationStatus: matchedIds.length === 1
+        ? 'matched'
+        : matchedIds.length > 1
+          ? 'ambiguous'
+          : 'unmatched',
+      sourceVersion: matchedCue?.sourceVersion,
+      translationVersion: matchedCue?.translationVersion,
+      previousCanonicalTranslation,
+      canonicalTranslation,
+      authoritativeSnapshotApplied: Boolean(
+        previousMatchedCue
+        && event.stream === 'translation'
+        && event.isFinal
+        && event.textMergeMode === 'snapshot'
+        && previousCanonicalTranslation !== canonicalTranslation
+      )
+    });
+  }
   const traceFields = {
     recordingId: matchedCue?.sessionId || cue.getSessionId?.() || null,
     segmentId: matchedCue?.segmentId || event.segmentId || cue.getSegmentId?.() || null,

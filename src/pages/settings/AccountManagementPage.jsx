@@ -33,6 +33,7 @@ function AccountRoleCell({ value }) {
 }
 
 function AccountTransferCell({ data, context }) {
+  if (data.isCurrentUser) return <span className="account-table-muted">不適用</span>;
   if (data.status !== 'active') return <span className="account-table-muted">不適用</span>;
   const targets = context.transferTargets.filter((target) => target.id !== data.id);
   return <label className="account-table-transfer-field">
@@ -47,17 +48,27 @@ function AccountTransferCell({ data, context }) {
 }
 
 function AccountActionsCell({ data, context }) {
-  if (data.status === 'pending') return <span className="account-table-muted">登入後自動啟用</span>;
+  if (data.isCurrentUser) return <span className="account-table-muted">目前帳號不可操作</span>;
   const isActive = data.status === 'active';
-  const label = isActive ? '停用帳號' : '重新啟用帳號';
-  return <button
-    className={`button detail-button account-table-action${isActive ? ' account-table-danger-action' : ''}`}
-    type="button"
-    onClick={() => context.onChangeStatus(data)}
-    disabled={data.isBusy || (isActive && !data.transferTargetId)}
-  >
-    {data.isBusy ? '處理中…' : label}
-  </button>;
+  const roleLabel = data.role === 'super_admin' ? '降為一般使用者' : '提升為系統管理者';
+  return <div className="account-table-actions">
+    <button
+      className="button detail-button account-table-action account-table-role-action"
+      type="button"
+      onClick={() => context.onChangeRole(data)}
+      disabled={data.isBusy}
+    >
+      {data.isBusy ? '處理中…' : roleLabel}
+    </button>
+    {data.status === 'pending' ? <span className="account-table-muted">登入後自動啟用</span> : <button
+      className={`button detail-button account-table-action${isActive ? ' account-table-danger-action' : ''}`}
+      type="button"
+      onClick={() => context.onChangeStatus(data)}
+      disabled={data.isBusy || (isActive && !data.transferTargetId)}
+    >
+      {data.isBusy ? '處理中…' : isActive ? '停用帳號' : '重新啟用帳號'}
+    </button>}
+  </div>;
 }
 
 export function AccountManagementPage() {
@@ -125,6 +136,27 @@ export function AccountManagementPage() {
     }
   }
 
+  async function changeRole(user) {
+    const newRole = user.role === 'super_admin' ? 'member' : 'super_admin';
+    const confirmed = window.confirm(newRole === 'super_admin'
+      ? `確定要將「${user.email}」提升為系統管理者嗎？\n\n系統管理者可以管理帳號、查看稽核紀錄及執行系統管理功能。`
+      : `確定要將「${user.email}」降為一般使用者嗎？\n\n降權後，此帳號將無法再使用系統管理功能。`);
+    if (!confirmed) return;
+
+    setBusy(user.id);
+    setNotice('');
+    setError(null);
+    try {
+      const result = await client.updateRole(user.id, newRole);
+      await reload();
+      setNotice(result.changed ? '系統角色已更新。' : '系統角色沒有變更。');
+    } catch (cause) {
+      setError(cause);
+    } finally {
+      setBusy('');
+    }
+  }
+
   const rowData = useMemo(() => users.map((user) => ({
     ...user,
     transferTargetId: transfer[user.id] || '',
@@ -136,18 +168,19 @@ export function AccountManagementPage() {
     { headerName: '角色', field: 'role', width: 170, cellRenderer: AccountRoleCell },
     { headerName: '狀態', field: 'status', width: 150, cellRenderer: AccountStatusCell },
     { headerName: '資產接手者', field: 'transferTargetId', minWidth: 260, flex: 1.2, sortable: false, cellRenderer: AccountTransferCell },
-    { headerName: '操作', width: 170, sortable: false, cellRenderer: AccountActionsCell }
+    { headerName: '操作', minWidth: 210, flex: 1, sortable: false, cellRenderer: AccountActionsCell }
   ], []);
   const gridContext = useMemo(() => ({
     transferTargets,
     onTransferChange: (userId, targetId) => setTransfer((current) => ({ ...current, [userId]: targetId })),
-    onChangeStatus: (user) => void changeStatus(user)
+    onChangeStatus: (user) => void changeStatus(user),
+    onChangeRole: (user) => void changeRole(user)
   }), [transferTargets, transfer, busy]);
 
   return <section className="feature-page account-management-page" aria-labelledby="account-list-title">
     <div className="account-management-status">
       {notice ? <p className="success-message" role="status">{notice}</p> : null}
-      {error ? <p className="error-message" role="alert">{error.apiMessage || error.code || '帳號操作失敗。'}{error.requestId ? `（識別碼：${error.requestId}）` : ''}</p> : null}
+      {error ? <p className="error-message" role="alert">{error.apiMessage || error.message || error.code || '帳號操作失敗。'}{error.requestId ? `（識別碼：${error.requestId}）` : ''}</p> : null}
     </div>
     <section className="history-panel account-management-panel" aria-label="帳號列表">
       <div className="account-management-panel-header">

@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
 import { isSupportedLanguage } from './languages.js';
 import { mergeMeetingGlossaryEntries } from '../src/lib/meetingGlossary.js';
+import { serializeEffectiveGlossary } from '../src/lib/glossaryRevision.js';
 
 export const DEFAULT_LIVE_TRANSLATE_MODEL = 'gemini-3.5-live-translate-preview';
 export const LIVE_TRANSLATE_MODEL = DEFAULT_LIVE_TRANSLATE_MODEL;
@@ -157,11 +159,15 @@ export async function createLiveToken(body, options = {}) {
     throw error;
   }
   const meetingSettings = meeting
-    ? await activeMeetingSettingsSnapshot(meeting, options.meetingRepository)
+    ? options.authoritativeSegment?.settingsSnapshot
+      || await activeMeetingSettingsSnapshot(meeting, options.meetingRepository)
     : null;
+  const authoritativeGlobalGlossaryEntries = Array.isArray(meetingSettings?.globalGlossaryEntries)
+    ? meetingSettings.globalGlossaryEntries
+    : globalGlossaryEntries;
   const glossaryEntries = meetingSettings
     ? mergeMeetingGlossaryEntries(
-      [...globalGlossaryEntries, ...(meetingSettings.glossaryEntries || [])],
+      [...authoritativeGlobalGlossaryEntries, ...(meetingSettings.glossaryEntries || [])],
       meetingSettings.privateGlossaryEntries,
       request.targetLanguageCode
     )
@@ -183,6 +189,13 @@ export async function createLiveToken(body, options = {}) {
     { ...request, liveTranslateModel: liveModel, ...(targetGlossaryEntries === undefined ? {} : { glossaryEntries: targetGlossaryEntries }) },
     now
   );
+  const effectiveGlossaryRevision = createHash('sha256')
+    .update(serializeEffectiveGlossary({
+      sourceLanguageCode: request.sourceLanguageCode,
+      targetLanguageCode: request.targetLanguageCode,
+      entries: targetGlossaryEntries || []
+    }))
+    .digest('hex');
   const client = options.client || (await createGenAiClient(apiKey));
 
   try {
@@ -192,7 +205,12 @@ export async function createLiveToken(body, options = {}) {
       expiresAt: configWithGlossary.expireTime,
       liveConnectModel: liveModel,
       liveConnectConfig: configWithGlossary.liveConnectConstraints.config,
-      liveGlossaryEntries: targetGlossaryEntries || []
+      liveGlossaryEntries: targetGlossaryEntries || [],
+      effectiveGlossaryRevision,
+      glossaryEntryCount: targetGlossaryEntries?.length || 0,
+      ...(options.authoritativeBinding
+        ? { authoritativeSegment: { ...options.authoritativeBinding } }
+        : {})
     };
   } catch (cause) {
     const error = new Error('Failed to create Gemini ephemeral token');
@@ -270,8 +288,11 @@ export function resolveLiveTranslateModel(env = process.env) {
 
 function glossaryInstruction(entries) {
   return [
-    'Glossary instructions: when a source term occurs while translating to the current target language, use its specified target translation in both translated speech audio and output transcription.',
-    'Do not say or write the source term in the translated output when a required translation is provided.',
+    'Authoritative terminology replacements for the current target language: each source term maps to its required target translation; this is a replacement rule, not an additional hint.',
+    'Use the required glossary translation once for each corresponding occurrence of the source term.',
+    'Preserve intentional repetitions, repeated words, pauses, and distinct utterances. Do not summarize, collapse, or omit repeated speech.',
+    'Apply the required glossary translation in the corresponding position in both translated speech audio and output transcription.',
+    'Do not also output the ordinary translation, paraphrase, explanation, or source term for the matched source term.',
     ...entries.map((entry) => `Source term: ${entry.source}\nRequired translation: ${entry.target}`)
   ].join('\n');
 }

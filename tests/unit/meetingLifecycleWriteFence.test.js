@@ -27,3 +27,20 @@ test('meeting lifecycle write headers bind session, segment, lease, and fence', 
   clearMeetingLifecycleWriteFence('meeting-1');
   assert.deepEqual(meetingLifecycleWriteHeaders('meeting-1', 'segment-1'), {});
 });
+
+test('lifecycle v2 write headers include the authoritative lifecycle version', () => {
+  setMeetingLifecycleWriteFence({
+    meetingId: 'meeting-2',
+    sessionId: 'session-2',
+    segmentId: 'segment-2',
+    leaseId: 'lease-2',
+    fenceToken: 5,
+    lifecycleVersion: 9
+  });
+
+  assert.equal(
+    meetingLifecycleWriteHeaders('meeting-2', 'segment-2')['x-meeting-lifecycle-version'],
+    '9'
+  );
+  clearMeetingLifecycleWriteFence('meeting-2');
+});

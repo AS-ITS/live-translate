@@ -176,6 +176,66 @@ test('local silence finalize commits a complete Cue immediately without ending p
   await session.cleanup({ closeSession: false });
 });
 
+test('Gemini late output fragment keeps the complete same-turn translation after local silence', async () => {
+  let cueState = createSubtitleCueState();
+  let clock = 0;
+  const normalizedTranslationEvents = [];
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-late-output-fragment',
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'zh-Hant',
+    silenceFinalizeMs: 20,
+    sessionClock: () => (clock += 50),
+    onCueEvent: (event) => {
+      if (event.stream === 'translation') normalizedTranslationEvents.push(event);
+      cueState = applySubtitleCueEvent(cueState, event);
+      if (event.localFinalize) {
+        cueState = finalizePendingSubtitleCue(cueState, {
+          sessionTimeMs: clock + 1,
+          reason: event.finalizedReason
+        });
+      }
+    }
+  });
+
+  session.trackSpeechActivity(new Float32Array(160).fill(0.2));
+  session.handleMessage({
+    eventId: 'reported-source',
+    serverContent: { inputTranscription: { text: '錄音測試，你有聽到嗎？' } }
+  });
+  session.handleMessage({
+    eventId: 'reported-translation-prefix',
+    serverContent: { outputTranscription: { text: 'Recording test, did you hear' } }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  session.handleMessage({
+    eventId: 'reported-translation-tail',
+    serverContent: { outputTranscription: { text: 'me?' } }
+  });
+
+  const tailEvent = normalizedTranslationEvents.at(-1);
+  assert.deepEqual(
+    {
+      text: tailEvent.text,
+      textMergeMode: tailEvent.textMergeMode,
+      isFinal: tailEvent.isFinal,
+      isLateTranscript: tailEvent.isLateTranscript,
+      audioTurnId: tailEvent.audioTurnId
+    },
+    {
+      text: 'me?',
+      textMergeMode: 'append',
+      isFinal: true,
+      isLateTranscript: true,
+      audioTurnId: normalizedTranslationEvents[0].audioTurnId
+    }
+  );
+  assert.equal(cueState.finalCues.length, 1);
+  assert.equal(cueState.finalCues[0].translatedText, 'Recording test, did you hear me?');
+
+  await session.cleanup({ closeSession: false });
+});
+
 test('Gemini same-turn source snapshots without turnIndex remain one final cue', () => {
   let cueState = createSubtitleCueState();
   let clock = 0;

@@ -63,7 +63,7 @@ test('worker returns the processed result', async () => {
   assert.deepEqual(calls, [{ limit: 3 }]);
 });
 
-test('worker expires stale Meetings in the same bounded CRON invocation', async () => {
+test('legacy worker does not start retention for stale Meetings', async () => {
   process.env.CRON_SECRET = 'expected-secret';
   const calls = [];
   const handler = createWorkerHandler({
@@ -92,11 +92,11 @@ test('worker expires stale Meetings in the same bounded CRON invocation', async 
   await handler({ method: 'POST', headers: { authorization: 'Bearer expected-secret' } }, res);
 
   assert.equal(res.statusCode, 200);
-  assert.deepEqual(JSON.parse(res.body), { ok: true, processed: 0, busy: false, meetingExpiration: { expired: 2 } });
-  assert.deepEqual(calls, [['expire', { limit: 3 }], ['translation', { limit: 3 }]]);
+  assert.deepEqual(JSON.parse(res.body), { ok: true, processed: 0, busy: false });
+  assert.deepEqual(calls, [['translation', { limit: 3 }]]);
 });
 
-test('worker runs due Meeting purge in the same bounded CRON invocation', async () => {
+test('legacy worker cannot hard-delete Meetings through old purge path', async () => {
   process.env.CRON_SECRET = 'expected-secret';
   const calls = [];
   const handler = createWorkerHandler({
@@ -126,9 +126,8 @@ test('worker runs due Meeting purge in the same bounded CRON invocation', async 
     ok: true,
     processed: 0,
     busy: false,
-    purges: { claimed: 2, purged: 1, failed: 1 }
   });
-  assert.deepEqual(calls, [{ limit: 3 }]);
+  assert.deepEqual(calls, []);
 });
 
 test('worker logs a safe diagnostic and returns 503 on execution failure', async () => {

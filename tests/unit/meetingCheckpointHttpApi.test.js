@@ -285,6 +285,100 @@ test('Meeting Cue publish API emits a Viewer SSE event without checkpoint persis
   });
 });
 
+test('Meeting Cue publish accepts a successor Segment bound to the same Session', async () => {
+  let meetingId = null;
+  const repository = createMemoryMeetingRepository();
+  const sessionRepository = {
+    async getSessionRecord() {
+      return { sessionRecord: { id: 'session-live', meetingId, segmentId: 'segment-1' } };
+    }
+  };
+  const meetingEventBroadcaster = (await import('../../src/infrastructure/meetingEventBroadcaster.js')).createMeetingEventBroadcaster();
+  const handler = createHandler({
+    meetingRepository: repository,
+    sessionRepository,
+    meetingEventBroadcaster
+  });
+  const created = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({ draft: true })
+  })).json();
+  meetingId = created.meeting.id;
+  repository.createMeetingSegment({
+    id: 'segment-successor',
+    meetingId,
+    sequence: created.segment.sequence + 1,
+    status: 'active',
+    startedAt: 1001,
+    endedAt: null,
+    liveSessionId: 'live-successor',
+    sessionId: 'session-live',
+    createdAt: 1001,
+    updatedAt: 1001
+  });
+
+  const published = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meetingId}/segments/segment-successor/cues`,
+    body: JSON.stringify({
+      sessionId: 'session-live',
+      producedAt: 1010,
+      cue: finalCue({ sessionId: 'session-live', segmentId: 'segment-successor' })
+    })
+  });
+
+  assert.equal(published.status, 202, published.body);
+  assert.deepEqual(published.json(), { eventId: 1, cueSequence: 1 });
+});
+
+test('Meeting Cue publish rejects a Segment bound to another Session', async () => {
+  let meetingId = null;
+  const repository = createMemoryMeetingRepository();
+  const sessionRepository = {
+    async getSessionRecord() {
+      return { sessionRecord: { id: 'session-live', meetingId, segmentId: 'segment-1' } };
+    }
+  };
+  const meetingEventBroadcaster = (await import('../../src/infrastructure/meetingEventBroadcaster.js')).createMeetingEventBroadcaster();
+  const handler = createHandler({
+    meetingRepository: repository,
+    sessionRepository,
+    meetingEventBroadcaster
+  });
+  const created = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({ draft: true })
+  })).json();
+  meetingId = created.meeting.id;
+  repository.createMeetingSegment({
+    id: 'segment-other-session',
+    meetingId,
+    sequence: created.segment.sequence + 1,
+    status: 'active',
+    startedAt: 1001,
+    endedAt: null,
+    liveSessionId: 'live-other',
+    sessionId: 'session-other',
+    createdAt: 1001,
+    updatedAt: 1001
+  });
+
+  const published = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meetingId}/segments/segment-other-session/cues`,
+    body: JSON.stringify({
+      sessionId: 'session-live',
+      producedAt: 1010,
+      cue: finalCue({ sessionId: 'session-live', segmentId: 'segment-other-session' })
+    })
+  });
+
+  assert.equal(published.status, 403);
+  assert.equal(published.json().error.code, 'recorder_session_mismatch');
+});
+
 test('Meeting Cue replay keeps source-only Cue and delayed translation update on one Cue ID', async () => {
   let meetingId = null;
   const sessionRepository = {

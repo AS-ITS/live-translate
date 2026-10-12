@@ -53,6 +53,12 @@ lease model, or security model.
 
 ## User Experience
 
+Live Recorder 與 Viewer 共用同一套原文／翻譯顯示切換規則。兩個按鈕始終可操作；若使用者隱藏目前唯一可見的字幕，系統會同步顯示另一側，確保原文與翻譯不會同時隱藏。
+
+Viewer 全螢幕是 presentation-only state。穩定的 `viewer-fullscreen-shell` 包含 Header、QR 與字幕內容，WebRTC transport generation、PeerConnection、DataChannel、replay 或 snapshot 更新不得替換或重新掛載此 DOM。瀏覽器支援時使用原生 Fullscreen API，並以 `document.fullscreenElement` 及 `fullscreenchange` 同步 UI；API 缺席或拒絕時改用 fixed、dynamic viewport height 與 safe-area inset 的 CSS presentation mode，不承諾隱藏 iOS 瀏覽器工具列。reconnect 不得重設全螢幕、原文／翻譯顯示偏好或字幕 auto-follow／scroll state。原生全螢幕拒絕提示可手動關閉並在 5 秒後自動清除，新嘗試會先清除舊提示與 timer。
+
+Viewer 初次載入與停留底部時自動跟隨最新 Cue。使用者向上捲動後，以穩定 `cueId` 保存閱讀錨點，snapshot/replay merge、Cue revision、高度變化、Pause/Continue、reconnect 與 fullscreen viewport 變化都不得強制捲到底部。歷史閱讀期間繼續接收並渲染 Cue，浮動控制以唯一 `cueId` 顯示未查看數量；手動回到底部或點擊控制後恢復 auto-follow。
+
 ### Meeting Management home
 
 The home route displays only the Meeting Management list. The left-side feature
@@ -251,11 +257,25 @@ uploads, or unrelated background work before notifying Viewers.
 
 ## Viewer Ordering and Reconnect
 
+WebRTC recovery keeps the Redis signaling cursor monotonic for the participant
+heartbeat lifetime, while individual offer/answer/ICE messages retain their
+shorter TTL. This prevents a long quiet connection from resetting a new
+`viewer-ready` message below the Device polling cursor.
+
+Viewer reports `connected` only when PeerConnection is connected, ICE is
+non-terminal, and the subtitle DataChannel is open. DataChannel ping/pong runs
+every ten seconds; a 25-second unanswered ping triggers recovery, while absence
+of Cue traffic alone never marks transport dead. Every replacement DataChannel
+requests replay after the last source sequence and receives a full snapshot
+when the source changed or retained replay history has a gap.
+
 The initial snapshot returns the latest 100 Cues and an opaque cursor for
 loading older pages. Each older page is merged by Cue ID without duplicates or
 omissions. The Viewer uses `cueId` as the idempotency key and orders Cues by
 Segment sequence followed by Cue sequence. A newer version may replace the same Cue;
-a stale version cannot overwrite a newer one.
+a stale version cannot overwrite a newer one. Device snapshots and cloud events
+carry validated Segment sequence. A live Cue without resolved Segment order stays
+after ordered historical Cues. Source and translation versions merge independently.
 
 Reconnect behavior:
 
@@ -265,6 +285,33 @@ Reconnect behavior:
 4. Reconnect to SSE with the latest cursor when supported.
 5. Apply new events through the same deduplication and ordering rules.
 6. Refetch the snapshot if a sequence gap is detected.
+
+The WebRTC fast path renews its signaling participant with an authorized `/join`.
+Viewer join requests a fresh negotiation, Device maintains a targeted peer per
+Viewer, and low-frequency discovery polling continues while channels are open.
+Supabase Realtime token refresh and channel-failure reconnect use independent
+timers. A `CHANNEL_ERROR`, `TIMED_OUT`, or `CLOSED` status cancels the current
+generation's refresh timer, tears down that channel, and starts bounded
+reconnect; late callbacks from an old generation cannot remove its replacement.
+The Viewer keeps current Cues during recovery. A transient `disconnected` state receives
+a five-second grace period; the Device then attempts ICE restart and rebuilds
+the peer if recovery does not complete within ten seconds. Full reconnect uses
+at most six attempts with jittered exponential delays capped at ten seconds.
+Snapshot, Realtime, and SSE recovery classify stopped, revoked, and unauthorized
+shares as terminal. Transient snapshot failures retry without clearing Cues.
+WebRTC recovery uses at most six attempts; exhausted WebRTC or fallback recovery
+enters `recovery_failed`, preserves Cues, scroll position, subtitle visibility,
+and fullscreen state, then shows an inline “重新整理頁面” action. The Viewer
+never reloads automatically. A later healthy PeerConnection, ICE state, and open
+DataChannel may return `recovery_failed` to `connected` before the user reloads.
+
+DataChannel snapshot and replay envelopes may include `sourceId`. A Viewer asks
+the same source to replay after its last received transport sequence. A changed
+source starts from a snapshot. Replay older than retained history also returns
+a snapshot. Cloud Cue publication continues while WebRTC is connected, allowing
+snapshot and Realtime replay after a later outage. Cue merge remains authoritative by `cueId` and
+source/translation/refinement versions, so a late snapshot cannot replace a
+newer Cue.
 
 The Viewer follows the latest Cue by default. Manual upward scrolling disables
 automatic scrolling and shows a “back to latest” action. A new Cue does not
@@ -307,16 +354,34 @@ historical data behavior before the next phase begins.
 
 ## Short-lived retention behavior
 
-Completed lifecycle v2 Meetings expose `purgeAt` to the owner detail view so
-the 30-minute export/audio window is explicit. Before physical deletion,
-expired owner content returns `410 meeting_content_expired`; after deletion it
-returns the normal not-found response. The retention worker records bounded
-claim, completion, failure, and latency metrics without content or Storage
-paths. Legacy v1 rows remain readable while v2 writes stop populating legacy
-`sessions.segment_id`, `meeting_segments.live_session_id`, and
-`sessions.transcript_items` fields.
+Only successful Meeting completion starts one recording-wide 30-minute deadline;
+all Sessions and rollover Segments in that recording share it. The database
+sets and freezes `ended_at` and `purge_at`. Pauses, reconnects, rollovers,
+interruption, and failed sessions do not start or extend it. Legacy rows without
+a verified completion anchor are not bulk-deleted.
+
+At expiry, recording content, Viewer snapshot/replay, new cues, checkpoint
+writes, background output, and direct authenticated Storage access are rejected.
+Meeting settings, members, glossary, and audit records remain. The UI separates
+"錄製資料已到期" from "實體資料已清除". Local OPFS and IndexedDB copies are
+checked on startup, foreground, every minute, and before reads/exports; a
+crashed/closed browser cleans on next opening. An export started before expiry
+may finish while its browser lock delays local deletion. Downloaded files are
+outside application control.
+
+There is no Supabase Cron, Vercel Cron, or external scheduler. Existing Meeting
+GET requests opportunistically trigger a managed background batch: at most one
+Meeting, 20 Storage objects or 50 database rows, with a persistent 15-second
+cross-instance throttle and a short retryable claim. With no website/API
+traffic, cloud physical data may remain past the 30-minute deadline until the
+next relevant request; access is still denied at expiry. Storage objects are
+removed through the official Storage API. A completed or expired Meeting can
+still be manually deleted; only its owner or an active super-admin can retry a
+completed deletion using the protected minimal tombstone.
 
 ## Security and Compatibility Constraints
+
+Viewer 在 Recorder 尚未出現時維持單一 negotiation，週期性重送 `viewer-ready` 作為 discovery，不重建 PeerConnection 或消耗 transport recovery 次數。Recorder 在成功續租 signaling participant 後重設 discovery recovery budget；單一 Viewer peer 中斷不得停止其他 Viewer 或 Recorder 的 discovery poll。DataChannel 建立後仍以 Snapshot／Replay 補齊，再接續可靠有序的 Live Cue。
 
 - Never expose `GEMINI_API_KEY` or ephemeral tokens to Viewers.
 - Preserve `/api/live-token` access gates, rate limits, and origin checks.

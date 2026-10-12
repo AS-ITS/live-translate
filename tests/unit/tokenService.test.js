@@ -113,6 +113,10 @@ test('createLiveToken resolves live-scoped glossary entries for token and browse
   assert.deepEqual(result.liveConnectConfig, tokenConfig.liveConnectConstraints.config);
   assert.deepEqual(result.liveGlossaryEntries, [{ source: 'Codex', target: 'コーデックス', replacementAliases: ['code x'] }]);
   assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /Codex/);
+  assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /replacement rule, not an additional hint/);
+  assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /once for each corresponding occurrence of the source term/);
+  assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /Preserve intentional repetitions, repeated words, pauses, and distinct utterances/);
+  assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /Do not summarize, collapse, or omit repeated speech/);
 });
 
 test('createLiveToken merges global and meeting glossary entries in provider config', async () => {
@@ -237,4 +241,28 @@ test('createLiveToken never falls back to process.env.GEMINI_API_KEY', async () 
     if (previous === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = previous;
   }
+});
+
+test('authoritative Segment freezes global glossary until the next Segment boundary', async () => {
+  const client = { authTokens: { async create() { return { name: 'token' }; } } };
+  const result = await createLiveToken(
+    { targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant', meetingId: 'meeting-1' },
+    {
+      client,
+      glossary: { entriesFor: async () => [{ source: '你好', target: 'current-global' }] },
+      meetingRepository: { async getMeeting() { return { id: 'meeting-1' }; } },
+      authoritativeSegment: {
+        settingsSnapshot: {
+          sourceLanguageCode: 'zh-Hant',
+          targetLanguageCode: 'en',
+          globalGlossaryEntries: [{ source: '你好', target: 'snapshot-global' }],
+          glossaryEntries: [{ source: '你好', target: 'meeting-wins' }],
+          privateGlossaryEntries: []
+        }
+      }
+    }
+  );
+  assert.deepEqual(result.liveGlossaryEntries, [
+    { source: '你好', target: 'meeting-wins', replacementAliases: [] }
+  ]);
 });

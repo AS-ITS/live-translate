@@ -2,7 +2,7 @@
 
 ## 證據邊界
 
-正式錄音端與 Viewer 已接入 `subtitle-webrtc/v1` DataChannel fast path。自動化驗證涵蓋授權、snapshot、`cue.append`、`cue.update`、replay、去重、清理與安全錯誤碼；跨網路、實機 candidate pair、TURN、錄音 gap 仍待人工驗證。
+正式錄音端與 Viewer 已接入 `subtitle-webrtc/v1` DataChannel fast path。自動化驗證涵蓋授權、participant heartbeat、snapshot、`cue.append`、`cue.update`、same-source replay、暫時斷線 grace、ICE restart、poll/snapshot retry、舊 epoch 隔離、重試耗盡、去重、清理與安全錯誤碼；跨網路、實機 candidate pair、TURN relay、錄音 gap 仍待人工驗證。
 
 Realtime／SSE fallback 仍依賴既有雲端 cue 寫入。本輪沒有完成本機錄製整合，也沒有解決 checkpoint／cue 503，不得把 fallback 可用性或 DataChannel ACK 當成字幕已持久化證據。
 
@@ -33,6 +33,7 @@ Vercel signaling route 使用 Upstash HTTPS REST client：
 ```text
 WEBRTC_SIGNALING_REDIS_URL=https://<upstash-rest-host>
 WEBRTC_SIGNALING_REDIS_TOKEN=<upstash-rest-token>
+WEBRTC_ICE_SERVERS_JSON=[{"urls":["stun:stun.example.com:3478"]},{"urls":["turns:turn.example.com:5349"],"username":"<short-lived-user>","credential":"<short-lived-credential>"}]
 ```
 
 保留的 Relay core 使用 ioredis 時必須使用另一組連線設定：
@@ -41,7 +42,7 @@ WEBRTC_SIGNALING_REDIS_TOKEN=<upstash-rest-token>
 WEBRTC_RELAY_REDIS_URL=rediss://:<password>@<redis-host>:<port>
 ```
 
-不得把 REST URL/token 傳給 ioredis，也不得把 `rediss://` 傳給 REST adapter。本輪不啟用 Relay core 或付費 TURN。
+不得把 REST URL/token 傳給 ioredis，也不得把 `rediss://` 傳給 REST adapter。`WEBRTC_ICE_SERVERS_JSON` 是 server-only 設定，只接受 `stun:`、`stuns:`、`turn:`、`turns:` URL；格式錯誤會拒絕啟動 signaling，且不得把 TURN credential 寫入日誌。跨 NAT 或 Wi-Fi／行動網路切換需要可達的 TURN，建議至少提供 `turns:` TLS 端點與短效 credential。未配置並實測 TURN 前，不得宣稱跨網路恢復已完整驗證。
 
 ## Preview 部署
 
@@ -62,8 +63,9 @@ WEBRTC_RELAY_REDIS_URL=rediss://:<password>@<redis-host>:<port>
 1. Device 端登入 Preview，從會議頁選取可錄製 meeting，按「開始錄音」。確認本機錄音持續，詳細狀態出現「字幕分享：連線中／已連線」。
 2. Viewer 在另一個網路開啟既有分享連結，不填任何技術欄位。確認依序顯示「連線中／等待錄音開始／已連線」。
 3. 說出兩段內容，確認 Viewer 收到 snapshot、append；再觸發修正文句，確認同 cueId 更新且沒有重複列。
-4. Viewer 暫時斷網後恢復，確認「重新連線中」，replay/snapshot 後 cue 不重複。若自動重連用盡，按「重試」。
-5. Device 結束錄音，確認 Viewer 顯示「會議已停止」。另用 expired/revoked code 驗證「分享已失效」。
+4. Viewer 斷網 30 秒後恢復，再測試鎖屏／回前景與 Wi-Fi/4G 切換事件。確認既有字幕保留，狀態依序顯示「正在重新連線」與三秒「已恢復連線」，replay/snapshot 後 Cue 不重複。若六次自動重連用盡，按「重新連線」。
+5. Device 執行 pause/resume 與 provider reconnect/rollover，確認 Viewer 透過 snapshot/replay 補齊且不清空既有 Cue。
+6. Device 結束錄音，確認 Viewer 顯示「會議已停止」。另用 expired/revoked code 驗證「分享已失效」，且不再發出 snapshot、heartbeat 或 fallback retry。
 
 ## `getStats()` 證據
 

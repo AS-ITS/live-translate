@@ -40,7 +40,7 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
       const action = options.action ?? 'all';
       const result = options.result ?? 'all';
       const query = String(options.query ?? '').trim();
-      const actions = ['member_invited', 'member_removed', 'user_approved', 'user_enabled', 'user_disabled', 'asset_transfer', 'auth_login'];
+      const actions = ['member_invited', 'member_removed', 'user_approved', 'user_enabled', 'user_disabled', 'asset_transfer', 'auth_login', 'account.role.promoted', 'account.role.demoted'];
       if (!Number.isInteger(page) || page < 1 || ![25, 50, 100].includes(pageSize) || (action !== 'all' && !actions.includes(action)) || !['all', 'success', 'failure'].includes(result) || query.length > 100) throw accountError('invalid_request', 400);
       const filters = [];
       if (action !== 'all') filters.push(`action=eq.${encodeURIComponent(action)}`);
@@ -103,6 +103,24 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
         return rows[0];
       } catch (error) { await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'user_enabled', request_id: requestId, result: 'failure' }); throw error; }
     },
+    async updateUserRole(actor, targetUserId, newRole, requestId) {
+      assertAdmin(actor);
+      if (!['member', 'super_admin'].includes(newRole)) throw accountError('invalid_account_role', 400);
+      const rows = await request('/rest/v1/rpc/update_account_role', {
+        method: 'POST',
+        body: {
+          p_actor_user_id: actor.id,
+          p_target_user_id: targetUserId,
+          p_new_role: newRole,
+          p_request_id: requestId
+        }
+      });
+      const result = Array.isArray(rows) ? rows[0] : rows;
+      if (!result) throw accountError('supabase_request_failed', 503);
+      if (result.outcome !== 'ok') throw roleUpdateError(result.outcome);
+      const { outcome: _outcome, changed, ...user } = result;
+      return { user, changed: changed === true };
+    },
     async disableUser(actor, targetUserId, transferToUserId, requestId) {
       assertAdmin(actor);
       if (actor.id === targetUserId) {
@@ -131,6 +149,17 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
 }
 
 function accountError(code, status) { const error = new Error(code); error.code = code; error.status = status; return error; }
+
+function roleUpdateError(code) {
+  const statuses = {
+    auth_forbidden: 403,
+    invalid_account_role: 400,
+    account_not_found: 404,
+    cannot_demote_self: 409,
+    last_super_admin: 409
+  };
+  return accountError(Object.hasOwn(statuses, code) ? code : 'supabase_request_failed', statuses[code] || 503);
+}
 
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);

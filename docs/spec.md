@@ -204,9 +204,12 @@ creates a permanent Viewer share after a new Meeting is saved.
 Share creation retries up to three times; a failed share does not roll back the
 saved Meeting.
 
-Meeting settings may be edited after sharing. If recording is active, a language
-or glossary change takes effect at the next Segment boundary by stopping the
-current Live session and starting a new Segment with the updated settings.
+Meeting settings may be edited after sharing. If recording is active, language
+changes and Gemini provider glossary instructions take effect at the next
+normal Segment boundary. A saved glossary independently refreshes the local
+correction snapshot for subsequent Turns without stopping recording, creating
+a Segment, or reconnecting the Gemini provider. Existing Turns and finalized
+Cues retain the correction revision they first accepted.
 
 ## Supported MVP Languages
 

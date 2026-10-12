@@ -113,6 +113,49 @@ test('meeting checkpoint API client executes lifecycle v2 commands and heartbeat
   assert.equal(calls[1].url, '/api/meetings/meeting-1/recording/lease/heartbeat');
 });
 
+test('meeting checkpoint API client accepts transactional legacy resume without lifecycle lease fields', async () => {
+  const calls = [];
+  const response = {
+    meeting: { id: 'meeting-1' },
+    segment: { id: 'segment-2' },
+    operation: { payloadHash: 'hash-1', sourceSegmentId: 'segment-1' },
+    effectiveGlossaryRevision: 'revision-1'
+  };
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return ok(response);
+    }
+  });
+
+  const resumed = await client.resumeLegacySegment({
+    meetingId: 'meeting-1',
+    operationId: 'continue-1',
+    sourceSegmentId: 'segment-1'
+  });
+  const reconciled = await client.getLegacyResumeOperation({
+    meetingId: 'meeting-1',
+    operationId: 'continue-1',
+    sourceSegmentId: 'segment-1'
+  });
+
+  assert.equal(resumed.segment.id, 'segment-2');
+  assert.equal(reconciled.effectiveGlossaryRevision, 'revision-1');
+  assert.equal(calls[0].url, '/api/meetings/meeting-1/recording/legacy-resume');
+  assert.equal(JSON.parse(calls[1].options.body).reconcileOnly, true);
+});
+
+test('meeting checkpoint API client marks a timed out lifecycle mutation as unknown outcome', async () => {
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('aborted')));
+    }),
+    lifecycleTimeoutMs: 1
+  });
+  const request = client.executeRecordingCommand({ meetingId: 'meeting-1', command: 'rollover', operationId: 'operation-1', expectedLifecycleVersion: 1 });
+  await assert.rejects(request, (error) => error.code === 'request_timeout' && error.outcomeUnknown === true);
+});
+
 test('meeting checkpoint API client updates a segment checkpoint', async () => {
   const calls = [];
   const client = createMeetingCheckpointApiClient({
@@ -307,6 +350,26 @@ test('meeting checkpoint API client preserves structured checkpoint error detail
       && error.details[0] === 'segmentId must be a valid UUID.'
       && error.requestId === 'request-cue-400'
   );
+});
+
+test('recover 409 retains operation, response code, and requestId without claiming checkpoint failed', async () => {
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async () => ({
+      ok: false,
+      status: 409,
+      headers: { get: () => 'request-recover-409' },
+      json: async () => ({ error: { code: 'checkpoint_conflict', message: 'Recovery conflict.' } })
+    })
+  });
+  await assert.rejects(client.recoverSegment({
+    meetingId: 'meeting-1', segmentId: 'segment-1', idempotencyKey: 'recover-1',
+    checkpoint: { idempotencyKey: 'checkpoint-1', durableChunks: [], pendingPartial: null },
+    nextLiveSessionId: 'live-2', failureReason: 'manual_resume', failureCategory: 'user_intent', outcome: 'interrupted'
+  }), (error) => error.operation === 'recover-segment'
+    && error.status === 409
+    && error.code === 'checkpoint_conflict'
+    && error.requestId === 'request-recover-409'
+    && /^Meeting recover API/.test(error.message));
 });
 
 function ok(body) {

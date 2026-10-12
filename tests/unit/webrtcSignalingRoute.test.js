@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import test from 'node:test';
-import { createDefaultWebRtcDeviceAuthorizer, createDefaultWebRtcShareResolver, createVercelWebRtcSignalingHandler } from '../../api/webrtc/[...path].js';
+import { createDefaultWebRtcDeviceAuthorizer, createDefaultWebRtcShareResolver, createVercelWebRtcSignalingHandler, parseWebRtcIceServersJson } from '../../api/webrtc/[...path].js';
 import { createRedisRestAdapter } from '../../server/webrtc/signalingRoute.js';
 
 class FakeRedis {
@@ -38,17 +38,25 @@ class FakeRedis {
   async mget(keys) { return keys.map((key) => this.read(key)); }
   async eval(script, count, ...args) {
     assert.equal(script.includes('webrtc-route-join'), true);
-    assert.equal(count, 3);
-    const [revokedKey, participantKey, membersKey, participantPrefix, participantRaw, ttl, cap, participantId] = args;
+    assert.equal(count, 4);
+    const [revokedKey, participantKey, membersKey, cursorKey, participantPrefix, participantRaw, ttl, cap, participantId] = args;
     if (this.read(revokedKey)) return ['revoked'];
     const existing = this.read(participantKey);
-    if (existing) { await this.pexpire(participantKey, ttl); return ['existing', existing]; }
+    if (existing) {
+      await this.set(participantKey, participantRaw, 'PX', ttl);
+      const members = this.members.get(membersKey) || new Set();
+      members.add(participantId);
+      this.members.set(membersKey, members);
+      await this.pexpire(cursorKey, ttl);
+      return ['existing', participantRaw];
+    }
     const members = this.members.get(membersKey) || new Set();
     for (const member of members) if (!this.read(`${participantPrefix}${member}`)) members.delete(member);
     if (members.size >= Number(cap)) return ['cap'];
     await this.set(participantKey, participantRaw, 'PX', ttl);
     members.add(participantId);
     this.members.set(membersKey, members);
+    await this.pexpire(cursorKey, ttl);
     return ['joined', participantRaw];
   }
 }
@@ -94,6 +102,90 @@ test('two Vercel handler instances share Redis-backed join, signal, and polling 
   assert.deepEqual(polled.json.messages.map((message) => message.type), ['offer']);
   assert.equal(polled.json.after, 1);
   assert.equal([...ctx.redis.values.keys()].some((key) => key.includes('subtitle')), false);
+});
+
+test('targeted signaling reaches only the joined Viewer for its negotiation', async () => {
+  const ctx = setup({ maxParticipantsPerMeeting: 4, maxMessageBytes: 256 });
+  for (const participantId of ['host-1', 'viewer-a', 'viewer-b']) {
+    await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/join', body: participantId === 'host-1'
+      ? { participantId, role: 'host', shareToken: 'host' }
+      : { participantId, role: 'viewer', shareToken: 'viewer' } });
+  }
+  await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/signal', body: {
+    participantId: 'host-1', type: 'offer', payload: { type: 'offer', sdp: 'private' },
+    targetParticipantId: 'viewer-a', negotiationId: 'n-a'
+  } });
+  const first = await request(ctx.two, { method: 'GET', url: '/api/webrtc/meeting-1/signal?participantId=viewer-a&after=0' });
+  const second = await request(ctx.two, { method: 'GET', url: '/api/webrtc/meeting-1/signal?participantId=viewer-b&after=0' });
+  assert.deepEqual(first.json.messages.map((message) => message.negotiationId), ['n-a']);
+  assert.deepEqual(second.json.messages, []);
+});
+
+test('join heartbeat renews participant identity and TTL after reauthorization', async () => {
+  let now = 1_000;
+  const redis = new FakeRedis(() => now);
+  const handler = createVercelWebRtcSignalingHandler({
+    redis,
+    resolveShareToken: resolver,
+    clock: () => now,
+    participantTtlMs: 100,
+  });
+
+  const first = await request(handler, {
+    method: 'POST',
+    url: '/api/webrtc/meeting-1/join',
+    body: { participantId: 'viewer-heartbeat', role: 'viewer', shareToken: 'viewer' },
+  });
+  assert.equal(first.json.participant.expiresAt, 1_100);
+
+  now = 1_060;
+  const heartbeat = await request(handler, {
+    method: 'POST',
+    url: '/api/webrtc/meeting-1/join',
+    body: { participantId: 'viewer-heartbeat', role: 'viewer', shareToken: 'viewer' },
+  });
+  assert.equal(heartbeat.json.participant.expiresAt, 1_160);
+
+  now = 1_120;
+  const poll = await request(handler, {
+    method: 'GET',
+    url: '/api/webrtc/meeting-1/signal?participantId=viewer-heartbeat&after=0',
+  });
+  assert.equal(poll.status, 200);
+});
+
+test('join heartbeat preserves monotonic signaling cursor beyond message TTL', async () => {
+  const ctx = setup({ maxMessageBytes: 256 });
+  await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/join', body: { participantId: 'host-1', role: 'host', shareToken: 'host' } });
+  await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/join', body: { participantId: 'viewer-1', role: 'viewer', shareToken: 'viewer' } });
+  const first = await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/signal', body: {
+    participantId: 'viewer-1', type: 'viewer-ready', payload: {}, negotiationId: 'generation-1'
+  } });
+  assert.equal(first.json.sequence, 1);
+
+  ctx.setNow(1_015);
+  await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/join', body: { participantId: 'host-1', role: 'host', shareToken: 'host' } });
+  ctx.setNow(1_025);
+  const recovered = await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/signal', body: {
+    participantId: 'viewer-1', type: 'viewer-ready', payload: {}, negotiationId: 'generation-2'
+  } });
+  assert.equal(recovered.json.sequence, 2, 'recovery message must stay above the Recorder polling cursor');
+
+  const polled = await request(ctx.two, { method: 'GET', url: '/api/webrtc/meeting-1/signal?participantId=host-1&after=1' });
+  assert.deepEqual(polled.json.messages.map((message) => message.negotiationId), ['generation-2']);
+});
+
+test('server-only ICE JSON accepts STUN/TURN entries and rejects unsafe configuration', () => {
+  assert.deepEqual(parseWebRtcIceServersJson(undefined), []);
+  assert.deepEqual(parseWebRtcIceServersJson(JSON.stringify([
+    { urls: ['stun:stun.example.test:3478'] },
+    { urls: ['turns:turn.example.test:5349'], username: 'short-lived', credential: 'server-secret' },
+  ])), [
+    { urls: ['stun:stun.example.test:3478'] },
+    { urls: ['turns:turn.example.test:5349'], username: 'short-lived', credential: 'server-secret' },
+  ]);
+  assert.throws(() => parseWebRtcIceServersJson('{bad json'), /WEBRTC_ICE_SERVERS_JSON/u);
+  assert.throws(() => parseWebRtcIceServersJson(JSON.stringify([{ urls: ['https://example.test'] }])), /WEBRTC_ICE_SERVERS_JSON/u);
 });
 
 test('route fails closed for missing dependencies and rejects invalid share, cap, size, and expired messages', async () => {

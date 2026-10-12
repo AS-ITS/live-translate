@@ -1,6 +1,7 @@
 import { createLocalMeetingRecorder } from './localMeetingRecorder.js';
 import { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore } from './localMeetingStorage.js';
 import { composeLocalMeetingAudioArtifact } from './localMeetingAudioExport.js';
+import { createLocalMeetingRetention } from './localMeetingRetention.js';
 
 export function createLocalMeetingPersistence({
   manifestStore = createIndexedDbLocalMeetingManifestStore(),
@@ -13,13 +14,24 @@ export function createLocalMeetingPersistence({
 } = {}) {
   if (!cryptoImpl?.subtle || typeof cryptoImpl.subtle.digest !== 'function') throw new Error('Web Crypto is unavailable.');
   const recorder = createLocalMeetingRecorder({ manifestStore, chunkStore, now });
+  const retention = typeof manifestStore.getRetention === 'function'
+    ? createLocalMeetingRetention({ manifestStore, chunkStore, now })
+    : { check: async () => {}, assertReadable: async () => {}, withRead: async (_meetingId, work) => work() };
   let activeMeetingId = null;
   let recordingEnabled = recordAudio === true;
   let nextAudioSequence = 1;
   let appendQueue = Promise.resolve();
 
   return Object.freeze({
+    saveContinueOperation(input) {
+      return manifestStore.saveContinueOperation(input);
+    },
+    getPendingContinueOperation(meetingId) {
+      return manifestStore.getPendingContinueOperation(meetingId);
+    },
     async start({ meetingId, recordingId, segmentId } = {}) {
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
       if (!recordingEnabled) {
         activeMeetingId = meetingId || null;
         return Object.freeze({ state: 'disabled', meetingId: activeMeetingId, recordingId: recordingId || null, segmentId: segmentId || null });
@@ -63,7 +75,10 @@ export function createLocalMeetingPersistence({
 
     appendAudioChunk(chunk = {}) {
       if (!recordingEnabled) return Promise.resolve(null);
-      const task = appendQueue.then(() => appendAudioChunkLocked(chunk));
+      const task = appendQueue.then(async () => {
+        await retention.assertReadable(activeMeetingId);
+        return appendAudioChunkLocked(chunk);
+      });
       appendQueue = task.catch(() => {});
       return task;
     },
@@ -78,7 +93,8 @@ export function createLocalMeetingPersistence({
         operationId: createOperationId('finalize')
       });
       const artifact = sealed.length > 0
-        ? await composeAudioArtifact({ chunks: sealed, readChunk: (path) => chunkStore.read(path) })
+        ? await retention.withRead(activeMeetingId,
+          () => composeAudioArtifact({ chunks: sealed, readChunk: (path) => chunkStore.read(path) }))
         : null;
       return Object.freeze({
         status: artifact?.blob?.size > 0 ? 'ready' : 'idle',
@@ -92,6 +108,7 @@ export function createLocalMeetingPersistence({
 
     async listFinalizedAudioArtifacts(meetingId = activeMeetingId) {
       if (!meetingId) return [];
+      return retention.withRead(meetingId, async () => {
       const recording = await recorder.restore(meetingId);
       if (recording.state !== 'stopped_local') return [];
       const chunks = (await manifestStore.list(meetingId))
@@ -118,6 +135,7 @@ export function createLocalMeetingPersistence({
           checksum: chunk.checksum
         }))
       }];
+      });
     },
 
     setRecordingEnabled(value) {
@@ -127,6 +145,8 @@ export function createLocalMeetingPersistence({
 
     async getLocalAudioStatus(meetingId = activeMeetingId) {
       if (!meetingId) return 'idle';
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
       const [recording, chunks] = await Promise.all([recorder.restore(meetingId), manifestStore.list(meetingId)]);
       const sealedChunks = chunks.filter((chunk) => chunk.state === 'sealed');
       if (recording.state === 'stopped_local' && sealedChunks.length > 0) return 'ready';
@@ -135,14 +155,18 @@ export function createLocalMeetingPersistence({
     },
 
     async saveCue({ meetingId, segmentId, sessionId, cue, producedAt } = {}) {
+      await retention.assertReadable(meetingId);
       return manifestStore.saveCue({ meetingId, segmentId, sessionId, cue, producedAt });
     },
 
     async listCues(meetingId, options) {
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
       return manifestStore.listCues(meetingId, options);
     },
 
     async updateCheckpoint(payload = {}) {
+      await retention.assertReadable(payload.meetingId);
       const saved = await manifestStore.saveCheckpoint({
         meetingId: payload.meetingId,
         segmentId: payload.segmentId,
@@ -152,10 +176,14 @@ export function createLocalMeetingPersistence({
     },
 
     async getCheckpoint({ meetingId, segmentId } = {}) {
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
       return manifestStore.getCheckpoint(meetingId, segmentId);
     },
 
     async restore(meetingId) {
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
       const [recording, cues, chunks] = await Promise.all([
         recorder.restore(meetingId),
         manifestStore.listCues(meetingId),

@@ -5,6 +5,33 @@ import { createSupabaseMeetingShareService } from '../../src/infrastructure/supa
 
 export const config = { api: { bodyParser: false }, maxDuration: 10 };
 
+export function parseWebRtcIceServersJson(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return [];
+  try {
+    const value = JSON.parse(String(raw));
+    if (!Array.isArray(value)) throw new TypeError('ICE configuration must be an array.');
+    const allowedProtocols = new Set(['stun:', 'stuns:', 'turn:', 'turns:']);
+    return value.map((server) => {
+      if (!server || typeof server !== 'object' || Array.isArray(server)
+        || !Array.isArray(server.urls) || server.urls.length === 0
+        || server.urls.some((url) => {
+          try { return typeof url !== 'string' || !allowedProtocols.has(new URL(url).protocol); } catch { return true; }
+        })) {
+        throw new TypeError('ICE server entries require STUN or TURN urls.');
+      }
+      if (server.username !== undefined && typeof server.username !== 'string') throw new TypeError('ICE username must be a string.');
+      if (server.credential !== undefined && typeof server.credential !== 'string') throw new TypeError('ICE credential must be a string.');
+      return {
+        urls: [...server.urls],
+        ...(server.username === undefined ? {} : { username: server.username }),
+        ...(server.credential === undefined ? {} : { credential: server.credential }),
+      };
+    });
+  } catch {
+    throw new Error('WEBRTC_ICE_SERVERS_JSON must be a valid RTCIceServer array.');
+  }
+}
+
 export function createVercelWebRtcSignalingHandler({ redis, resolveShareToken, authorizeDevice, ...options } = {}) {
   const route = createWebRtcSignalingRoute({ redis, resolveShareToken, authorizeDevice, ...options });
   return async function vercelWebRtcSignalingHandler(req, res) {
@@ -121,10 +148,12 @@ const configuredRedis = createRedisRestAdapter({
   url: process.env.WEBRTC_SIGNALING_REDIS_URL,
   token: process.env.WEBRTC_SIGNALING_REDIS_TOKEN,
 });
+const configuredIceServers = parseWebRtcIceServersJson(process.env.WEBRTC_ICE_SERVERS_JSON);
 
 // Resolver injection is deliberate: no browser-provided share object is trusted.
 export default createVercelWebRtcSignalingHandler({
   redis: configuredRedis,
   resolveShareToken: createDefaultWebRtcShareResolver(),
   authorizeDevice: createDefaultWebRtcDeviceAuthorizer(),
+  iceServers: configuredIceServers,
 });

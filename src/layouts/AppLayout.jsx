@@ -12,10 +12,10 @@ import {
 } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { useAuth } from '../components/AuthGate.jsx';
-import { GEMINI_SETTINGS_HASH, isHeaderFeaturePage } from '../app/routes.js';
+import { GEMINI_SETTINGS_HASH, pageFromLocation, rememberGeminiSettingsReturnLocation } from '../app/routes.js';
 import { hasLiveCredential, subscribeToLiveCredentialClear } from '../lib/liveCredentialHolder.js';
 
-const MOBILE_MENU_MEDIA_QUERY = '(min-width: 901px)';
+const MOBILE_MENU_MEDIA_QUERY = '(min-width: 1200px)';
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export function AppLayout({
@@ -38,7 +38,7 @@ export function AppLayout({
   const mobileMenuId = useId();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [hasGeminiCredential, setHasGeminiCredential] = useState(hasLiveCredential);
-  const showHeaderFeatureActions = !isHeaderFeaturePage();
+  const currentPage = pageFromLocation();
 
   function closeMobileMenu() {
     setMobileMenuOpen(false);
@@ -126,13 +126,13 @@ export function AppLayout({
     };
   }, [mobileMenuOpen]);
 
-  const headerLinks = showHeaderFeatureActions ? (
+  const headerLinks = (
     <>
-      {profile ? <a className={`button secondary header-key-action${hasGeminiCredential ? '' : ' is-missing'}`} href={GEMINI_SETTINGS_HASH} onClick={closeMobileMenu}><KeyRound size={16} aria-hidden="true" />Gemini Key</a> : null}
-      {profile?.role === 'super_admin' ? <a className="button secondary header-key-action" href="#admin" onClick={closeMobileMenu}><UsersRound size={16} aria-hidden="true" />帳號管理</a> : null}
-      {profile?.role === 'super_admin' ? <a className="button secondary header-key-action" href="#audit" onClick={closeMobileMenu}><ClipboardList size={16} aria-hidden="true" />稽核紀錄</a> : null}
+      {profile && currentPage !== 'settings' ? <a className={`button secondary header-key-action${hasGeminiCredential ? '' : ' is-missing'}`} href={GEMINI_SETTINGS_HASH} onClick={() => { rememberGeminiSettingsReturnLocation(); closeMobileMenu(); }}><KeyRound size={16} aria-hidden="true" />Gemini Key</a> : null}
+      {profile?.role === 'super_admin' && currentPage !== 'admin' ? <a className="button secondary header-key-action" href="#admin" onClick={closeMobileMenu}><UsersRound size={16} aria-hidden="true" />帳號管理</a> : null}
+      {profile?.role === 'super_admin' && currentPage !== 'audit' ? <a className="button secondary header-key-action" href="#audit" onClick={closeMobileMenu}><ClipboardList size={16} aria-hidden="true" />稽核紀錄</a> : null}
     </>
-  ) : null;
+  );
 
   const mobileAccount = profile ? (
     <section className="mobile-nav-account" aria-labelledby={`${mobileMenuId}-account`}>
@@ -166,27 +166,27 @@ export function AppLayout({
           >
             <Menu size={22} aria-hidden="true" />
           </button> : null}
+          {showHeaderActions ? <div className="app-header-actions">
+            {headerLinks}
+            {profile ? <details ref={accountMenuRef} className="account-menu">
+              <summary ref={accountTriggerRef} className="account-menu-trigger" aria-label="開啟帳號選單">
+                <UserRound size={17} aria-hidden="true" />
+                <span>{profile.fullName || '帳號'}</span>
+                <ChevronDown size={16} aria-hidden="true" />
+              </summary>
+              <div className="account-menu-panel" role="menu">
+                <p className="account-menu-email">{profile.email}</p>
+                <button className="account-menu-switch" type="button" role="menuitem" onClick={() => { accountMenuRef.current?.removeAttribute('open'); void switchAccount?.(); }}>
+                  <RefreshCw size={16} aria-hidden="true" />切換帳號
+                </button>
+                <button className="account-menu-logout" type="button" role="menuitem" onClick={signOut}>
+                  <LogOut size={16} aria-hidden="true" />登出
+                </button>
+              </div>
+            </details> : null}
+            {headerAction}
+          </div> : null}
         </div>
-        {showHeaderActions ? <div className="app-header-actions">
-          {headerLinks}
-          {profile ? <details ref={accountMenuRef} className="account-menu">
-            <summary ref={accountTriggerRef} className="account-menu-trigger" aria-label="開啟帳號選單">
-              <UserRound size={17} aria-hidden="true" />
-              <span>{profile.fullName || '帳號'}</span>
-              <ChevronDown size={16} aria-hidden="true" />
-            </summary>
-            <div className="account-menu-panel" role="menu">
-              <p className="account-menu-email">{profile.email}</p>
-              <button className="account-menu-switch" type="button" role="menuitem" onClick={() => { accountMenuRef.current?.removeAttribute('open'); void switchAccount?.(); }}>
-                <RefreshCw size={16} aria-hidden="true" />切換帳號
-              </button>
-              <button className="account-menu-logout" type="button" role="menuitem" onClick={signOut}>
-                <LogOut size={16} aria-hidden="true" />登出
-              </button>
-            </div>
-          </details> : null}
-          {headerAction}
-        </div> : null}
       </header> : null}
       {mobileMenuOpen ? <>
         <button className="mobile-nav-backdrop" type="button" aria-label="關閉導覽選單" onClick={closeMobileMenu} />
@@ -243,13 +243,14 @@ export function MeetingSettingsLayout({ children, mode = 'create', onBack }) {
   );
 }
 
-export function PublicSessionLayout({ children, className = '', title, subtitle, status }) {
+export function PublicSessionLayout({ children, className = '', title, subtitle, status, showHeader = true }) {
   return (
     <AppLayout
       className={`watch-page ${className}`.trim()}
       title={title}
       subtitle={subtitle}
       headerAction={status ? <span className="status-pill">{status}</span> : null}
+      showHeader={showHeader}
       showHeaderActions={false}
     >
       {children}

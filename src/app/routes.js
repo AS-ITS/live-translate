@@ -1,6 +1,5 @@
 export const MEETING_MANAGEMENT_HASH = '#meetings';
 export const GEMINI_SETTINGS_HASH = '#settings';
-const HEADER_FEATURE_PAGES = new Set(['settings', 'admin', 'audit']);
 export const FEATURE_PAGES = new Set([
   'live',
   'meetings',
@@ -12,12 +11,25 @@ export const FEATURE_PAGES = new Set([
   , 'admin', 'audit'
 ]);
 
-export function pageFromLocation() {
-  return pageInfoFromLocation().page;
+let geminiSettingsReturnHash = MEETING_MANAGEMENT_HASH;
+
+export function rememberGeminiSettingsReturnLocation(hash = globalThis.window?.location?.hash) {
+  const value = typeof hash === 'string' ? hash : '';
+  const pageName = value.replace(/^#/u, '').split('?')[0];
+  geminiSettingsReturnHash = FEATURE_PAGES.has(pageName) && !['settings', 'viewer'].includes(pageName)
+    ? value
+    : MEETING_MANAGEMENT_HASH;
+  return geminiSettingsReturnHash;
 }
 
-export function isHeaderFeaturePage(page = pageFromLocation()) {
-  return HEADER_FEATURE_PAGES.has(page);
+export function consumeGeminiSettingsReturnLocation() {
+  const returnHash = geminiSettingsReturnHash;
+  geminiSettingsReturnHash = MEETING_MANAGEMENT_HASH;
+  return returnHash;
+}
+
+export function pageFromLocation() {
+  return pageInfoFromLocation().page;
 }
 
 export function pageInfoFromLocation() {

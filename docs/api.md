@@ -1,5 +1,16 @@
 # Live Translate API and Events
 
+## Current Meeting expiry policy (2026-10-07)
+
+Successful completion freezes the existing database-generated `ended_at` and
+`purge_at = ended_at + 30 minutes`. At `purge_at`, ordinary Meeting list/detail
+reads hide the Meeting and Viewer/content routes return the canonical
+`410 meeting_content_expired`. Active `super_admin` reads retain metadata with
+derived `isPendingDelete: true`, but not expired recording content. Expiry does
+not run physical cleanup; the existing authorized
+`DELETE /api/meetings/:meetingId` path is the only cloud deletion path. This
+policy supersedes older cleanup-worker wording below.
+
 ## `GET /api/runtime-config`
 
 Public, browser-safe startup configuration. The response is not cached and
@@ -82,21 +93,24 @@ owner or super-admin force takeover with explicit confirmation. Provider
 reconnect does not create a Segment. Pause/resume, rollover, and browser-crash
 recovery do.
 
-The authenticated CRON worker invokes the service-role-only
-`expire_stale_meetings` RPC in bounded batches. A lifecycle v2 Meeting with no
-persisted heartbeat for 15 minutes is stopped with `recorder_lost`, its active
-Segment is marked `interrupted`, its Viewer shares and recorder lease are
-revoked, and `purge_at` is set 30 minutes later. `claim_due_meeting_purges`
-provides an atomic, locked claim contract for the bounded purge worker. The
-worker deletes `meeting-audio` and `meeting-exports` Storage objects before
-deleting the Meeting row, allowing its database cascade to remove dependent
-transcript, Session, Segment, share, and artifact metadata. Partial failures
-mark the claim retryable as `failed`.
+Successful completion alone freezes the database-generated `ended_at` and
+`purge_at = ended_at + 30 minutes` for one Meeting recording, including all
+rollover Sessions/Segments. Pause, reconnect, interruption, and stale-heartbeat
+handling do not start retention. Old records without a reliable completion
+anchor are not bulk-deleted. Direct authenticated Supabase table/Storage reads
+and late writes are restricted by RLS and triggers; signed download URLs are
+clipped to the remaining retention window.
 
-After `purge_at`, owner-scoped Meeting detail, export source, and audio
-completion/download operations return `410 meeting_content_expired`. After the
-worker deletes the Meeting row, these resources return the normal not-found
-response. Legacy v1 rows remain readable during the transition.
+At expiry, `GET /api/meetings/:meetingId` remains `200` with settings,
+`contentState: "expired"`, `expiresAt`, no recording content, and a separate
+`physicalCleanupState`. Viewer snapshot/replay/token, audio and export
+download/content routes return `410 meeting_content_expired`. The Meeting,
+settings, members, glossary, and audit history stay. Existing Meeting GETs
+trigger managed `waitUntil` cleanup: one Meeting per request, at most 20
+Storage objects or 50 DB rows, a persistent 15-second cross-instance throttle,
+and resumable claims. Cleanup errors do not alter Meeting completion or the
+HTTP read response. No Cron is configured. Without API traffic, cloud physical
+data may remain after 30 minutes until a later request.
 
 Completed or failed lifecycle v2 Meetings return `409 meeting_terminal` for
 new recording lifecycle commands and reject new Session, Segment, Viewer-share,
@@ -118,6 +132,11 @@ fail before `purge_at`; completion and failure at or after that deadline return
 by default. The response includes `pagination.hasMore` and an opaque
 `pagination.nextCursor`; pass that value as `?before=<cursor>` to load the
 previous page. `limit` may be set from 1 through 100.
+
+The response also includes authoritative `recordingState`: `waiting`, `active`,
+`paused`, `recovering`, or `ended`. Viewer clients treat only `ended` (or a
+terminal share/API error) as Meeting termination. `paused` and `waiting` use
+bounded lifecycle polling and do not consume WebRTC recovery attempts.
 
 Viewer reads use one bounded joined Cue query in cloud mode. They do not load
 all Segments or expose Meeting glossary, private settings, audio metadata, or
@@ -288,6 +307,23 @@ Omitting `selectedRows` preserves the legacy all-rows behavior. A changed
 revision returns `409 glossary_revision_conflict`.
 
 ## Meeting Center and Live Viewer
+
+The per-Meeting WebRTC signaling sequence cursor is renewed by participant
+heartbeat and must not reset while a participant remains active; individual
+offer/answer/ICE messages still expire independently.
+
+The deployed WebRTC signaling route requires
+`WEBRTC_SIGNALING_REDIS_URL` and `WEBRTC_SIGNALING_REDIS_TOKEN`. Optional
+server-only `WEBRTC_ICE_SERVERS_JSON` is a JSON `RTCIceServer[]`; only explicit
+STUN/TURN URL schemes are accepted, and invalid JSON or entries fail signaling
+startup without logging credentials. Cross-network reliability requires a
+reachable TURN service; configuration alone is not acceptance evidence.
+`POST /api/webrtc/:meetingId/signal` accepts `viewer-ready`, `offer`, `answer`,
+and `ice-candidate`. Viewers send `viewer-ready` with a `negotiationId`; offers,
+answers, and candidates include that ID and `targetParticipantId`. Poll results
+only expose messages for the joined participant or legacy untargeted messages.
+The server verifies the target participant and role. Viewer access still uses
+the existing share code/token, while Device access uses recording permission.
 
 ## Meeting glossary import preview
 
@@ -633,19 +669,25 @@ provider audio are not rewritten. Completed Meetings are read-only and return
 
 ## `DELETE /api/meetings/:meetingId`
 
-Deletes a Meeting only when its status is `created` and recording has not
-started. The Meeting's created Segments and Recorder shares are removed with
-it. Active, completed, interrupted, or failed Meetings return `409
-meeting_delete_not_allowed`.
+The owner or active super-admin may delete a non-expired created or completed
+Meeting. After the recording content expires, deletion is restricted to an
+active super-admin. An active or otherwise resumable Meeting keeps its existing
+`409` restriction. Deletion
+removes Meeting-specific children and Storage objects but retains shared
+glossary, accounts, credentials, audit history, and a protected minimal deletion
+tombstone. Bounded Storage deletion may return `202 {"status":"deleting"}`;
+retry the same DELETE until `204`. A repeat `204` is authorized using the
+tombstone's original owner (or active super-admin), never deleted membership
+rows. Another computer's OPFS is cleaned on its next successful sync or local
+expiry check, not immediately by this API.
 
 ## `POST /api/meetings/:meetingId/complete`
 
-Completes a Meeting that has no active Live recording. Existing checkpoints,
-transcripts, and audio artifacts are preserved for the 30-minute retention
-window; `purge_at` is set to 30 minutes after completion for the bounded purge
-worker. Any not-yet-started trailing
-Segment is finalized as an empty completed Segment. Active recordings return
-`409 meeting_complete_not_allowed`.
+Completes the Meeting only after the recording has successfully ended. The
+backend/database returns one immutable 30-minute expiration shared by all
+associated Sessions; repeated completion does not extend it. Cleanup is
+independent of this command and cannot make completion fail or reset the
+recorded deadline. Active recordings return `409 meeting_complete_not_allowed`.
 
 ## `GET|POST /api/meetings/:meetingId/shares`
 
@@ -1312,7 +1354,9 @@ persists or logs it. The response must not expose `GEMINI_API_KEY`.
   "targetLanguageCode": "en",
   "sourceLanguageCode": "zh-Hant",
   "echoTargetLanguage": true,
-  "meetingId": "meeting-1"
+  "meetingId": "meeting-1",
+  "sessionId": "session-1",
+  "segmentId": "segment-2"
 }
 ```
 
@@ -1360,7 +1404,15 @@ Fields:
       "target": "Alan speak",
       "replacementAliases": ["mic"]
     }
-  ]
+  ],
+  "effectiveGlossaryRevision": "<sha256-hex>",
+  "glossaryEntryCount": 1,
+  "authoritativeSegment": {
+    "meetingId": "meeting-1",
+    "sessionId": "session-1",
+    "segmentId": "segment-2",
+    "lifecycleVersion": 8
+  }
 }
 ```
 
@@ -1374,10 +1426,29 @@ Fields:
   token constraints. It includes the soft primary input-language hint in
   `systemInstruction`; when live-scoped glossary entries exist, they share that
   same instruction.
-- `liveGlossaryEntries`: The same live-scoped glossary entries resolved for the
-  requested target language. The browser uses these for deterministic translated
-  subtitle replacement. Translated audio follows the server-provided Gemini
-  glossary instruction and is not post-processed by the browser.
+- `liveGlossaryEntries`: The Segment-immutable provider glossary entries resolved for the
+  requested target language. They seed browser correction only when no
+  independently refreshed correction snapshot exists. Translated audio follows
+  the server-provided Gemini glossary instruction and is not post-processed by
+  the browser.
+
+Lifecycle v2 Meeting token requests require `sessionId` and `segmentId`, plus
+the active recorder Session/Segment/lease/fence/lifecycle-version headers. The
+server validates that binding against the authoritative active Segment returned
+by Resume; client-supplied Segment identity is never authoritative.
+
+`effectiveGlossaryRevision` is the deterministic SHA-256 of the versioned
+`effective-glossary-v1` canonical payload: source language, target language,
+normalized source/target terms, sorted aliases, and the merged effective Global
++ Meeting glossary. `liveConnectConfig.systemInstruction` and
+`liveGlossaryEntries` are generated from the same provider snapshot. The
+response also returns `glossaryEntryCount` and the authoritative
+Meeting/Session/Segment/lifecycle-version identity. The browser must reject a
+provider Segment or revision mismatch before opening Gemini. Local canonical
+Cue correction separately reloads the effective Global + Meeting glossary via
+the existing read APIs, computes the same deterministic format as
+`correctionGlossaryRevision`, and binds that snapshot to each new Turn without
+requiring a token request, provider reconnect, or Segment transition.
 
 ## Validation Rules
 
@@ -1546,6 +1617,8 @@ TODO: Confirm exact SDK error event shape and whether close events include error
 metadata.
 
 ## Account management and meeting membership
+
+`PATCH /api/admin/users/:userId/role` accepts only `{ "role": "member" }` or `{ "role": "super_admin" }`. It returns `{ "user": <profile>, "changed": true|false }`. Stable role errors are `invalid_account_role`, `account_not_found`, `cannot_demote_self`, and `last_super_admin`; authentication continues to use `auth_required` and `auth_forbidden`. The server derives the actor from the authenticated request. Role mutation and its successful audit row are committed atomically by `update_account_role`; same-role submissions return `changed=false` and do not create role-change audit events.
 
 Authorization resolves `actorUserId` from the authenticated request and `ownerUserId` from the meeting/session resource before repository access; active super-admins use the resource owner scope. A domain-approved pending profile is activated by the trusted backend before private dispatch. Disabled profiles receive `403 auth_forbidden`.
 

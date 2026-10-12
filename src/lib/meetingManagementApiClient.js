@@ -27,6 +27,7 @@ export function createMeetingManagementApiClient({ fetchImpl = globalThis.fetch,
     async delete(meetingId) {
       const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}`), { method: 'DELETE' });
       await assertOk(response);
+      return response.status === 204;
     },
     async listMembers(meetingId) {
       const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/members`));

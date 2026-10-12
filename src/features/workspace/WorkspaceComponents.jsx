@@ -30,6 +30,7 @@ import {
   filterMeetingManagementItems,
   meetingManagementLastUpdated,
   meetingManagementStatusLabel,
+  pendingDeleteDescription,
   MEETING_STATUS_FILTERS
 } from '../../lib/meetingManagement.js';
 import { accessTokenHeaders, authenticatedFetch } from '../../lib/accessToken.js';
@@ -369,18 +370,22 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
   }
 
   async function deleteMeeting(meeting) {
-    if (!meeting?.id || meeting.status !== 'created') return;
-    if (!window.confirm(`確定要刪除「${meeting.name || meeting.id}」嗎？此操作無法復原。`)) return;
+    if (!meeting?.id || !['created', 'completed'].includes(meeting.status)) return;
+    if (!window.confirm(`確定要刪除「${meeting.name || meeting.id}」嗎？會議及專屬字幕、音訊與匯出資料將刪除且無法復原。已下載檔案仍留在使用者電腦；其他電腦的本機副本會在下次同步或到期檢查後清理。`)) return;
 
     setError('');
     try {
-      await managementClientRef.current.delete(meeting.id);
+      const deleted = await managementClientRef.current.delete(meeting.id);
+      if (!deleted) {
+        setNotice('會議專屬資料仍在分批清理中，請稍後再按刪除以續作。');
+        return;
+      }
       setMeetings((current) => current.filter((item) => item.id !== meeting.id));
       setNotice('會議已刪除。');
     } catch (requestError) {
       setError(requestError?.status === 409
-        ? '只有尚未開始的會議可以刪除。'
-        : '無法刪除會議。');
+        ? '進行中的會議無法刪除。'
+        : '刪除未完成，會議仍保留在列表中，請重試。');
     }
   }
 
@@ -400,6 +405,10 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
   function meetingCardStatusLabel(status) {
     if (status === 'interrupted') return '可續錄';
     return meetingManagementStatusLabel(status);
+  }
+
+  function meetingDisplayStatusLabel(meeting) {
+    return meeting?.isPendingDelete ? '待刪除' : meetingCardStatusLabel(meeting?.status);
   }
 
   function meetingCardDescription(status) {
@@ -483,11 +492,11 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
                 </>
               ) : null}
           </div>
-          {selectedMeeting?.status === 'created' ? (
+          {selectedMeeting?.canDelete && ['created', 'completed'].includes(selectedMeeting?.status) ? (
             <section className="meeting-danger-zone" aria-labelledby="meeting-danger-zone-title">
               <div>
                 <h4 id="meeting-danger-zone-title">危險操作</h4>
-                <p>刪除尚未開始的會議後，設定內容將無法復原。</p>
+                <p>刪除會議及專屬錄製資料後，設定與內容將無法復原；其他電腦的本機副本會在下次同步或到期檢查後清理。</p>
               </div>
               <button className="button detail-button danger-button" type="button" onClick={() => deleteMeeting(selectedMeeting)}>
                 <Trash2 size={16} aria-hidden="true" />
@@ -545,12 +554,12 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
                     openMeetingCard(meeting);
                   }
                 }}
-                aria-label={`${meeting.name || meeting.id || '未命名會議'}，${meetingCardStatusLabel(meeting.status)}`}
+                aria-label={`${meeting.name || meeting.id || '未命名會議'}，${meetingDisplayStatusLabel(meeting)}`}
               >
                 <div className="meeting-card-topline">
                   <span className="meeting-status-badge">
                     <span className="meeting-status-dot" aria-hidden="true" />
-                    {meetingCardStatusLabel(meeting.status)}
+                    {meetingDisplayStatusLabel(meeting)}
                   </span>
                   <span className="meeting-card-icon" aria-hidden="true"><StatusIcon size={27} strokeWidth={1.8} /></span>
                 </div>
@@ -559,10 +568,11 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
                   <span><Globe2 size={18} aria-hidden="true" />{meetingLanguageLabel(meeting)}</span>
                   <span><CalendarDays size={18} aria-hidden="true" />開始時間：<time data-testid="meeting-card-started-at" dateTime={startedAt || undefined} title={startedFullTime}>{formatMeetingListTime(startedAt)}</time></span>
                   <span><Clock3 size={18} aria-hidden="true" />最後更新：<time data-testid="meeting-card-updated-at" dateTime={updatedAt || undefined} title={fullTime}>{formatMeetingListTime(updatedAt)}</time></span>
+                  {meeting.isPendingDelete ? <span data-testid="meeting-pending-delete"><Trash2 size={18} aria-hidden="true" />刪除時間：{formatMeetingListTime(meeting.expiresAt)}</span> : null}
                 </div>
                 <div className="meeting-card-divider" />
                 <div className="meeting-card-footer">
-                  <p><StatusIcon size={19} aria-hidden="true" />{meetingCardDescription(meeting.status)}</p>
+                  <p><StatusIcon size={19} aria-hidden="true" />{meeting.isPendingDelete ? pendingDeleteDescription(meeting) : meetingCardDescription(meeting.status)}</p>
                   <div className="meeting-card-actions">
                     <button
                       className="button meeting-card-action"
@@ -574,7 +584,7 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
                     >
                       <span className="meeting-card-action-label">{meetingCardActionLabel(meeting.status)}</span>
                     </button>
-                    {meeting.status === 'created' ? (
+                    {meeting.canDelete && ['created', 'completed'].includes(meeting.status) ? (
                       <button
                         className="button detail-button danger-button meeting-card-delete"
                         type="button"
@@ -2185,12 +2195,15 @@ function formatRecordTime(value) {
 }
 
 function meetingRetentionNotice(meeting) {
-  if (Number(meeting?.lifecycleContractVersion) !== 2 || !['completed', 'failed', 'interrupted'].includes(meeting?.status)) return '';
-  const purgeAt = Date.parse(meeting?.purgeAt || '');
-  if (!Number.isFinite(purgeAt)) return '';
-  return purgeAt <= Date.now()
-    ? '這場會議的暫存內容已到期，匯出與下載可能即將失效。'
-    : `字幕與音檔暫存至 ${formatRecordTime(meeting.purgeAt)}；請在期限前完成匯出或下載。`;
+  if (meeting?.status !== 'completed') return '';
+  const deadline = meeting.expiresAt;
+  if (!deadline) return '';
+  if (meeting.contentState === 'expired' || Date.parse(deadline) <= Date.now()) {
+    return meeting.isPendingDelete
+      ? '待刪除：已到刪除時間，可由系統管理者手動刪除。'
+      : '此會議內容已超過保留時間。';
+  }
+  return `錄製內容保留至 ${formatRecordTime(deadline)}；請在期限前完成匯出或下載。`;
 }
 
 function formatMeetingListTime(value) {

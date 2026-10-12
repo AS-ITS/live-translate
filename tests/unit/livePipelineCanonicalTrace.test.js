@@ -29,6 +29,28 @@ test('canonical transitions preserve identity and machine-readable reasons', () 
   assert.equal(entries[7].dropReason, 'stale_callback_generation');
 });
 
+test('Continue trace preserves monotonic phase elapsed time', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  const phases = [
+    ['CONTINUE_REQUESTED', 0],
+    ['CONTINUE_BARRIER_COMPLETE', 810],
+    ['RESUME_SEGMENT_CONFIRMED', 1936],
+    ['TOKEN_SEGMENT_BOUND', 2500],
+    ['CONTINUE_PROVIDER_READY', 4100],
+    ['CONTINUE_AUDIO_RESUMED', 4200],
+    ['CONTINUE_READY', 4291]
+  ];
+
+  for (const [stage, continueElapsedMs] of phases) {
+    trace.record({ stage, continueElapsedMs });
+  }
+
+  assert.deepEqual(
+    trace.get().map(({ stage, continueElapsedMs }) => ({ stage, continueElapsedMs })),
+    phases.map(([stage, continueElapsedMs]) => ({ stage, continueElapsedMs }))
+  );
+});
+
 test('trace memory is bounded, disabled mode is empty, and production defaults false', () => {
   const trace = createLivePipelineTrace({ enabled: true, limit: 100000, logger: () => {} });
   for (let index = 0; index < 20001; index += 1) trace.record({ stage: 'PCM_CAPTURED', pcmSequence: index });

@@ -121,3 +121,45 @@ test('preserves the lifecycle key after a transient provider token failure', asy
     globalThis.fetch = originalFetch;
   }
 });
+
+test('meeting playback setting mutes translated speaker audio without dropping saved output chunks', () => {
+  const audio = Buffer.from([0, 0]).toString('base64');
+  const silentChunks = [];
+  const silentSession = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: false,
+    onOutputAudioChunk: (chunk) => silentChunks.push([...chunk])
+  });
+  silentSession.audioContext = {
+    currentTime: 0,
+    createBuffer() { throw new Error('Muted audio must not allocate a playback buffer.'); }
+  };
+
+  silentSession.playPcmAudio(audio);
+  assert.deepEqual(silentChunks, [[0, 0]]);
+  assert.equal(silentSession.playbackSources.size, 0);
+
+  const playbackStarts = [];
+  const audibleSession = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: true
+  });
+  const destination = {};
+  audibleSession.audioContext = {
+    currentTime: 0,
+    destination,
+    createBuffer() {
+      return { duration: 0.1, copyToChannel() {} };
+    },
+    createBufferSource() {
+      return {
+        connect(target) { assert.equal(target, destination); },
+        start(time) { playbackStarts.push(time); }
+      };
+    }
+  };
+
+  audibleSession.playPcmAudio(audio);
+  assert.deepEqual(playbackStarts, [0]);
+  assert.equal(audibleSession.playbackSources.size, 1);
+});

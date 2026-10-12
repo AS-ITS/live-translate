@@ -87,7 +87,7 @@ test('token config can carry live glossary instruction in connect constraints', 
     new Date('2026-07-07T00:00:00.000Z')
   );
 
-  assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Glossary instructions/);
+  assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Authoritative terminology replacements/);
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /translated speech audio/);
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Source term: Gemini/);
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Primary input language hint: zh-Hant/);

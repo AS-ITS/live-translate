@@ -58,9 +58,13 @@ export function createSupabaseMeetingRepository(options = {}) {
       await client.request('meetings', { method: 'DELETE', query: `?${eq('id', id)}&${eq('owner_user_id', owner())}` });
       return existing;
     },
-    async listMeetings() {
+    async listMeetings({ includeAll = false } = {}) {
       const ownerUserId = owner();
       const actorUserId = currentRequestUserId() || ownerUserId;
+      if (includeAll) {
+        const rows = await client.request('meetings', { query: '?select=*&order=created_at.desc' });
+        return rows.map(meetingFromRow);
+      }
       const memberships = await client.request('meeting_members', {
         query: `?select=meeting_id&${eq('user_id', actorUserId)}`
       });
@@ -83,8 +87,8 @@ export function createSupabaseMeetingRepository(options = {}) {
       const userId = owner();
       return hydrateSegment(client, rows[0], userId);
     },
-    async listMeetingSegments(meetingId) {
-      const userId = owner();
+    async listMeetingSegments(meetingId, explicitOwnerUserId = null) {
+      const userId = explicitOwnerUserId || owner();
       const rows = await client.request('meeting_segments', { query: `?select=*&${eq('meeting_id', meetingId)}&${eq('owner_user_id', userId)}&order=sequence.asc` });
       return Promise.all(rows.map((row) => hydrateSegment(client, row, userId)));
     },

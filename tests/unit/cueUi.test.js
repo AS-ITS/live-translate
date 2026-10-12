@@ -6,6 +6,7 @@ import {
   formatCueTimecode,
   partialCueForDisplay,
   shouldFollowLatest,
+  sourceTextForDisplay,
   sourceTextForCopy,
   sortFinalCues,
   translationTextForCopy,
@@ -40,6 +41,28 @@ test('source text for copy includes only completed source cues in sequence order
     finalCue('cue-1', 1, '第一段原文'),
     { ...finalCue('cue-empty', 4, '   '), translatedText: 'translation only' }
   ]), '第一段原文\n第二段原文');
+});
+
+test('source display keeps raw source when a refined source exists', () => {
+  assert.equal(sourceTextForDisplay({
+    sourceLanguageCode: 'en',
+    sourceText: 'raw source',
+    rawSource: 'raw source',
+    refinedSource: 'refined source'
+  }), 'raw source');
+});
+
+test('source display and source copy use the same raw original', () => {
+  const cue = {
+    cueId: 'raw-copy',
+    sequence: 1,
+    status: 'final',
+    sourceText: 'refined source',
+    rawSource: 'raw source',
+    refinedSource: 'refined source'
+  };
+  assert.equal(sourceTextForDisplay(cue), sourceTextForCopy([cue]));
+  assert.equal(sourceTextForCopy([cue]), 'raw source');
 });
 
 test('translation text for copy includes only completed translation cues in sequence order', () => {

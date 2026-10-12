@@ -96,6 +96,14 @@ test('persistence and Viewer transport traces preserve causal state fields', () 
     transportGeneration: 9,
     reconnectAttempt: 2,
     reconnectReason: 'ice_disconnected',
+    signalSequence: 41,
+    signalingCursorBefore: 39,
+    signalingCursorAfter: 41,
+    signalMessageCount: 2,
+    participantTtlMs: 60_000,
+    messageExpiresAt: 1_760_000_030_000,
+    recoveryAttemptState: 'scheduled',
+    retryCounterSemantics: 'incremented_when_scheduled',
     lastReceivedCueSequence: 58,
     cueDeliverySource: 'replay',
     connectionState: 'connected',
@@ -119,6 +127,14 @@ test('persistence and Viewer transport traces preserve causal state fields', () 
     transportGeneration: 9,
     reconnectAttempt: 2,
     reconnectReason: 'ice_disconnected',
+    signalSequence: 41,
+    signalingCursorBefore: 39,
+    signalingCursorAfter: 41,
+    signalMessageCount: 2,
+    participantTtlMs: 60_000,
+    messageExpiresAt: 1_760_000_030_000,
+    recoveryAttemptState: 'scheduled',
+    retryCounterSemantics: 'incremented_when_scheduled',
     lastReceivedCueSequence: 58,
     cueDeliverySource: 'replay',
     connectionState: 'connected',
@@ -266,6 +282,39 @@ test('full debug trace API is exposed only while runtime trace is enabled', () =
     assert.equal(window.__liveTranslateDebug.getTurnTrace, undefined);
     assert.equal(window.__liveTranslateDebug.clearPipelineTrace, undefined);
     assert.equal(window.__liveTranslateDebug.exportPipelineTrace, undefined);
+  } finally {
+    configureLivePipelineTrace(false);
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test('console trace remains exportable after recovery_failed until explicitly cleared', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+  try {
+    configureLivePipelineTrace(true);
+    exposeLiveTranslateDebug();
+    livePipelineTrace.record({
+      stage: 'WEBRTC_TRANSPORT_RECOVERY',
+      eventType: 'RECOVERY_EXHAUSTED',
+      role: 'viewer',
+      meetingId: 'meeting-1',
+      participantId: 'viewer-1',
+      connectionEpoch: 14,
+      negotiationId: 'negotiation-6',
+      attemptCount: 6,
+      recoveryAttemptState: 'exhausted',
+      retryCounterSemantics: 'incremented_when_scheduled',
+    });
+
+    const exported = JSON.parse(window.__liveTranslateDebug.exportPipelineTrace());
+    assert.equal(exported.entries.at(-1).eventType, 'RECOVERY_EXHAUSTED');
+    assert.equal(exported.entries.at(-1).attemptCount, 6);
+    assert.equal(window.__liveTranslateDebug.getPipelineTrace().length, 1);
+
+    window.__liveTranslateDebug.clearPipelineTrace();
+    assert.deepEqual(window.__liveTranslateDebug.getPipelineTrace(), []);
   } finally {
     configureLivePipelineTrace(false);
     if (previousWindow === undefined) delete globalThis.window;

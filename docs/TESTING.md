@@ -834,6 +834,14 @@ const exportedTrace = window.__liveTranslateDebug.exportPipelineTrace()
 copy(exportedTrace)
 ```
 
+For a WebRTC recovery investigation, run the export separately on the Recorder
+and Viewer from the same Meeting after `recovery_failed` and before either page
+reloads. Save both JSON values. Correlate `meetingId`,
+`participantId`/`viewerId`, `transportGeneration`, `negotiationId`,
+`signalSequence`, signaling cursors, and timestamps. The trace deliberately
+records no SDP, ICE candidate body, credential, token, transcript text, or
+audio.
+
 Local terminal replay entries include bounded `originEventId`,
 `terminalStatus`, `terminalReason`, `localFinalize`, and
 `isTerminalReplay` fields. Use these fields to distinguish a local-silence

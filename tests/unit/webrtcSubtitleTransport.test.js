@@ -101,6 +101,119 @@ test('Viewer requests a fresh negotiation when joining after an offer has expire
   await transport.stop();
 });
 
+test('Recorder and Viewer traces correlate one negotiation without retaining signaling payloads', async () => {
+  FakePeerConnection.instances = [];
+  configureLivePipelineTrace(true);
+  livePipelineTrace.clear();
+  const viewerTimers = [];
+  const recorderTimers = [];
+  let viewerReady = null;
+  const expiresAt = 1_760_000_030_000;
+  const viewer = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-paired', role: 'viewer', participantId: 'viewer-paired',
+    credential: { shareToken: 'secret-share-token' },
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.endsWith('/signal')) {
+        if (body?.type === 'viewer-ready') viewerReady = body;
+        return response(200, { accepted: true, sequence: 10, expiresAt });
+      }
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { messages: [], after: 10 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; viewerTimers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+  });
+  const recorder = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-paired', role: 'device', participantId: 'recorder-paired',
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.includes('/signal?')) return response(200, {
+        messages: [{
+          sequence: 10,
+          expiresAt,
+          participantId: 'viewer-paired',
+          type: 'viewer-ready',
+          negotiationId: viewerReady.negotiationId,
+          payload: {},
+        }],
+        after: 10,
+      });
+      if (url.endsWith('/signal')) {
+        assert.equal(body.type, 'offer');
+        return response(200, { accepted: true, sequence: 11, expiresAt: expiresAt + 1 });
+      }
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, {});
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; recorderTimers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+  });
+
+  viewer.start();
+  recorder.start();
+  await flush(); await flush();
+  const recorderPoll = recorderTimers.find((timer) => timer.ms === 2_000 && !timer.cleared);
+  recorderPoll.cleared = true;
+  await recorderPoll.fn();
+  await flush(); await flush();
+
+  const traces = livePipelineTrace.get({ stage: 'WEBRTC_SIGNALING' });
+  const sent = traces.find((entry) => entry.eventType === 'viewer-ready.sent');
+  const received = traces.find((entry) => entry.eventType === 'viewer-ready.received');
+  const poll = traces.find((entry) => entry.role === 'recorder' && entry.eventType === 'poll.success');
+  assert.equal(sent.negotiationId, received.negotiationId);
+  assert.equal(sent.signalSequence, 10);
+  assert.equal(received.signalSequence, 10);
+  assert.equal(received.viewerId, 'viewer-paired');
+  assert.equal(poll.signalingCursorBefore, 0);
+  assert.equal(poll.signalingCursorAfter, 10);
+  assert.equal(poll.signalMessageCount, 1);
+  assert.equal(traces.find((entry) => entry.role === 'viewer' && entry.eventType === 'join.success').participantTtlMs, 60_000);
+  assert.doesNotMatch(JSON.stringify(traces), /secret-share-token|offer-sdp|candidate:/u);
+
+  await viewer.stop();
+  await recorder.stop();
+  configureLivePipelineTrace(false);
+});
+
+test('signaling rejection records the first failed operation without credentials or SDP', async () => {
+  FakePeerConnection.instances = [];
+  configureLivePipelineTrace(true);
+  livePipelineTrace.clear();
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-signal-failure', role: 'viewer', participantId: 'viewer-signal-failure',
+    credential: { shareToken: 'secret-share-token' },
+    fetchImpl: async (url) => {
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.endsWith('/signal')) return response(503, {
+        error: { code: 'webrtc_signaling_unavailable', detail: 'v=0 secret-sdp' },
+      });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { messages: [], after: 0 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer: () => ({}),
+    clearTimer: () => {},
+  });
+
+  transport.start();
+  await flush(); await flush();
+  const failed = livePipelineTrace.get({ stage: 'WEBRTC_SIGNALING' })
+    .find((entry) => entry.eventType === 'viewer-ready.failed');
+  assert.equal(failed.errorCode, 'webrtc_signaling_unavailable');
+  assert.equal(failed.httpStatus, 503);
+  assert.equal(failed.transportResult, 'failed');
+  assert.doesNotMatch(JSON.stringify(livePipelineTrace.get()), /secret-share-token|secret-sdp|v=0/u);
+
+  await transport.stop();
+  configureLivePipelineTrace(false);
+});
+
 test('Viewer keeps advertising one negotiation while waiting for a Recorder', async () => {
   FakePeerConnection.instances = [];
   const requests = [];
@@ -1121,6 +1234,12 @@ test('Viewer retry exhaustion enters recovery_failed and records RECOVERY_EXHAUS
   assert.equal(timers.filter((timer) => !timer.cleared && !timer.executed).length, 0);
   const exhausted = livePipelineTrace.get({ stage: 'WEBRTC_TRANSPORT_RECOVERY' })
     .find((entry) => entry.eventType === 'RECOVERY_EXHAUSTED');
+  const scheduled = livePipelineTrace.get({ stage: 'WEBRTC_TRANSPORT_RECOVERY' })
+    .filter((entry) => entry.eventType === 'RECOVERY_ATTEMPT_SCHEDULED');
+  assert.equal(scheduled.length, MAX_RECOVERY_ATTEMPTS);
+  assert.deepEqual(scheduled.map((entry) => entry.reconnectAttempt), [1, 2, 3, 4, 5, 6]);
+  assert.equal(scheduled.every((entry) => entry.recoveryAttemptState === 'scheduled'), true);
+  assert.equal(scheduled.every((entry) => entry.retryCounterSemantics === 'incremented_when_scheduled'), true);
   await transport.stop();
   configureLivePipelineTrace(false);
   assert.equal(Number.isInteger(exhausted.generation) && exhausted.generation > 0, true);
@@ -1143,6 +1262,8 @@ test('Viewer retry exhaustion enters recovery_failed and records RECOVERY_EXHAUS
     dataChannelState: null,
     timestamp: 123_456,
   });
+  assert.equal(exhausted.recoveryAttemptState, 'exhausted');
+  assert.equal(exhausted.retryCounterSemantics, 'incremented_when_scheduled');
 });
 
 test('transient Viewer signaling 503 does not fail a healthy DataChannel', async () => {

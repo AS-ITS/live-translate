@@ -370,6 +370,7 @@ bounded browser-memory trace through:
 ```js
 window.__liveTranslateDebug.getPipelineTrace(filter)
 window.__liveTranslateDebug.getTurnTrace(audioTurnId)
+window.__liveTranslateDebug.exportPipelineTrace()
 window.__liveTranslateDebug.clearPipelineTrace()
 ```
 
@@ -384,7 +385,8 @@ Records are allow-listed, kept only in browser memory, capped at 500 entries, an
 The browser reads only `{ livePipelineTraceEnabled }` from
 `/api/runtime-config`; it never reads the server environment directly. The trace
 covers microphone input, PCM capture/send, provider events, normalized
-transcript events, Cue append/update/finalize/merge/drop, and React render.
-Every drop includes `dropReason`. With the flag disabled, the tracer retains and
-logs nothing and the full trace API is not exposed. Production must keep the
-flag disabled.
+transcript events, Cue append/update/finalize/merge/drop, React render, and
+paired Recorder/Viewer transport correlation. It remains in browser memory
+after `recovery_failed` until reload or explicit `clearPipelineTrace()`. With
+the flag disabled, the tracer retains and logs nothing and the full trace API
+is not exposed. Production must keep the flag disabled.

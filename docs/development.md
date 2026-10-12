@@ -64,11 +64,18 @@ SESSION_SNAPSHOT_MAX_BYTES=26214400
 SESSION_AUDIO_MAX_BYTES=52428800
 ```
 
-## Mobile diagnostic export
+## Preview transport diagnostic export
 
-Set `LIVE_PIPELINE_TRACE_ENABLED=true` and restart or redeploy the Preview. Recorder and Viewer toolbars then show `匯出診斷紀錄`, including while connecting, paused, or recovery has failed. The button opens the system file share sheet when the browser supports sharing JSON files; otherwise it downloads a `.json` file. Exporting only snapshots the in-memory trace and never stops recording or rebuilds WebRTC.
+Set `LIVE_PIPELINE_TRACE_ENABLED=true` and restart or redeploy the Preview. No diagnostic UI button is shown. On both the Recorder and Viewer, open DevTools Console before reloading and run:
 
-The exported document uses `schemaVersion: "live-pipeline-trace/v1"` and a bounded 20,000-entry ring buffer. Every entry contains `timestamp`, `role`, `event`, `meetingId`, `generation`, and `negotiationId`; optional fields come from a fixed allowlist. It never includes transcript text, audio, credentials, SDP, ICE candidates, candidate IP addresses, share tokens/codes, or raw HTTP payloads. Reloading clears the browser-memory trace; no diagnostic data is uploaded or persisted to cloud storage.
+```js
+const json = window.__liveTranslateDebug.exportPipelineTrace()
+copy(json)
+```
+
+Save the copied values as separate Recorder and Viewer `.json` files from the same Meeting. Exporting only snapshots the in-memory trace and never stops recording or rebuilds WebRTC. The trace remains available after `recovery_failed` until the page reloads or `window.__liveTranslateDebug.clearPipelineTrace()` is called explicitly.
+
+The exported document uses `schemaVersion: "live-pipeline-trace/v1"` and a bounded 20,000-entry ring buffer. Transport entries include the safe correlation fields `participantId`, `viewerId`, `transportGeneration`, `negotiationId`, signaling sequence/cursor metadata, participant TTL, message expiry, PeerConnection/ICE/DataChannel state, and scheduled recovery attempt state. `retryCounterSemantics: "incremented_when_scheduled"` documents that the current `retryAttempt` counter advances when a retry is scheduled; it is not evidence that the attempt has already failed. The fixed allowlist never includes transcript text, audio, credentials, SDP, ICE candidate bodies or IP addresses, share tokens/codes, JWTs, API keys, or raw HTTP payloads. Reloading clears the browser-memory trace; no diagnostic data is uploaded or persisted to cloud storage.
 
 ## Vercel and Supabase cloud capabilities
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 補齊 Recorder／Viewer WebRTC paired transport trace：Preview 診斷模式可由 DevTools Console 匯出 recovery 後仍保留的 JSON，加入 generation、negotiation、signaling sequence/cursor/TTL、DataChannel 與 scheduled retry 語意；不恢復診斷 UI、不記錄憑證、SDP、ICE 敏感內容，也不改動既有 recovery state machine。
+
 - 修正 Pause → Continue 時 Gemini Live provider 在 setup 階段關閉仍被標記為 `listening` 的 silent failure；Continue 現在必須確認新 session 完成啟動，否則停止該 session、顯示可診斷錯誤，且不啟用 Recorder callback 或 Cue 更新。
 
 - 修正 Viewer 字幕 auto-follow 在快速 Cue、Partial/Final 高度變化、Pause/Continue、WebRTC reconnect 與手機全螢幕 viewport 變化後停在舊位置的問題；歷史閱讀改以穩定 Cue ID 保存位置，並以唯一 Cue ID 顯示未查看的新字幕數量。Pause → Continue 後 DataChannel open 會先取消 negotiation timeout；UI 以健康且開啟的 DataChannel 顯示已連線，不再等待可能延遲的 PeerConnection `connected` 事件，暫時 ICE disconnected 也不拆除健康通道，真正失效仍維持最多 6 次 recovery。Viewer transport 診斷同步記錄 Peer/ICE/DataChannel 狀態、generation、heartbeat、Cue sequence、delivery source 與 reconnect reason/attempt。

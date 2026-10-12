@@ -73,7 +73,8 @@ export function createLivePipelineTrace({
   now = () => new Date().toISOString(),
   nowMs = () => Date.now(),
   getElapsedContext = () => elapsedContext,
-  logger = (...args) => console.debug(...args)
+  logger = (...args) => console.debug(...args),
+  buildSha = import.meta.env?.VITE_VERCEL_GIT_COMMIT_SHA || import.meta.env?.VITE_GIT_COMMIT_SHA || null
 } = {}) {
   let isEnabled = enabled === true;
   const maxEntries = boundedLimit(limit);
@@ -133,6 +134,7 @@ export function createLivePipelineTrace({
       snapshotGeneration: input.snapshotGeneration ?? null,
       reconnectAttempt: Number.isSafeInteger(input.reconnectAttempt) ? input.reconnectAttempt : null,
       reconnectReason: safeDiagnosticValue(input.reconnectReason),
+      cleanupReason: safeDiagnosticValue(input.cleanupReason),
       audioTurnId: safeId(input.audioTurnId),
       providerEventId,
       normalizedEventId,
@@ -178,6 +180,10 @@ export function createLivePipelineTrace({
       revision: input.revision ?? null,
       snapshotRevision: input.snapshotRevision ?? null,
       cueCount: Number.isInteger(input.cueCount) ? Math.max(0, input.cueCount) : null,
+      snapshotCueCount: Number.isInteger(input.snapshotCueCount) ? Math.max(0, input.snapshotCueCount) : null,
+      replayEventCount: Number.isInteger(input.replayEventCount) ? Math.max(0, input.replayEventCount) : null,
+      diagnosticEntryCount: Number.isInteger(input.diagnosticEntryCount) ? Math.max(0, input.diagnosticEntryCount) : null,
+      diagnosticMapCount: Number.isInteger(input.diagnosticMapCount) ? Math.max(0, input.diagnosticMapCount) : null,
       lifecycleVersion: Number.isSafeInteger(input.lifecycleVersion) ? input.lifecycleVersion : null,
       glossaryEntryCount: Number.isSafeInteger(input.glossaryEntryCount) ? input.glossaryEntryCount : null,
       eventType: safeId(input.eventType),
@@ -267,6 +273,7 @@ export function createLivePipelineTrace({
     const exportedEntries = get();
     return JSON.stringify({
       schemaVersion: TRACE_SCHEMA_VERSION,
+      buildSha: typeof buildSha === 'string' && buildSha ? buildSha : null,
       exportedAt,
       capacity: maxEntries,
       droppedCount,
@@ -284,7 +291,11 @@ export function createLivePipelineTrace({
     return isEnabled;
   }
 
-  return Object.freeze({ record, get, getTurn, clear, exportJson, setEnabled, isEnabled: () => isEnabled });
+  function stats() {
+    return Object.freeze({ capacity: maxEntries, entryCount, droppedCount });
+  }
+
+  return Object.freeze({ record, get, getTurn, clear, exportJson, stats, setEnabled, isEnabled: () => isEnabled });
 }
 
 export const livePipelineTrace = createLivePipelineTrace();

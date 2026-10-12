@@ -409,6 +409,46 @@ test('trace export includes correlation fields and redacts sensitive free-form v
   assert.doesNotMatch(serialized, /secret-token|192\.168\.1\.20|share-token-must-not-appear|share-code-must-not-appear|turn-password-must-not-appear|secret-sdp|candidate:1/u);
 });
 
+test('Viewer evidence export keeps build, generation, recovery, cleanup, and bounded counts', () => {
+  const trace = createLivePipelineTrace({ enabled: true, limit: 3, buildSha: 'build-41', logger: () => {} });
+  trace.record({
+    stage: 'WEBRTC_TRANSPORT_RECOVERY',
+    role: 'viewer',
+    meetingId: 'meeting-41',
+    transportGeneration: 4,
+    reconnectAttempt: 2,
+    reconnectReason: 'signaling_poll_failed',
+    cleanupReason: 'connect_rebuild',
+    connectionState: 'connected',
+    iceConnectionState: 'connected',
+    dataChannelState: 'open',
+    cueCount: 8,
+    snapshotCueCount: 8,
+    replayEventCount: 3,
+    diagnosticMapCount: 2
+  });
+  const exported = JSON.parse(trace.exportJson());
+  assert.equal(exported.buildSha, 'build-41');
+  assert.deepEqual(trace.stats(), { capacity: 3, entryCount: 1, droppedCount: 0 });
+  assert.deepEqual({
+    meetingId: exported.entries[0].meetingId,
+    transportGeneration: exported.entries[0].transportGeneration,
+    reconnectAttempt: exported.entries[0].reconnectAttempt,
+    reconnectReason: exported.entries[0].reconnectReason,
+    cleanupReason: exported.entries[0].cleanupReason,
+    cueCount: exported.entries[0].cueCount,
+    replayEventCount: exported.entries[0].replayEventCount
+  }, {
+    meetingId: 'meeting-41',
+    transportGeneration: 4,
+    reconnectAttempt: 2,
+    reconnectReason: 'signaling_poll_failed',
+    cleanupReason: 'connect_rebuild',
+    cueCount: 8,
+    replayEventCount: 3
+  });
+});
+
 test('trace preserves bounded local terminal replay provenance', () => {
   const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
   trace.record({

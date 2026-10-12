@@ -34,7 +34,7 @@ import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from '.
 import { applyCueRefinementExecutionStates, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from '../lib/cueRefinement.js';
 import { effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from '../lib/cueContent.js';
 import { liveCueLatencyTracker } from '../lib/liveCueLatency.js';
-import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
+import { configureLivePipelineElapsedContext, livePipelineTrace, recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
 import { attachClientDiagnosticLifecycle } from '../lib/clientDiagnostics.js';
 import { waitForDurabilityPromises } from '../lib/durabilityBarrier.js';
 import {
@@ -527,7 +527,18 @@ const activeMeetingCheckpointRef = useRef(null);
     segmentId: activeMeetingCheckpointRef.current?.segmentId,
     segmentSequence: activeMeetingCheckpointRef.current?.segmentSequence,
     segments: selectedMeetingDetail?.segments || [],
+    diagnostics: recordingDiagnosticsRef.current,
   });
+
+  useEffect(() => {
+    const cueCount = (subtitleCueState.finalCues?.length || 0)
+      + (subtitleCueState.pendingCues?.length || 0)
+      + (subtitleCueState.currentCue ? 1 : 0);
+    recordingDiagnosticsRef.current.setCollectionCounts({
+      cueCount,
+      diagnosticEntryCount: livePipelineTrace.stats().entryCount
+    });
+  }, [subtitleCueState]);
 
   useEffect(() => subscribeToLiveCredentialClear(() => {
     sessionStopRequestedRef.current = true;

@@ -109,6 +109,9 @@ export function createSubtitleSource({ meetingId, sourceId = createSourceId(), m
         events: history.filter((event) => event.sequence > afterSequence).map((event) => structuredClone(event))
       });
     },
+    stats() {
+      return Object.freeze({ cueCount: cues.size, historyCount: history.length, maxHistory });
+    },
     get sequence() { return sequence; },
     get history() { return history.map((event) => structuredClone(event)); }
   };

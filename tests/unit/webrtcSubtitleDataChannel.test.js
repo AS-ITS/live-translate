@@ -89,6 +89,7 @@ test('source creates bounded snapshot and replay envelopes', () => {
   source.append({ cueId: 'c-2', revision: 1, sourceText: 'two' });
   source.append({ cueId: 'c-3', revision: 1, sourceText: 'three' });
   assert.equal(source.history.length, 2);
+  assert.deepEqual(source.stats(), { cueCount: 3, historyCount: 2, maxHistory: 2 });
   assert.deepEqual(source.snapshot().cues.map((cue) => cue.cueId), ['c-1', 'c-2', 'c-3']);
   const replay = source.replay(createReplayRequest({ meetingId: 'm-1', requestId: 'r-1', afterSequence: 1 }));
   assert.equal(replay.type, SUBTITLE_ENVELOPE_TYPES.replayResponse);

@@ -31,6 +31,7 @@ export function createWebRtcSubtitleTransport({
   onStatus,
   onEnvelope,
   onError,
+  onDiagnostics,
 } = {}) {
   if (!meetingId || !['device', 'viewer'].includes(role) || typeof RTCPeerConnectionImpl !== 'function') {
     throw new TypeError('WebRTC subtitle transport requires meetingId, role, and RTCPeerConnection.');
@@ -60,6 +61,7 @@ export function createWebRtcSubtitleTransport({
   initialCues.forEach(publishCue);
 
   function status(value, details = {}) {
+    reportDiagnosticCounts();
     const peerCounts = currentPeerCounts();
     const context = active;
     const traceDetails = {
@@ -78,11 +80,12 @@ export function createWebRtcSubtitleTransport({
       dataChannelState: context?.channel?.readyState,
       lastReceivedCueSequence: lastSourceSequence,
       cueDeliverySource: details.cueDeliverySource ?? null,
-      reconnectReason: details.reason ?? null,
       reconnectAttempt: details.attempt ?? retryAttempt,
+      reconnectReason: details.reconnectReason ?? details.reason ?? null,
       realtimeState: value,
       transportResult: value,
       signalingHealth,
+      ...diagnosticCounts(),
       ...peerCounts,
     };
     recordLivePipelineTrace(traceDetails);
@@ -118,6 +121,7 @@ export function createWebRtcSubtitleTransport({
       peerId: context?.peerId || context?.viewerId,
       viewerId: context?.viewerId || (role === 'viewer' ? participantId : null),
       reconnectAttempt: details.attempt ?? retryAttempt,
+      reconnectReason: details.reconnectReason ?? details.reason ?? null,
       lastDataChannelMessageAt: context?.lastDataChannelMessageAt,
       lastCueReceivedAt: context?.lastCueReceivedAt,
       lastPingAt: context?.lastPingAt,
@@ -145,6 +149,20 @@ export function createWebRtcSubtitleTransport({
     };
   }
 
+  function diagnosticCounts() {
+    const sourceStats = source?.stats?.();
+    return {
+      cueCount: sourceStats?.cueCount ?? cueVersions.size,
+      snapshotCueCount: sourceStats?.cueCount ?? null,
+      replayEventCount: sourceStats?.historyCount ?? null,
+      diagnosticMapCount: cueVersions.size + devicePeers.size
+    };
+  }
+
+  function reportDiagnosticCounts() {
+    try { onDiagnostics?.(diagnosticCounts()); } catch { /* Diagnostics must never interrupt transport. */ }
+  }
+
   function isTransportHealthy(context) {
     return isDataChannelUsable(context);
   }
@@ -166,8 +184,13 @@ export function createWebRtcSubtitleTransport({
     if (context) context[key] = null;
   }
 
-  function cleanupPeer(context = active) {
+  function cleanupPeer(context = active, reason = 'peer_cleanup') {
     if (!context) return;
+    recoveryTrace('TRANSPORT_CLEANUP', context, {
+      cleanupReason: reason,
+      reason,
+      transportResult: 'closed'
+    });
     if (active === context) active = null;
     clearContextTimer(context, 'pollTimer');
     clearContextTimer(context, 'disconnectTimer');
@@ -180,11 +203,12 @@ export function createWebRtcSubtitleTransport({
     context.adapter = null;
     context.channel = null;
     context.pc?.close?.();
+    reportDiagnosticCounts();
   }
 
-  function cleanupAllPeers() {
-    cleanupPeer();
-    for (const context of [...devicePeers.values()]) cleanupPeer(context);
+  function cleanupAllPeers(reason = 'all_peers_cleanup') {
+    cleanupPeer(active, reason);
+    for (const context of [...devicePeers.values()]) cleanupPeer(context, reason);
   }
 
   function clearDevicePoll() {
@@ -348,7 +372,7 @@ export function createWebRtcSubtitleTransport({
   }
 
   async function connect({ reconnecting = false } = {}) {
-    cleanupAllPeers();
+    cleanupAllPeers(reconnecting ? 'connect_rebuild' : 'initial_connect_reset');
     clearDevicePoll();
     clearHeartbeat();
     joined = false;
@@ -609,7 +633,7 @@ export function createWebRtcSubtitleTransport({
   }
 
   function cleanupDevicePeer(context) {
-    cleanupPeer(context);
+    cleanupPeer(context, 'device_peer_closed');
     if (!stopped && currentPeerCounts().healthyPeerCount === 0) {
       status('waiting', {
         epoch: connectionEpoch, reason: 'device_peer_closed',
@@ -632,7 +656,7 @@ export function createWebRtcSubtitleTransport({
       });
       return;
     }
-    if (previous) cleanupPeer(previous);
+    if (previous) cleanupPeer(previous, 'viewer_negotiation_replaced');
     const context = {
       epoch, viewerId, peerId: viewerId, negotiationId,
       pc: new RTCPeerConnectionImpl({ iceServers }), adapter: null, channel: null,
@@ -983,7 +1007,7 @@ export function createWebRtcSubtitleTransport({
     recoveryTrace('PEER_REBUILD_STARTED', null, { epoch: scheduledEpoch, reason });
     clearHeartbeat();
     clearDevicePoll();
-    cleanupAllPeers();
+    cleanupAllPeers(reason);
     joined = false;
     if (!isOnline()) {
       waitingForOnline = true;
@@ -1035,7 +1059,7 @@ export function createWebRtcSubtitleTransport({
     clearHeartbeat();
     clearDevicePoll();
     clearReconnect();
-    cleanupAllPeers();
+    cleanupAllPeers('transport_terminated');
     joined = false;
     detachLifecycleListeners();
   }
@@ -1101,6 +1125,7 @@ export function createWebRtcSubtitleTransport({
       const envelope = previous ? source.update(normalized) : source.append(normalized);
       if (!envelope) return false;
       cueVersions.set(cue.cueId, { serialized, revision: normalized.revision });
+      reportDiagnosticCounts();
       let sent = false;
       for (const context of devicePeers.values()) sent = Boolean(context.adapter?.send(envelope)) || sent;
       trace('WEBRTC_CUE_PUBLISH', messageType, null, {
@@ -1202,7 +1227,7 @@ export function createWebRtcSubtitleTransport({
           context.adapter?.send({ protocol: 'subtitle-webrtc/v1', type: SUBTITLE_ENVELOPE_TYPES.meetingStopped, meetingId });
         }
       }
-      cleanupAllPeers();
+      cleanupAllPeers(revoke ? 'meeting_revoked' : 'participant_stop');
       joined = false;
       detachLifecycleListeners();
       try {

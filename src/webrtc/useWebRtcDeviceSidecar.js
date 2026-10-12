@@ -3,7 +3,7 @@ import { authenticatedFetch } from '../lib/accessToken.js';
 import { mergeMeetingCues } from '../lib/meetingViewerState.js';
 import { createWebRtcSubtitleTransport } from './subtitleTransport.js';
 
-export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = 'idle', cues = [], segmentId = null, segmentSequence = null, segments = [] } = {}) {
+export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = 'idle', cues = [], segmentId = null, segmentSequence = null, segments = [], diagnostics = null } = {}) {
   const [connection, setConnection] = useState({ value: 'idle' });
   const [retryVersion, setRetryVersion] = useState(0);
   const transportRef = useRef(null);
@@ -49,6 +49,7 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
       initialCues: cueHistoryRef.current.cues,
       onStatus: (next) => { if (!disposed) setConnection(next); },
       onError: () => {},
+      onDiagnostics: (counts) => diagnostics?.setCollectionCounts?.(counts),
     });
     transportRef.current = transport;
     const getStats = () => transport.getStats();

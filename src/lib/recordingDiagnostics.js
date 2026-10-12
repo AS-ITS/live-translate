@@ -13,6 +13,7 @@ export function createRecordingDiagnostics({
   windowImpl = globalThis,
   PerformanceObserverImpl = globalThis.PerformanceObserver,
   sampleIntervalMs = DEFAULT_SAMPLE_INTERVAL_MS,
+  beforeSample = null,
   buildSha = import.meta.env?.VITE_VERCEL_GIT_COMMIT_SHA || import.meta.env?.VITE_GIT_COMMIT_SHA || null
 } = {}) {
   let state = emptyState();
@@ -244,6 +245,9 @@ export function createRecordingDiagnostics({
 
   function sample() {
     if (!enabled) return null;
+    if (typeof beforeSample === 'function') {
+      try { setCollectionCounts(beforeSample() || {}); } catch { /* Sampling metadata is best-effort. */ }
+    }
     sampleMemory();
     const sampledAt = now();
     const value = Object.freeze({

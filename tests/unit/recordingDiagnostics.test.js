@@ -185,3 +185,21 @@ test('recording diagnostics export includes schema, build, capabilities, and no 
   assert.equal(exported.browser.capabilities.jsHeap, 'unavailable');
   assert.doesNotMatch(JSON.stringify(exported), /api[_-]?key|bearer|signed.?url|transcript/i);
 });
+
+test('recording diagnostics refreshes O(1) collection metadata at sample time and ignores provider failure', () => {
+  let count = 3;
+  const diagnostics = createRecordingDiagnostics({
+    windowImpl: {},
+    beforeSample: () => ({ diagnosticEntryCount: count })
+  });
+  diagnostics.reset();
+  count = 7;
+  assert.equal(diagnostics.sample().current.diagnosticEntryCount, 7);
+
+  const resilient = createRecordingDiagnostics({
+    windowImpl: {},
+    beforeSample: () => { throw new Error('metadata unavailable'); }
+  });
+  assert.doesNotThrow(() => resilient.reset());
+  assert.equal(resilient.sample().current.diagnosticEntryCount, 0);
+});

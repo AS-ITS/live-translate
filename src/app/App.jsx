@@ -208,7 +208,10 @@ export function App() {
       onChange: applyCloudSaveSnapshot
     });
   }
-  const recordingDiagnosticsRef = useRef(createRecordingDiagnostics({ enabled: LIVE_DIAGNOSTICS_ENABLED }));
+  const recordingDiagnosticsRef = useRef(createRecordingDiagnostics({
+    enabled: LIVE_DIAGNOSTICS_ENABLED,
+    beforeSample: () => ({ diagnosticEntryCount: livePipelineTrace.stats().entryCount })
+  }));
   useEffect(() => {
     if (!LIVE_DIAGNOSTICS_ENABLED || typeof window === 'undefined') return undefined;
     const debugApi = {
@@ -535,8 +538,7 @@ const activeMeetingCheckpointRef = useRef(null);
       + (subtitleCueState.pendingCues?.length || 0)
       + (subtitleCueState.currentCue ? 1 : 0);
     recordingDiagnosticsRef.current.setCollectionCounts({
-      cueCount,
-      diagnosticEntryCount: livePipelineTrace.stats().entryCount
+      cueCount
     });
   }, [subtitleCueState]);
 

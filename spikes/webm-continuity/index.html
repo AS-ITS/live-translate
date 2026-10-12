@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebM continuity spike</title>
+    <style>
+      body { max-width: 980px; margin: 2rem auto; padding: 0 1rem; font: 15px/1.5 system-ui; }
+      button { margin-right: .5rem; padding: .6rem 1rem; }
+      pre { min-height: 18rem; padding: 1rem; overflow: auto; background: #111827; color: #d1fae5; }
+      .note { color: #4b5563; }
+    </style>
+  </head>
+  <body>
+    <h1>Issue #41 — isolated WebM continuity spike</h1>
+    <p class="note">Synthetic 48 kHz signal only. This page does not import or call the production Recorder or Gemini.</p>
+    <button id="quick" type="button">Run quick (8 s / 4 s rotation)</button>
+    <button id="full" type="button">Run 65 s / 60 s rotation</button>
+    <button id="download" type="button" disabled>Download JSON</button>
+    <pre id="output">Ready.</pre>
+    <script type="module" src="./webmContinuitySpike.js"></script>
+  </body>
+</html>

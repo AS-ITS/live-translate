@@ -134,6 +134,19 @@ test('recording diagnostics separates current, cumulative, high-water, and bound
   assert.equal(sample.latency.opfsAppend.method, 'fixed_histogram_upper_bound');
   assert.equal(sample.latency.opfsAppend.maxMs, 73);
   assert.equal(sample.latency.opfsAppend.p95UpperBoundMs, 100);
+  assert.equal(sample.latency.opfsAppend.p95Status, 'bounded');
+});
+
+test('recording diagnostics marks open-ended p95 bucket without claiming a false upper bound', () => {
+  const diagnostics = createRecordingDiagnostics({ windowImpl: {} });
+  diagnostics.reset();
+  diagnostics.recordOpfsAppendStarted({ bytes: 1 });
+  diagnostics.recordOpfsAppendFinished({ bytes: 1, durationMs: 4_500, status: 'failed' });
+  const latency = diagnostics.snapshot().latency.opfsAppend;
+  assert.equal(latency.p95Status, 'overflow_bucket');
+  assert.equal(latency.p95UpperBoundMs, null);
+  assert.equal(latency.p95LowerBoundMs, 3000);
+  assert.equal(latency.maxMs, 4_500);
 });
 
 test('recording diagnostics reset prevents duplicate timers and complete is idempotent', () => {

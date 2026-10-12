@@ -96,7 +96,13 @@ export function createRecordingDiagnostics({
     recordLatency(state.latency.opfsAppend.histogram, latency);
     state.latency.opfsAppend.count += 1;
     state.latency.opfsAppend.maxMs = Math.max(state.latency.opfsAppend.maxMs, latency);
-    state.latency.opfsAppend.p95UpperBoundMs = percentileFromLatencyHistogram(state.latency.opfsAppend.histogram);
+    const p95UpperBoundMs = percentileFromLatencyHistogram(state.latency.opfsAppend.histogram);
+    const rank = Math.ceil(state.latency.opfsAppend.count * 0.95);
+    const belowOverflowCount = state.latency.opfsAppend.count - state.latency.opfsAppend.histogram.gte3000;
+    const overflow = rank > belowOverflowCount;
+    state.latency.opfsAppend.p95Status = overflow ? 'overflow_bucket' : 'bounded';
+    state.latency.opfsAppend.p95UpperBoundMs = overflow ? null : p95UpperBoundMs;
+    state.latency.opfsAppend.p95LowerBoundMs = overflow ? 3000 : null;
     if (status === 'sealed') {
       increment('opfsAppendSuccesses', 1);
       if (newlySealed) {
@@ -387,7 +393,9 @@ function emptyState() {
         method: 'fixed_histogram_upper_bound',
         count: 0,
         maxMs: 0,
-        p95UpperBoundMs: 0,
+        p95Status: 'unavailable',
+        p95UpperBoundMs: null,
+        p95LowerBoundMs: null,
         histogram: createLatencyHistogram()
       }
     },

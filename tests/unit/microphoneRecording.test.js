@@ -96,6 +96,23 @@ test('controller records bounded diagnostics without changing recording state sh
   assert.equal(controller.getState().diagnostics, undefined);
 });
 
+test('diagnostic failures never change recorder success or OPFS writer ordering', async () => {
+  const recorderInstances = [];
+  const writes = [];
+  const diagnostics = new Proxy({}, { get: () => () => { throw new Error('diagnostic failure'); } });
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob,
+    diagnostics,
+    onChunk: async (chunk) => { writes.push(await chunk.data.text()); }
+  });
+  await controller.start({ stream: fakeStream(), sessionId: 'session-diagnostic-failure' });
+  recorderInstances[0].emitChunk(new Blob(['still-saved'], { type: 'audio/webm' }));
+  const state = await controller.finalize();
+  assert.equal(state.status, 'ready');
+  assert.deepEqual(writes, ['still-saved']);
+});
+
 test('controller can track recording state without retaining MediaRecorder chunks', async () => {
   const recorderInstances = [];
   const controller = createMicrophoneRecordingController({

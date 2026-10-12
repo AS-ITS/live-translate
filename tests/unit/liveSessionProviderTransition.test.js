@@ -67,3 +67,39 @@ test('bounded PCM overflow is explicit and never replays dropped history', () =>
   assert.equal(session.pendingInputAudioChunks.length, 1);
   assert.deepEqual([...session.pendingInputAudioChunks[0].bytes], [3, 4]);
 });
+
+test('formal live session reports bounded PCM queue, drops, drain, and cleanup', async () => {
+  const calls = [];
+  const diagnostics = {
+    setPcmQueue: (value) => calls.push({ type: 'queue', ...value }),
+    recordPcmDrop: (value) => calls.push({ type: 'drop', ...value })
+  };
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    maxPendingInputAudioChunks: 1,
+    maxPendingInputAudioBytes: 4,
+    recordingDiagnostics: diagnostics
+  });
+  session.queuePendingInputAudioChunk(new Uint8Array([1, 2]));
+  session.queuePendingInputAudioChunk(new Uint8Array([3, 4]));
+  assert.deepEqual(calls.find((entry) => entry.type === 'drop'), {
+    type: 'drop',
+    bytes: 2,
+    durationMs: 0.0625
+  });
+  assert.deepEqual(calls.filter((entry) => entry.type === 'queue').at(-1), {
+    type: 'queue',
+    chunks: 1,
+    bytes: 2,
+    maxChunks: 1,
+    maxBytes: 4
+  });
+  await session.cleanup();
+  assert.deepEqual(calls.filter((entry) => entry.type === 'queue').at(-1), {
+    type: 'queue',
+    chunks: 0,
+    bytes: 0,
+    maxChunks: 1,
+    maxBytes: 4
+  });
+});

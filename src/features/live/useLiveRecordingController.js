@@ -313,6 +313,7 @@ export function useLiveRecordingController({
     if (!shouldRecordInputAudio || !bytes || !Number.isFinite(bytes.byteLength) || bytes.byteLength === 0) return;
     if (cloudMeetingAudioEnabled()) return;
     audio.inputChunksRef.current.push(new Uint8Array(bytes));
+      audioUpload?.recordAudioChunkQueued?.('input', bytes.byteLength);
       void audioUpload?.flushAudioSegmentIfDue?.('input');
     },
     async pauseRawAudioRecording() {

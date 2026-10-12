@@ -12,9 +12,13 @@ export function createLocalMeetingPersistence({
   createOperationId = defaultOperationId,
   recordAudio = true,
   composeAudioArtifact = composeLocalMeetingAudioArtifact,
-  trace = recordLivePipelineTrace
+  trace = recordLivePipelineTrace,
+  diagnostics = null
 } = {}) {
   if (!cryptoImpl?.subtle || typeof cryptoImpl.subtle.digest !== 'function') throw new Error('Web Crypto is unavailable.');
+  const reportDiagnostic = (method, ...args) => {
+    try { diagnostics?.[method]?.(...args); } catch { /* Diagnostics must never interrupt local recording. */ }
+  };
   const createRecorder = () => createLocalMeetingRecorder({ manifestStore, chunkStore, now, onTrace: trace });
   let recorder = createRecorder();
   const retention = typeof manifestStore.getRetention === 'function'
@@ -47,6 +51,7 @@ export function createLocalMeetingPersistence({
       const restored = await recorder.restore(meetingId);
       activeMeetingId = meetingId;
       const chunks = await manifestStore.list(meetingId);
+      updateManifestDiagnostics(chunks);
       nextAudioSequence = chunks.reduce((next, chunk) => Math.max(next, chunk.sequence + 1), 1);
       if (restored.state === 'idle') {
         return recorder.start(meetingId, {
@@ -218,6 +223,7 @@ export function createLocalMeetingPersistence({
         manifestStore.list(meetingId)
       ]);
       activeMeetingId = meetingId;
+      updateManifestDiagnostics(chunks);
       nextAudioSequence = chunks.reduce((next, chunk) => Math.max(next, chunk.sequence + 1), 1);
       return Object.freeze({ recording, cues, chunks });
     },
@@ -227,12 +233,19 @@ export function createLocalMeetingPersistence({
 
   async function appendAudioChunkLocked({ data, mimeType = 'audio/webm', receivedAt = now(), descriptor: retryDescriptor = null } = {}) {
     if (!data || typeof data.arrayBuffer !== 'function') throw new TypeError('audio chunk data must be a Blob.');
+    const appendStartedAt = now();
     const bytes = new Uint8Array(await data.arrayBuffer());
     if (bytes.byteLength === 0) return null;
     const snapshot = recorder.snapshot();
     const descriptor = retryDescriptor
       ? await immutableRetryDescriptor(retryDescriptor, snapshot, bytes, cryptoImpl)
       : await createImmutableChunkDescriptor({ snapshot, bytes, mimeType, receivedAt });
+    const previous = retryDescriptor && typeof manifestStore.get === 'function'
+      ? await manifestStore.get(descriptor.chunkId)
+      : null;
+    const newlyReserved = !previous;
+    reportDiagnostic('recordOpfsAppendStarted', { bytes: bytes.byteLength });
+    reportDiagnostic('recordOpfsChunkReserved', { bytes: descriptor.byteSize, isRetry: !newlyReserved });
     try {
       trace?.({
         stage: 'LOCAL_CHUNK_RECEIVED',
@@ -249,11 +262,42 @@ export function createLocalMeetingPersistence({
     } catch { /* Diagnostics must never interrupt local recording. */ }
     nextAudioSequence = Math.max(nextAudioSequence, descriptor.sequence + 1);
     try {
-      return await recorder.appendChunk(descriptor, bytes);
+      const result = await recorder.appendChunk(descriptor, bytes);
+      const newlySealed = previous?.state !== 'sealed';
+      reportDiagnostic('recordOpfsChunkSealed', { bytes: descriptor.byteSize, wasUnsealed: newlySealed });
+      reportDiagnostic('recordOpfsAppendFinished', {
+        bytes: descriptor.byteSize,
+        durationMs: Math.max(0, now() - appendStartedAt),
+        status: 'sealed',
+        newlySealed
+      });
+      return result;
     } catch (error) {
+      if (newlyReserved && typeof manifestStore.get === 'function') {
+        try {
+          const retained = await manifestStore.get(descriptor.chunkId);
+          if (!retained) reportDiagnostic('recordOpfsChunkDiscarded', { bytes: descriptor.byteSize });
+        } catch { /* Diagnostics must never replace the recording error. */ }
+      }
+      reportDiagnostic('recordOpfsAppendFinished', {
+        bytes: descriptor.byteSize,
+        durationMs: Math.max(0, now() - appendStartedAt),
+        status: 'failed',
+        newlySealed: false
+      });
       if (error && typeof error === 'object') error.localChunkDescriptor = descriptor;
       throw error;
     }
+  }
+
+  function updateManifestDiagnostics(chunks = []) {
+    const sealed = chunks.filter((chunk) => chunk.state === 'sealed');
+    const unsealed = chunks.filter((chunk) => chunk.state !== 'sealed');
+    reportDiagnostic('setOpfsManifest', {
+      sealedBytes: sealed.reduce((sum, chunk) => sum + (Number(chunk.byteSize) || 0), 0),
+      unsealedCount: unsealed.length,
+      unsealedBytes: unsealed.reduce((sum, chunk) => sum + (Number(chunk.byteSize) || 0), 0)
+    });
   }
 
   async function createImmutableChunkDescriptor({ snapshot, bytes, mimeType, receivedAt }) {

@@ -19,7 +19,8 @@ export function createLiveAudioBindings({
   retryTimers,
   retryAttempts,
   getActiveSessionId,
-  setError
+  setError,
+  diagnostics
 }) {
   const controller = createAudioUploadController({
     chunks,
@@ -28,13 +29,15 @@ export function createLiveAudioBindings({
     retryTimers,
     retryAttempts,
     getActiveSessionId,
-    setError
+    setError,
+    diagnostics
   });
 
   return {
     flushAudioSegmentIfDue: (kind) => controller.flushIfDue(kind),
     flushAudioSegment: (kind, options) => controller.flush(kind, options),
     resetAudioUploadSegment: (kind) => controller.resetSegment(kind),
+    recordAudioChunkQueued: (kind, byteLength) => controller.recordQueued(kind, byteLength),
     audioUploadSessionId: (kind) => controller.sessionIdFor(kind),
     scheduleAudioUploadRetry: (kind, sessionId) => controller.scheduleRetry(kind, sessionId),
     clearAudioUploadRetry: (kind) => controller.clearRetry(kind),

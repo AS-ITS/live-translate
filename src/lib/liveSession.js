@@ -79,6 +79,7 @@ export class LiveTranslateSession {
     continueStartedAt = null,
     onStartupMilestone,
     onInputBufferOverflow,
+    recordingDiagnostics = null,
     maxPendingInputAudioBytes = MAX_PRE_ROLL_BYTES,
     maxPendingInputAudioChunks = MAX_PENDING_INPUT_AUDIO_CHUNKS,
     mode = 'translation'
@@ -132,6 +133,7 @@ export class LiveTranslateSession {
     this.continueStartedAt = Number.isFinite(continueStartedAt) ? continueStartedAt : null;
     this.onStartupMilestone = onStartupMilestone;
     this.onInputBufferOverflow = onInputBufferOverflow;
+    this.recordingDiagnostics = recordingDiagnostics;
     this.maxPendingInputAudioBytes = Math.max(1, Math.floor(maxPendingInputAudioBytes));
     this.maxPendingInputAudioChunks = Math.max(1, Math.floor(maxPendingInputAudioChunks));
     this.startupTimings = {};
@@ -185,6 +187,7 @@ export class LiveTranslateSession {
     this.chunker = null;
     this.pendingInputAudioChunks = [];
     this.pendingInputAudioBytes = 0;
+    this.updatePcmQueueDiagnostics();
     this.audioChunkSequence = 0;
     this.nextPlaybackTime = 0;
     this.playbackSources = new Set();
@@ -1057,6 +1060,7 @@ export class LiveTranslateSession {
       const dropped = this.pendingInputAudioChunks.shift();
       if (!dropped) break;
       this.pendingInputAudioBytes -= dropped.bytes.byteLength;
+      this.recordPcmDropDiagnostics(dropped);
       this.trace('pre_roll_overflow', {
         droppedSequence: dropped.sequence,
         droppedBytes: dropped.bytes.byteLength,
@@ -1066,6 +1070,7 @@ export class LiveTranslateSession {
     }
     this.pendingInputAudioChunks.push(record);
     this.pendingInputAudioBytes += bytes.byteLength;
+    this.updatePcmQueueDiagnostics();
     this.trace('pre_roll_enqueued', {
       sequence: record.sequence,
       bytes: bytes.byteLength,
@@ -1127,6 +1132,7 @@ export class LiveTranslateSession {
       const dropped = this.pendingInputAudioChunks.shift();
       if (!dropped) break;
       this.pendingInputAudioBytes -= dropped.bytes.byteLength;
+      this.recordPcmDropDiagnostics(dropped);
       this.trace('pre_roll_overflow', {
         droppedSequence: dropped.sequence,
         droppedBytes: dropped.bytes.byteLength,
@@ -1136,6 +1142,7 @@ export class LiveTranslateSession {
     }
     this.pendingInputAudioChunks.push(record);
     this.pendingInputAudioBytes += bytes.byteLength;
+    this.updatePcmQueueDiagnostics();
     this.trace('pre_roll_enqueued', {
       sequence: record.sequence,
       bytes: bytes.byteLength,
@@ -1204,10 +1211,32 @@ export class LiveTranslateSession {
       if (epoch !== this.connectionEpoch || this.closed || !this.session) return false;
       const record = this.pendingInputAudioChunks.shift();
       this.pendingInputAudioBytes -= record.bytes.byteLength;
+      this.updatePcmQueueDiagnostics();
       if (record.connectionEpoch !== epoch) continue;
       this.sendPcmRecord(record);
     }
     return true;
+  }
+
+  updatePcmQueueDiagnostics() {
+    try {
+      this.recordingDiagnostics?.setPcmQueue?.({
+        chunks: this.pendingInputAudioChunks.length,
+        bytes: this.pendingInputAudioBytes,
+        maxChunks: this.maxPendingInputAudioChunks,
+        maxBytes: this.maxPendingInputAudioBytes
+      });
+    } catch { /* Diagnostics must never interrupt audio capture. */ }
+  }
+
+  recordPcmDropDiagnostics(record) {
+    try {
+      const bytes = record?.bytes?.byteLength || 0;
+      this.recordingDiagnostics?.recordPcmDrop?.({
+        bytes,
+        durationMs: (bytes / 2 / 16_000) * 1000
+      });
+    } catch { /* Diagnostics must never interrupt audio capture. */ }
   }
 
   isCurrentCaptureEpoch(epoch, processor = null, graphGeneration = null) {
@@ -2432,6 +2461,7 @@ export class LiveTranslateSession {
       this.activeCaptureGraphGeneration = null;
       this.pendingInputAudioChunks = [];
       this.pendingInputAudioBytes = 0;
+      this.updatePcmQueueDiagnostics();
       this.localTurnFinalizeTriggered = false;
       this.pendingInputTranscript = null;
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;

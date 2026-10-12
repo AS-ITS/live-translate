@@ -213,6 +213,7 @@ export function App() {
     if (!LIVE_DIAGNOSTICS_ENABLED || typeof window === 'undefined') return undefined;
     const debugApi = {
       getSnapshot: () => recordingDiagnosticsRef.current.snapshot(),
+      exportJson: () => recordingDiagnosticsRef.current.exportJson(),
       reset: () => recordingDiagnosticsRef.current.reset()
     };
     window.__liveTranslateRecordingDebug = debugApi;
@@ -346,6 +347,7 @@ const activeMeetingCheckpointRef = useRef(null);
       setRecordingState,
       setTranslatedAudioState,
       upload: {
+        diagnostics: recordingDiagnosticsRef.current,
         chunks: { input: inputAudioUploadChunksRef, translation: translatedAudioUploadChunksRef },
         metadata: { input: inputAudioMetadataRef, translation: translatedAudioMetadataRef },
         segments: audioUploadSegmentsRef,
@@ -1205,6 +1207,7 @@ const activeMeetingCheckpointRef = useRef(null);
       recordingId: sessionRepositoryRef.current.getSessionRecord(activeSessionRecordIdRef.current)?.sessionRecord?.recordingId || null,
       meetingId: meetingId || null,
       segmentId: segmentId || liveSessionId,
+      recordingDiagnostics: recordingDiagnosticsRef.current,
       startupStartedAt,
       continueStartedAt,
       sessionClock: () => sessionTimeForSubtitleCues(),
@@ -1660,7 +1663,9 @@ const activeMeetingCheckpointRef = useRef(null);
 
   function getLocalMeetingPersistence() {
     if (!localMeetingPersistenceRef.current) {
-      localMeetingPersistenceRef.current = createLocalMeetingPersistence();
+      localMeetingPersistenceRef.current = createLocalMeetingPersistence({
+        diagnostics: recordingDiagnosticsRef.current
+      });
     }
     localMeetingPersistenceRef.current.setRecordingEnabled?.(shouldRecordInputAudio);
     return localMeetingPersistenceRef.current;

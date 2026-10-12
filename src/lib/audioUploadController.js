@@ -18,6 +18,7 @@ export function createAudioUploadController({
   retryAttempts,
   getActiveSessionId,
   setError,
+  diagnostics = null,
   fetchImpl = fetch,
   now = () => Date.now(),
   windowImpl = typeof window === 'undefined' ? globalThis : window,
@@ -25,6 +26,11 @@ export function createAudioUploadController({
   retryDelayMs = DEFAULT_RETRY_DELAY_MS,
   maxRetryDelayMs = DEFAULT_MAX_RETRY_DELAY_MS
 }) {
+  const queueBytes = { input: 0, translation: 0 };
+  const reportDiagnostic = (method, ...args) => {
+    try { diagnostics?.[method]?.(...args); } catch { /* Diagnostics must not affect upload behavior. */ }
+  };
+
   function clearRetry(kind) {
     const timer = retryTimers.current[kind];
     if (timer) windowImpl.clearTimeout(timer);
@@ -34,7 +40,17 @@ export function createAudioUploadController({
 
   function resetSegment(kind) {
     clearRetry(kind);
+    queueBytes[kind] = 0;
+    if (kind === 'input') reportDiagnostic('setLegacyQueue', { chunks: 0, bytes: 0 });
     segments.current[kind] = { nextIndex: 0, lastFlushedAt: now(), inFlight: false, currentPromise: null };
+  }
+
+  function recordQueued(kind, byteLength = 0) {
+    queueBytes[kind] = (queueBytes[kind] || 0) + Math.max(0, Number(byteLength) || 0);
+    if (kind === 'input') reportDiagnostic('setLegacyQueue', {
+      chunks: chunks[kind].current.length,
+      bytes: queueBytes[kind]
+    });
   }
 
   function sessionIdFor(kind) {
@@ -64,6 +80,7 @@ export function createAudioUploadController({
     if (!sessionId || retryTimers.current[kind]) return;
     const attempt = retryAttempts.current[kind] + 1;
     retryAttempts.current[kind] = attempt;
+    if (kind === 'input') reportDiagnostic('recordLegacyRetry');
     const delay = Math.min(retryDelayMs * (2 ** Math.max(0, attempt - 1)), maxRetryDelayMs);
     retryTimers.current[kind] = windowImpl.setTimeout(() => {
       retryTimers.current[kind] = null;
@@ -84,7 +101,10 @@ export function createAudioUploadController({
     if (!force && now() - segment.lastFlushedAt < segmentIntervalMs) return null;
 
     const uploadChunks = chunksRef.current.slice();
+    const uploadBytes = queueBytes[kind] || 0;
     chunksRef.current = [];
+    queueBytes[kind] = 0;
+    if (kind === 'input') reportDiagnostic('setLegacyQueue', { chunks: 0, bytes: 0 });
     segment.inFlight = true;
     const uploadPromise = (async () => {
       const blob = pcm16ChunksToWavBlob(uploadChunks, {
@@ -109,6 +129,11 @@ export function createAudioUploadController({
       return await uploadPromise;
     } catch (error) {
       chunksRef.current = uploadChunks.concat(chunksRef.current);
+      queueBytes[kind] = uploadBytes + (queueBytes[kind] || 0);
+      if (kind === 'input') reportDiagnostic('setLegacyQueue', {
+        chunks: chunksRef.current.length,
+        bytes: queueBytes[kind]
+      });
       if (isRetryableError(error)) scheduleRetry(kind, sessionId);
       throw error;
     } finally {
@@ -126,5 +151,5 @@ export function createAudioUploadController({
     clearRetry('translation');
   }
 
-  return Object.freeze({ clearRetry, resetSegment, sessionIdFor, isRetryableError, uploadSegment, scheduleRetry, flush, flushIfDue, cancelRetries });
+  return Object.freeze({ clearRetry, resetSegment, recordQueued, sessionIdFor, isRetryableError, uploadSegment, scheduleRetry, flush, flushIfDue, cancelRetries });
 }

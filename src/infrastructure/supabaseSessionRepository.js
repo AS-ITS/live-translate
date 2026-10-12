@@ -15,8 +15,8 @@ export function createSupabaseSessionRepository(options = {}) {
     async createSessionRecord(input = {}) {
       const record = createSessionRecordModel({ ...input, ownerUserId: owner() }, { ...input, idFactory });
       if (Number(input.lifecycleContractVersion ?? input.lifecycle_contract_version) === 2) record.lifecycleContractVersion = 2;
-      await client.request('sessions', { method: 'POST', body: [sessionRow(record, owner())] });
-      return clone(record);
+      const rows = await client.request('sessions', { method: 'POST', body: [sessionRow(record, owner())] });
+      return { ...clone(record), recordingId: rows[0]?.recording_id || null };
     },
     async updateSessionRecord(id, patch = {}) {
       const detail = await this.getSessionRecord(id); if (!detail) throw notFound(id);
@@ -42,7 +42,7 @@ export function createSupabaseSessionRepository(options = {}) {
     },
     async listSessionRecords() {
       const rows = await client.request('sessions', { query: `?select=*&${eq('owner_user_id', owner())}&order=created_at.desc` });
-      return rows.map((row) => clone(row.payload || row));
+      return rows.map(sessionRecordFromRow);
     },
     async getSessionOwner(id) {
       const rows = await client.request('sessions', { query: `?select=meeting_id,owner_user_id&id=${encodeURIComponent(id)}` });
@@ -65,10 +65,16 @@ export function createSupabaseSessionRepository(options = {}) {
 
 function sessionRecordFromRow(row) {
   const payload = clone(row.payload || row);
+  const databaseSegmentId = row.current_segment_id || row.segment_id || null;
   const record = {
     ...payload,
     id: row.id || payload.id,
     meetingId: row.meeting_id || payload.meetingId,
+    // Lifecycle v2 moves the active Segment atomically in SQL. The JSON payload
+    // is only a snapshot and can still contain the previous Segment after a
+    // rollover, so it must never override the relational ownership columns.
+    segmentId: databaseSegmentId || payload.segmentId || null,
+    recordingId: row.recording_id || payload.recordingId || null,
     ownerUserId: row.owner_user_id || payload.ownerUserId
   };
 
@@ -86,6 +92,7 @@ function sessionRow(record, ownerUserId, transcriptItems = []) {
     id: record.id,
     owner_user_id: ownerUserId,
     meeting_id: record.meetingId,
+    ...(record.recordingId ? { recording_id: record.recordingId } : {}),
     ...(isLifecycleV2Session(record)
       ? { lifecycle_contract_version: 2, segment_id: null }
       : { segment_id: record.segmentId }),

@@ -1,9 +1,31 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetected, meetingEventDuplicateDetected } from '../../lib/meetingViewerState.js';
 import { createMeetingViewerTelemetry } from '../../lib/meetingViewerTelemetry.js';
 import { viewerLatencySample } from '../../lib/meetingViewerLatency.js';
+import { effectiveTranslationForCue } from '../../lib/cueContent.js';
 import { createMeetingViewerRealtimeController, meetingViewerRealtimeEnabled } from '../../lib/meetingViewerRealtime.js';
+import { fetchMeetingViewerSnapshotWithRetry, isTerminalViewerError } from '../../lib/meetingViewerSnapshot.js';
+import { createWebRtcSubtitleTransport } from '../../webrtc/subtitleTransport.js';
+import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
+import { resolveViewerTransportState } from '../../webrtc/viewerTransportState.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
+import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
+import { attachClientDiagnosticLifecycle } from '../../lib/clientDiagnostics.js';
+import {
+  readSubtitleVisibilityPreference,
+  toggleSubtitleVisibility,
+  VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY,
+  writeSubtitleVisibilityPreference
+} from '../../lib/subtitleVisibilityPreference.js';
+import { canonicalViewerShareUrl } from '../../lib/viewerShare.js';
+import {
+  captureViewerScrollAnchor,
+  countUnseenViewerCues,
+  resolveViewerAutoFollow,
+  restoreViewerScrollAnchor,
+  scrollViewerToLatest
+} from '../../lib/viewerAutoFollow.js';
+import { ViewerShareHeader } from './ViewerShareHeader.jsx';
 
 export function MeetingViewerPage({ token, code }) {
   const [detail, setDetail] = useState(null);
@@ -11,6 +33,11 @@ export function MeetingViewerPage({ token, code }) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(560);
   const viewportRef = useRef(null);
+  const userScrollIntentRef = useRef(false);
+  const isFollowingLatestRef = useRef(true);
+  const autoFollowFrameRef = useRef(null);
+  const historyAnchorRef = useRef(null);
+  const historySeenCueIdsRef = useRef(new Set());
   const detailRef = useRef(null);
   const eventSourceRef = useRef(null);
   const nextViewerCursorRef = useRef(null);
@@ -18,11 +45,54 @@ export function MeetingViewerPage({ token, code }) {
   const latencySamplesRef = useRef([]);
   const rowHeightsRef = useRef(new Map());
   const [rowLayoutVersion, setRowLayoutVersion] = useState(0);
-  const [showSource, setShowSource] = useState(true);
+  const [visibility, setVisibility] = useState(() => readSubtitleVisibilityPreference(VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY));
+  const { showSource, showTranslation } = visibility;
   const [isFollowingLatest, setIsFollowingLatest] = useState(true);
+  const [unseenCueCount, setUnseenCueCount] = useState(0);
   const [hasOlderCues, setHasOlderCues] = useState(false);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [shareConnection, setShareConnection] = useState({ value: 'connecting' });
+  const [retryVersion, setRetryVersion] = useState(0);
+  const [isNativeFullscreen, setIsNativeFullscreen] = useState(false);
+  const [isCssFullscreen, setIsCssFullscreen] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState('');
+  const fullscreenShellRef = useRef(null);
+  const fullscreenErrorTimerRef = useRef(null);
+  const fullscreenErrorGenerationRef = useRef(0);
+  const isFullscreen = isNativeFullscreen || isCssFullscreen;
   const estimatedRowHeight = 64;
+  const shareUrl = useMemo(() => canonicalViewerShareUrl({ code, token }), [code, token]);
+
+  useEffect(() => attachClientDiagnosticLifecycle({
+    role: 'viewer',
+    getContext: () => ({ meetingId: detailRef.current?.meeting?.id || detailRef.current?.meetingId || null })
+  }), []);
+
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setIsNativeFullscreen(document.fullscreenElement === fullscreenShellRef.current);
+    };
+    syncFullscreenState();
+    document.addEventListener('fullscreenchange', syncFullscreenState);
+    return () => document.removeEventListener('fullscreenchange', syncFullscreenState);
+  }, []);
+
+  useEffect(() => () => {
+    fullscreenErrorGenerationRef.current += 1;
+    if (fullscreenErrorTimerRef.current !== null) {
+      window.clearTimeout(fullscreenErrorTimerRef.current);
+      fullscreenErrorTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    writeSubtitleVisibilityPreference(VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY, visibility);
+  }, [visibility]);
+
+  useEffect(() => {
+    rowHeightsRef.current.clear();
+    setRowLayoutVersion((version) => version + 1);
+  }, [showSource, showTranslation]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -48,53 +118,385 @@ export function MeetingViewerPage({ token, code }) {
       : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
     const telemetry = createMeetingViewerTelemetry({ basePath });
     let cancelled = false;
-    async function fetchSnapshot(before = null) {
+    let webRtcTransport = null;
+    let webRtcStarted = false;
+    let realtimeController = null;
+    let restoredTimer = null;
+    let sseReconnectTimer = null;
+    let lifecycleRefreshTimer = null;
+    let lifecycleRefreshInFlight = false;
+    let sseReconnectAttempts = 0;
+    let fallbackEpoch = 0;
+    let sseEpoch = 0;
+    let terminal = false;
+    let everConnected = false;
+    let recordingState = 'waiting';
+    let fallbackStarted = false;
+    const useRealtime = meetingViewerRealtimeEnabled();
+    const channelStates = { webRtc: 'idle', fallback: 'connecting' };
+    const snapshotController = new AbortController();
+    setShareConnection({ value: 'connecting' });
+
+    function stopConnections() {
+      snapshotController.abort();
+      if (restoredTimer) clearTimeout(restoredTimer);
+      restoredTimer = null;
+      if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+      sseReconnectTimer = null;
+      if (lifecycleRefreshTimer) clearTimeout(lifecycleRefreshTimer);
+      lifecycleRefreshTimer = null;
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+      void realtimeController?.stop();
+      void webRtcTransport?.stop();
+    }
+
+    function showRestoredConnection() {
+      if (cancelled || terminal) return;
+      if (restoredTimer) clearTimeout(restoredTimer);
+      setShareConnection({ value: 'restored' });
+      setError('');
+      restoredTimer = setTimeout(() => {
+        const value = resolveViewerTransportState({ ...channelStates, webRtcRequired: webRtcStarted, everConnected });
+        if (!cancelled && !terminal && (value === 'connected' || value === 'restored')) {
+          setShareConnection({ value: 'connected' });
+        }
+      }, 3_000);
+    }
+
+    function setChannelState(channel, next, message = '') {
+      if (cancelled || terminal) return;
+      if (recordingState === 'paused' || recordingState === 'waiting') {
+        channelStates[channel] = next.value;
+        setShareConnection({ value: 'waiting' });
+        setError('');
+        return;
+      }
+      const previous = resolveViewerTransportState({ ...channelStates, webRtcRequired: webRtcStarted, everConnected });
+      channelStates[channel] = next.value;
+      const value = resolveViewerTransportState({ ...channelStates, webRtcRequired: webRtcStarted, everConnected });
+      if (value === 'connected' || value === 'restored') {
+        if (everConnected && (!['connected', 'restored'].includes(previous) || value === 'restored')) showRestoredConnection();
+        else setShareConnection({ value: 'connected' });
+        everConnected = true;
+        setError('');
+        return;
+      }
+      if (value === 'recovery_failed') {
+        setShareConnection({ ...next, value: 'recovery_failed' });
+        setError('');
+        return;
+      }
+      if (value === 'failed') {
+        setShareConnection({ value: 'failed' });
+        setError(message || '多次重新連線後仍無法取得即時字幕。');
+      } else {
+        setShareConnection({ value });
+        setError('');
+      }
+    }
+
+    function handleSnapshotError(value) {
+      if (cancelled) return;
+      if (value?.name === 'AbortError') return;
+      if (isTerminalViewerError(value)) {
+        terminal = true;
+        setShareConnection({ value: value.code === 'share_unauthorized' ? 'invalid' : 'stopped' });
+        setError(value?.message || '分享已失效。');
+        stopConnections();
+      } else setChannelState('fallback', { value: 'failed' }, value?.message || '無法連線。');
+    }
+
+    function applyWebRtcEnvelope(envelope, transportMeta = {}) {
+      if (cancelled || terminal) return;
+      if (envelope.type === 'meeting.stopped') {
+        terminal = true;
+        setShareConnection({ value: 'stopped' });
+        setError('會議已停止。');
+        stopConnections();
+        return;
+      }
+      if (envelope.type === 'snapshot') {
+        const merged = mergeMeetingViewerSnapshot(detailRef.current, {
+          cues: envelope.cues || [],
+          cursor: { cueSequence: envelope.sequence || 0 },
+        });
+        detailRef.current = merged;
+        setDetail(merged);
+        recordLivePipelineTrace({
+          stage: 'VIEWER_STORE_UPDATED', meetingId: merged?.meeting?.id || merged?.meetingId,
+          messageType: 'snapshot', sequence: envelope.sequence, sourceId: envelope.sourceId,
+          transportGeneration: transportMeta.transportGeneration,
+          cueDeliverySource: 'snapshot',
+          receivedAt: transportMeta.receivedAt,
+          decision: 'snapshot_merged', transportResult: 'updated',
+        });
+        return;
+      }
+      if (envelope.type === 'replay.response') {
+        (envelope.events || []).forEach((event) => applyWebRtcEnvelope(event, {
+          ...transportMeta,
+          cueDeliverySource: 'replay'
+        }));
+        return;
+      }
+      if (envelope.type === 'cue.append' || envelope.type === 'cue.update') {
+        applyCuePayload(envelope, {
+          ...transportMeta,
+          cueDeliverySource: transportMeta.cueDeliverySource || 'live'
+        });
+      }
+    }
+
+    function startWebRtc(meetingId) {
+      if (webRtcStarted || !meetingId || typeof RTCPeerConnection !== 'function') return;
+      webRtcStarted = true;
+      try {
+        webRtcTransport = createWebRtcSubtitleTransport({
+          meetingId,
+          role: 'viewer',
+          credential: code ? { shareCode: code } : { shareToken: token },
+          onEnvelope: applyWebRtcEnvelope,
+          onStatus: (next) => {
+            if (cancelled || terminal) return;
+            if (next.value === 'invalid' || next.value === 'stopped') {
+              terminal = true;
+              setShareConnection(next);
+              setError(next.value === 'invalid' ? '分享已失效。' : '會議已停止。');
+              stopConnections();
+              return;
+            }
+            if (restoredTimer) clearTimeout(restoredTimer);
+            restoredTimer = null;
+            setChannelState('webRtc', next);
+            if (next.value === 'reconnecting' || next.value === 'disconnected') refreshLifecycleSnapshot();
+          },
+          onError: () => {},
+        });
+        window.__liveTranslateWebRtcGetStats = () => webRtcTransport.getStats();
+        webRtcTransport.start();
+      } catch {
+        setChannelState('webRtc', { value: 'failed' });
+      }
+    }
+
+    function stopWebRtcForPause() {
+      const transport = webRtcTransport;
+      webRtcTransport = null;
+      webRtcStarted = false;
+      channelStates.webRtc = 'idle';
+      delete window.__liveTranslateWebRtcGetStats;
+      void transport?.stop();
+    }
+
+    function scheduleLifecycleRefresh() {
+      if (cancelled || terminal || lifecycleRefreshTimer) return;
+      lifecycleRefreshTimer = setTimeout(() => {
+        lifecycleRefreshTimer = null;
+        refreshLifecycleSnapshot();
+      }, 2_000);
+    }
+
+    function refreshLifecycleSnapshot() {
+      if (cancelled || terminal || lifecycleRefreshInFlight) return;
+      lifecycleRefreshInFlight = true;
+      void fetchSnapshot()
+        .catch(handleSnapshotError)
+        .finally(() => { lifecycleRefreshInFlight = false; });
+    }
+
+    function applyRecordingLifecycle(value) {
+      recordingState = value?.recordingState || (
+        ['completed', 'failed'].includes(value?.meeting?.status) ? 'ended'
+          : value?.meeting?.status === 'created' ? 'waiting' : 'active'
+      );
+      recordLivePipelineTrace({
+        stage: 'VIEWER_MEETING_LIFECYCLE',
+        event: 'viewer.meeting.lifecycle',
+        role: 'viewer',
+        meetingId: value?.meeting?.id || value?.meetingId,
+        generation: fallbackEpoch,
+        recordingState,
+        meetingStatus: value?.meeting?.status,
+        lifecycleStatus: recordingState
+      });
+      if (recordingState === 'ended') {
+        terminal = true;
+        setShareConnection({ value: 'stopped' });
+        setError('會議已結束。');
+        stopConnections();
+        return;
+      }
+      if (recordingState === 'paused' || recordingState === 'waiting') {
+        stopWebRtcForPause();
+        setShareConnection({ value: 'waiting' });
+        setError('');
+        scheduleLifecycleRefresh();
+        return;
+      }
+      if (lifecycleRefreshTimer) clearTimeout(lifecycleRefreshTimer);
+      lifecycleRefreshTimer = null;
+      startWebRtc(value?.meeting?.id || value?.meetingId);
+      ensureFallbackStarted(value);
+    }
+
+    async function fetchSnapshot(before = null, expectedEpoch = fallbackEpoch) {
       const snapshotUrl = new URL(basePath, window.location.origin);
+      let retried = false;
       if (before) snapshotUrl.searchParams.set('before', before);
-      const response = await fetch(`${snapshotUrl.pathname}${snapshotUrl.search}`);
-      if (!response.ok) throw new Error('分享連結無效或已過期。');
-      const value = await response.json();
-      if (cancelled) return value;
+      const value = await fetchMeetingViewerSnapshotWithRetry({
+        url: `${snapshotUrl.pathname}${snapshotUrl.search}`,
+        signal: snapshotController.signal,
+        onRetry: ({ attempt }) => {
+          retried = true;
+          recordLivePipelineTrace({
+            stage: 'VIEWER_SNAPSHOT',
+            event: 'viewer.snapshot.retry',
+            role: 'viewer',
+            meetingId: detailRef.current?.meeting?.id || detailRef.current?.meetingId,
+            generation: expectedEpoch,
+            retryAttempt: attempt,
+            transportResult: 'retrying'
+          });
+          if (!cancelled && expectedEpoch === fallbackEpoch) setChannelState('fallback', { value: 'reconnecting', attempt });
+        },
+      });
+      if (cancelled || terminal || expectedEpoch !== fallbackEpoch) return null;
+      recordLivePipelineTrace({
+        stage: 'VIEWER_SNAPSHOT',
+        event: 'viewer.snapshot.received',
+        role: 'viewer',
+        meetingId: value?.meeting?.id || value?.meetingId,
+        generation: expectedEpoch,
+        snapshotRevision: value?.revision ?? value?.cursor?.eventId ?? null,
+        cueCount: Array.isArray(value?.cues) ? value.cues.length : 0,
+        recordingState: value?.recordingState,
+        meetingStatus: value?.meeting?.status,
+        transportResult: retried ? 'recovered' : 'received'
+      });
       nextViewerCursorRef.current = value.pagination?.nextCursor || null;
       setHasOlderCues(Boolean(value.pagination?.hasMore));
       const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
       detailRef.current = merged;
+      configureLivePipelineElapsedContext({ meetingStartedAt: merged?.meeting?.startedAt });
       setDetail(merged);
+      applyRecordingLifecycle(value);
+      if (retried && sseConnected) setChannelState('fallback', { value: 'restored' });
       return merged;
     }
-    function applyCuePayload(payload) {
-      const receivedAt = Date.now();
+    function applyCuePayload(payload, transportMeta = {}) {
+      if (cancelled || terminal) return;
+      const receivedAt = transportMeta.receivedAt || Date.now();
+      const receivedCue = payload?.cue && typeof payload.cue === 'object' ? payload.cue : payload;
+      const duplicate = meetingEventDuplicateDetected(detailRef.current, payload);
+      recordLivePipelineTrace({
+        stage: 'VIEWER_RECEIVED',
+        meetingId: receivedCue?.meetingId || detailRef.current?.meeting?.id || detailRef.current?.meetingId,
+        recordingId: receivedCue?.sessionId || null,
+        segmentId: receivedCue?.segmentId || null,
+        audioTurnId: receivedCue?.audioTurnId || null,
+        turnKey: receivedCue?.turnKey || null,
+        cueId: receivedCue?.cueId || null,
+        messageType: payload.type || 'viewer_cue_received',
+        sequence: payload.sequence ?? receivedCue?.sequence,
+        revision: receivedCue?.revision,
+        sourceVersion: receivedCue?.sourceVersion,
+        translationVersion: receivedCue?.translationVersion,
+        transportGeneration: transportMeta.transportGeneration,
+        cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
+        receivedAt,
+        reason: payload.type || 'viewer_cue_received',
+        transportResult: duplicate ? 'deduped' : 'accepted',
+      });
+      if (duplicate) {
+        recordLivePipelineTrace({
+          stage: 'VIEWER_PACKET_DROPPED', cueAction: 'drop',
+          meetingId: receivedCue?.meetingId || detailRef.current?.meeting?.id || detailRef.current?.meetingId,
+          sessionId: receivedCue?.sessionId, segmentId: receivedCue?.segmentId,
+          cueId: receivedCue?.cueId, messageType: payload.type,
+          sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
+          sourceVersion: receivedCue?.sourceVersion, translationVersion: receivedCue?.translationVersion,
+          transportGeneration: transportMeta.transportGeneration,
+          cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
+          receivedAt, dropReason: 'stale_or_duplicate_revision', transportResult: 'dropped',
+        });
+      }
       const next = applyMeetingCueEvent(detailRef.current, payload);
       detailRef.current = next;
       setDetail(next);
+      recordLivePipelineTrace({
+        stage: 'VIEWER_STORE_UPDATED',
+        meetingId: receivedCue?.meetingId || next?.meeting?.id || next?.meetingId,
+        sessionId: receivedCue?.sessionId, segmentId: receivedCue?.segmentId,
+        cueId: receivedCue?.cueId, messageType: payload.type,
+        sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
+        transportGeneration: transportMeta.transportGeneration,
+        cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
+        receivedAt, decision: duplicate ? 'unchanged' : 'merged',
+        transportResult: duplicate ? 'deduped' : 'updated',
+      });
       requestAnimationFrame(() => {
+        const renderedAt = Date.now();
         const sample = viewerLatencySample({
           ...payload,
           timing: { ...(payload.timing || {}), publishedAt: payload.committedAt || payload.timing?.publishedAt, receivedAt }
-        }, { renderedAt: Date.now() });
+        }, { renderedAt });
         if (sample) latencySamplesRef.current.push(sample);
+        recordLivePipelineTrace({
+          stage: 'REACT_RENDER',
+          meetingId: receivedCue?.meetingId || detailRef.current?.meeting?.id || detailRef.current?.meetingId,
+          sessionId: receivedCue?.sessionId, segmentId: receivedCue?.segmentId,
+          cueId: receivedCue?.cueId, messageType: payload.type,
+          sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
+          transportGeneration: transportMeta.transportGeneration,
+          cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
+          receivedAt, timestamp: renderedAt, transportResult: 'rendered',
+        });
       });
     }
     let sseConnected = false;
+    function scheduleSseReconnect() {
+      if (cancelled || terminal || sseReconnectTimer) return;
+      if (recordingState === 'paused' || recordingState === 'waiting') {
+        scheduleLifecycleRefresh();
+        return;
+      }
+      const delays = [1_000, 2_000, 4_000, 8_000, 10_000, 10_000];
+      if (sseReconnectAttempts >= delays.length) {
+        setChannelState('fallback', { value: 'failed' }, '多次重新連線後仍無法取得即時字幕。');
+        return;
+      }
+      const delay = Math.round(delays[sseReconnectAttempts++] * (0.75 + Math.random() * 0.5));
+      sseReconnectTimer = setTimeout(() => {
+        sseReconnectTimer = null;
+        void fetchSnapshot()
+          .catch(handleSnapshotError);
+      }, delay);
+    }
+
     function connectEvents(afterEventId = detailRef.current?.cursor?.eventId || 0) {
-      if (cancelled) return;
+      if (cancelled || terminal || recordingState === 'paused' || recordingState === 'waiting') return;
       eventSourceRef.current?.close();
+      const epoch = ++sseEpoch;
       const events = new EventSource(`${basePath}/events?after=${encodeURIComponent(afterEventId)}`);
       eventSourceRef.current = events;
       events.onopen = () => {
+        if (cancelled || terminal || epoch !== sseEpoch) return;
         if (sseConnected) void telemetry.report('reconnect');
+        setChannelState('fallback', { value: sseConnected ? 'restored' : 'connected' });
         sseConnected = true;
-        setError('');
+        sseReconnectAttempts = 0;
       };
       events.addEventListener('cue.append', (event) => {
+        if (cancelled || terminal || epoch !== sseEpoch) return;
         try {
           const payload = JSON.parse(event.data);
           if (meetingEventGapDetected(detailRef.current?.cursor, payload.eventId)) {
             void telemetry.report('event_gap');
-          void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
-            void telemetry.report('replay_failure');
-            if (!cancelled) setError(value.message);
-          });
+            void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
+              void telemetry.report('replay_failure');
+              handleSnapshotError(value);
+            });
             return;
           }
           if (meetingEventDuplicateDetected(detailRef.current, payload)) void telemetry.report('event_duplicate');
@@ -104,56 +506,82 @@ export function MeetingViewerPage({ token, code }) {
         }
       });
       events.addEventListener('meeting.gap', () => {
+        if (cancelled || terminal || epoch !== sseEpoch) return;
         void telemetry.report('event_gap');
         void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
           void telemetry.report('replay_failure');
-          if (!cancelled) setError(value.message);
+          handleSnapshotError(value);
         });
       });
       events.onerror = () => {
-        if (!cancelled) setError('分享連線中斷，瀏覽器會自動嘗試重新連線。');
+        if (!cancelled && !terminal && epoch === sseEpoch) {
+          events.close();
+          fallbackStarted = false;
+          setChannelState('fallback', { value: 'reconnecting' });
+          scheduleSseReconnect();
+        }
       };
     }
-    let realtimeController = null;
-    if (meetingViewerRealtimeEnabled()) {
+
+    function ensureFallbackStarted(value) {
+      if (fallbackStarted || cancelled || terminal) return;
+      fallbackStarted = true;
+      if (useRealtime) void realtimeController?.start();
+      else connectEvents(value?.cursor?.eventId || 0);
+    }
+
+    if (useRealtime) {
       let snapshotReady = false;
       let bufferedEvents = [];
+      let realtimeSubscribed = false;
       realtimeController = createMeetingViewerRealtimeController({
         basePath,
-        onConnecting: () => { snapshotReady = false; },
+        onConnecting: () => {
+          fallbackEpoch += 1;
+          snapshotReady = false;
+          bufferedEvents = [];
+          setChannelState('fallback', { value: realtimeSubscribed ? 'reconnecting' : 'connecting' });
+        },
         onTelemetry: (eventType) => { void telemetry.report(eventType); },
         onEvent: (payload) => {
           if (!snapshotReady) bufferedEvents.push(payload);
           else applyCuePayload(payload);
         },
-        onSubscribed: async ({ replay }) => {
+        onSubscribed: async ({ replay, isCurrent }) => {
+          const epoch = fallbackEpoch;
           const beforeSnapshot = Number(detailRef.current?.cursor?.eventId) || 0;
-          await fetchSnapshot();
+          await fetchSnapshot(null, epoch);
+          if (!isCurrent() || epoch !== fallbackEpoch || terminal) return;
           const recovered = await replay(beforeSnapshot);
+          if (!isCurrent() || epoch !== fallbackEpoch || terminal) return;
           recovered.events?.sort((left, right) => Number(left.eventId) - Number(right.eventId)).forEach(applyCuePayload);
           snapshotReady = true;
           const pending = bufferedEvents;
           bufferedEvents = [];
           pending.forEach(applyCuePayload);
-          if (!cancelled) setError('');
+          setChannelState('fallback', { value: realtimeSubscribed ? 'restored' : 'connected' });
+          realtimeSubscribed = true;
         },
-        onError: (value) => { if (!cancelled) setError(value.message || '分享連線中斷，瀏覽器會自動嘗試重新連線。'); }
+        onError: (value) => {
+          if (cancelled) return;
+          if (isTerminalViewerError(value)) handleSnapshotError(value);
+          else if (value?.code === 'viewer_retry_exhausted') setChannelState('fallback', { value: 'failed' }, value.message);
+          else setChannelState('fallback', { value: 'reconnecting' });
+        }
       });
-      realtimeController.start();
+      void fetchSnapshot().catch(handleSnapshotError);
     } else {
-      void fetchSnapshot().then((value) => connectEvents(value?.cursor?.eventId || 0)).catch((value) => {
-        if (!cancelled) setError(value.message);
-      });
+      void fetchSnapshot().catch(handleSnapshotError);
     }
     return () => {
       cancelled = true;
+      snapshotController.abort();
       nextViewerCursorRef.current = null;
       loadingOlderRef.current = false;
-      void realtimeController?.stop();
-      eventSourceRef.current?.close();
-      eventSourceRef.current = null;
+      stopConnections();
+      delete window.__liveTranslateWebRtcGetStats;
     };
-  }, [token, code]);
+  }, [token, code, retryVersion]);
 
   async function loadOlderCues() {
     const cursor = nextViewerCursorRef.current;
@@ -169,6 +597,8 @@ export function MeetingViewerPage({ token, code }) {
       const value = await response.json();
       nextViewerCursorRef.current = value.pagination?.nextCursor || null;
       setHasOlderCues(Boolean(value.pagination?.hasMore));
+      // Loading history is an explicit review action; keep the return-to-latest control available.
+      enterHistoryMode(value.cues || []);
       const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
       detailRef.current = merged;
       setDetail(merged);
@@ -181,7 +611,9 @@ export function MeetingViewerPage({ token, code }) {
   }
 
   const cues = useMemo(() => {
-    if (Array.isArray(detail?.cues) && detail.cues.length > 0) return detail.cues;
+    if (Array.isArray(detail?.cues) && detail.cues.length > 0) {
+      return detail.cues.map((cue) => ({ ...cue, translatedText: effectiveTranslationForCue(cue) }));
+    }
     return (detail?.transcriptItems || [])
       .filter((item) => item.stream === 'source')
       .map((item, index) => ({
@@ -201,6 +633,15 @@ export function MeetingViewerPage({ token, code }) {
     });
     return { offsets, totalHeight };
   }, [cues, rowLayoutVersion]);
+
+  useEffect(() => {
+    if (isFollowingLatest) {
+      historySeenCueIdsRef.current = new Set(cues.map((cue) => cue.cueId).filter(Boolean));
+      setUnseenCueCount(0);
+      return;
+    }
+    setUnseenCueCount(countUnseenViewerCues(cues, historySeenCueIdsRef.current));
+  }, [cues, isFollowingLatest]);
   const startIndex = useMemo(() => {
     let low = 0;
     let high = rowLayout.offsets.length;
@@ -218,6 +659,34 @@ export function MeetingViewerPage({ token, code }) {
     return Math.max(startIndex + 1, index);
   }, [cues.length, estimatedRowHeight, rowLayout.offsets, scrollTop, startIndex, viewportHeight]);
   const visibleCues = cues.slice(startIndex, endIndex);
+
+  useEffect(() => {
+    const renderedCues = visibleCues.filter((cue) => cue?.cueId);
+    if (renderedCues.length === 0) {
+      recordLivePipelineTrace({
+        stage: 'REACT_RENDER',
+        recordingId: detail?.meeting?.liveSessionId || null,
+        sourceStatus: 'empty',
+        translationStatus: 'empty',
+        reason: 'viewer_render'
+      });
+      return;
+    }
+    for (const cue of renderedCues) {
+      recordLivePipelineTrace({
+        stage: 'REACT_RENDER',
+        recordingId: detail?.meeting?.liveSessionId || null,
+        segmentId: cue.segmentId || null,
+        audioTurnId: cue.audioTurnId || null,
+        turnKey: cue.turnKey || null,
+        cueId: cue.cueId,
+        sourceStatus: cue.sourceText ? 'present' : 'empty',
+        translationStatus: cue.translatedText ? 'present' : 'empty',
+        turnState: cue.status || null,
+        reason: 'viewer_render'
+      });
+    }
+  }, [detail?.meeting?.liveSessionId, visibleCues]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -239,48 +708,224 @@ export function MeetingViewerPage({ token, code }) {
     });
     viewport.querySelectorAll('.viewer-cue-row').forEach((row) => observer.observe(row));
     return () => observer.disconnect();
-  }, [cues, endIndex, startIndex]);
+  }, [cues, endIndex, showSource, showTranslation, startIndex]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const viewport = viewportRef.current;
-    if (!viewport || cues.length === 0 || !isFollowingLatest) return undefined;
-    const frame = requestAnimationFrame(() => viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'auto' }));
-    return () => cancelAnimationFrame(frame);
-  }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.updatedTimeMs, isFollowingLatest, rowLayoutVersion, showSource]);
+    if (!viewport || isFollowingLatestRef.current || !historyAnchorRef.current) return;
+    restoreViewerScrollAnchor(viewport, historyAnchorRef.current, cues, rowLayout.offsets);
+  }, [cues, rowLayout.offsets, showSource, showTranslation, viewportHeight]);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || cues.length === 0 || !isFollowingLatestRef.current) return undefined;
+    // Anchor after the DOM commit and again after virtual-row and viewport measurement settles.
+    scrollViewerToLatest(viewport);
+    const frame = requestAnimationFrame(() => {
+      autoFollowFrameRef.current = null;
+      if (isFollowingLatestRef.current && !userScrollIntentRef.current) scrollViewerToLatest(viewport);
+    });
+    autoFollowFrameRef.current = frame;
+    return () => {
+      cancelAnimationFrame(frame);
+      if (autoFollowFrameRef.current === frame) autoFollowFrameRef.current = null;
+    };
+  }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.sourceText, cues.at(-1)?.translatedText,
+    isFollowingLatest, rowLayout.totalHeight, showSource, showTranslation, viewportHeight]);
 
   function scrollToLatest() {
-    viewportRef.current?.scrollTo({ top: viewportRef.current.scrollHeight, behavior: 'smooth' });
+    isFollowingLatestRef.current = true;
     setIsFollowingLatest(true);
+    historyAnchorRef.current = null;
+    historySeenCueIdsRef.current = new Set(cues.map((cue) => cue.cueId).filter(Boolean));
+    setUnseenCueCount(0);
+    scrollViewerToLatest(viewportRef.current);
+  }
+
+  function enterHistoryMode(additionalCues = []) {
+    if (isFollowingLatestRef.current) {
+      historySeenCueIdsRef.current = new Set(
+        [...cues, ...additionalCues].map((cue) => cue?.cueId).filter(Boolean)
+      );
+      setUnseenCueCount(0);
+    } else {
+      for (const cue of additionalCues) {
+        if (cue?.cueId) historySeenCueIdsRef.current.add(cue.cueId);
+      }
+    }
+    isFollowingLatestRef.current = false;
+    setIsFollowingLatest(false);
+    captureHistoryPosition(viewportRef.current);
+  }
+
+  function captureHistoryPosition(viewport) {
+    historyAnchorRef.current = captureViewerScrollAnchor({
+      cues,
+      offsets: rowLayout.offsets,
+      scrollTop: viewport?.scrollTop || 0
+    });
+  }
+
+  function markUserScrollIntent() {
+    userScrollIntentRef.current = true;
+    if (autoFollowFrameRef.current !== null) {
+      cancelAnimationFrame(autoFollowFrameRef.current);
+      autoFollowFrameRef.current = null;
+    }
+  }
+
+  function dismissFullscreenError() {
+    fullscreenErrorGenerationRef.current += 1;
+    if (fullscreenErrorTimerRef.current !== null) {
+      window.clearTimeout(fullscreenErrorTimerRef.current);
+      fullscreenErrorTimerRef.current = null;
+    }
+    setFullscreenError('');
+  }
+
+  function showFullscreenError(message) {
+    fullscreenErrorGenerationRef.current += 1;
+    const generation = fullscreenErrorGenerationRef.current;
+    if (fullscreenErrorTimerRef.current !== null) {
+      window.clearTimeout(fullscreenErrorTimerRef.current);
+    }
+    setFullscreenError(message);
+    fullscreenErrorTimerRef.current = window.setTimeout(() => {
+      if (fullscreenErrorGenerationRef.current !== generation) return;
+      fullscreenErrorTimerRef.current = null;
+      setFullscreenError('');
+    }, 5_000);
+  }
+
+  async function toggleFullscreen() {
+    const shell = fullscreenShellRef.current;
+    if (!shell) return;
+    dismissFullscreenError();
+
+    if (isCssFullscreen) {
+      setIsCssFullscreen(false);
+      return;
+    }
+
+    if (document.fullscreenElement === shell) {
+      try {
+        await document.exitFullscreen();
+      } catch {
+        showFullscreenError('無法結束原生全螢幕，請使用瀏覽器的返回或結束全螢幕操作。');
+      }
+      return;
+    }
+
+    if (typeof shell.requestFullscreen !== 'function' || document.fullscreenEnabled === false) {
+      setIsCssFullscreen(true);
+      return;
+    }
+
+    try {
+      await shell.requestFullscreen();
+      setIsNativeFullscreen(true);
+    } catch {
+      setIsCssFullscreen(true);
+      showFullscreenError('瀏覽器無法進入原生全螢幕，已改用版面全螢幕；iPhone Safari 工具列仍可能顯示。');
+    }
   }
 
   return (
-    <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title="即時字幕" subtitle={detail?.meeting?.name || '會議字幕觀看'}>
-      {error ? <p className="error-message" role="alert">{error}</p> : null}
-      {!detail && !error ? <p className="history-empty">正在載入會議字幕…</p> : null}
-      {detail ? (
-        <section className={`viewer-cue-panel${showSource ? '' : ' viewer-source-hidden'}`} aria-label="Meeting 完整字幕">
-          <div className="viewer-cue-header">
-            <div><p className="viewer-cue-eyebrow">MEETING</p><h2>{detail.meeting?.name || '未命名會議'}</h2></div>
-            {cues.length > 0 ? <div className="viewer-cue-actions">
-              <button className={`button detail-button viewer-source-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setShowSource((visible) => !visible)}>顯示原文</button>
-              {!isFollowingLatest ? <button className="button detail-button" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
-            </div> : null}
+    <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title={detail?.meeting?.name || '即時字幕'} subtitle="即時字幕" showHeader={false}>
+      <div
+        ref={fullscreenShellRef}
+        className={`viewer-fullscreen-shell${isCssFullscreen ? ' is-css-fullscreen' : ''}`}
+        data-fullscreen-mode={isNativeFullscreen ? 'native' : (isCssFullscreen ? 'css' : 'inline')}
+        data-testid="viewer-fullscreen-shell"
+      >
+        <ViewerShareHeader meetingTitle={detail?.meeting?.name || '即時字幕'} shareUrl={shareUrl} />
+        <div className="viewer-main">
+        <div className="viewer-toolbar">
+          <div className={`viewer-connection-status is-${shareConnection.value}`} role="status" aria-live="polite">
+            <span className="viewer-status-dot" aria-hidden="true" />
+            <span>{viewerConnectionLabel(shareConnection.value)}</span>
           </div>
-          {cues.length === 0 ? <p className="history-empty">目前尚無已完成字幕。</p> : <>
-            {hasOlderCues ? <button className="button detail-button viewer-load-older" type="button" data-testid="viewer-load-older-button" onClick={() => void loadOlderCues()} disabled={isLoadingOlder}>{isLoadingOlder ? '載入中…' : '載入較舊字幕'}</button> : null}
-            <div ref={viewportRef} className="viewer-cue-viewport" onScroll={(event) => { setScrollTop(event.currentTarget.scrollTop); setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget)); }} data-testid="meeting-viewer-cue-viewport" role="log" aria-live="polite" aria-label="即時字幕列表">
-              <div style={{ height: rowLayout.totalHeight, position: 'relative' }}>
-                {visibleCues.map((cue, index) => <article className="viewer-cue-row" key={cue.cueId || `${cue.sequence}-${startIndex + index}`} style={{ position: 'absolute', top: rowLayout.offsets[startIndex + index], left: 0, right: 0 }} data-cue-index={startIndex + index} data-testid="meeting-viewer-cue-row">
-                  {showSource ? <div className="viewer-cue-source"><p>{cue.sourceText || '—'}</p></div> : null}
-                  {cue.translatedText ? <div className="viewer-cue-translation"><p>{cue.translatedText}</p></div> : null}
-                </article>)}
+          <div className="viewer-toolbar-actions">
+            {detail ? (
+              <div className="subtitle-visibility-controls">
+                <button className={`button detail-button viewer-visibility-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'source'))}>{showSource ? '隱藏原文' : '顯示原文'}</button>
+                <button className={`button detail-button viewer-visibility-toggle${showTranslation ? ' is-active' : ''}`} type="button" aria-pressed={showTranslation} data-testid="viewer-translation-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'translation'))}>{showTranslation ? '隱藏翻譯' : '顯示翻譯'}</button>
               </div>
-            </div>
-          </>}
-        </section>
-      ) : null}
+            ) : null}
+            {shareConnection.value === 'failed' ? (
+              <button className="button detail-button viewer-retry-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重新連線</button>
+            ) : null}
+            <button className="button detail-button viewer-fullscreen-toggle" type="button" aria-pressed={isFullscreen} data-testid="viewer-fullscreen-toggle" onClick={() => void toggleFullscreen()}>{isFullscreen ? '結束全螢幕' : '全螢幕'}</button>
+          </div>
+        </div>
+        {fullscreenError ? (
+          <div className="error-message viewer-error viewer-fullscreen-error" role="alert" data-testid="viewer-fullscreen-error">
+            <span>{fullscreenError}</span>
+            <button className="viewer-fullscreen-error-dismiss" type="button" aria-label="關閉全螢幕提示" onClick={dismissFullscreenError}>關閉</button>
+          </div>
+        ) : null}
+        {shareConnection.value === 'reconnecting' ? <p className="viewer-reconnecting-detail">正在嘗試恢復即時字幕連線</p> : null}
+        {shareConnection.value === 'recovery_failed' ? (
+          <div className="viewer-recovery-failed" role="alert" data-testid="viewer-recovery-failed">
+            <strong>🔴 即時字幕連線異常</strong>
+            <p>無法自動恢復即時字幕連線，請重新整理頁面後重新連線。</p>
+            <button className="button viewer-reload-button" type="button" onClick={() => window.location.reload()}>重新整理頁面</button>
+          </div>
+        ) : null}
+        {error ? <p className="error-message viewer-error" role="alert">{error}</p> : null}
+        {!detail && !error ? <p className="history-empty viewer-loading">正在載入會議字幕…</p> : null}
+        {detail ? (
+          <section className={`viewer-cue-panel${showSource ? '' : ' viewer-source-hidden'}${showTranslation ? '' : ' viewer-translation-hidden'}`} aria-label="Meeting 完整字幕">
+            {cues.length === 0 ? <div className="viewer-empty-state"><span className="viewer-empty-mark" aria-hidden="true" /><p>等待錄音端送出第一句字幕</p><span>連線期間會自動顯示，不需要重新整理。</span></div> : <>
+              {hasOlderCues ? <button className="button detail-button viewer-load-older" type="button" data-testid="viewer-load-older-button" onClick={() => void loadOlderCues()} disabled={isLoadingOlder}>{isLoadingOlder ? '載入中…' : '載入較舊字幕'}</button> : null}
+              <div ref={viewportRef} className="viewer-cue-viewport"
+                onWheel={markUserScrollIntent}
+                onTouchMove={markUserScrollIntent}
+                onPointerDown={markUserScrollIntent}
+                onKeyDown={(event) => { if (['ArrowUp', 'PageUp', 'Home', 'ArrowDown', 'PageDown', 'End'].includes(event.key)) markUserScrollIntent(); }}
+                onScroll={(event) => {
+                  setScrollTop(event.currentTarget.scrollTop);
+                  const wasFollowing = isFollowingLatestRef.current;
+                  const nextFollowing = resolveViewerAutoFollow({
+                    following: wasFollowing,
+                    userInitiated: userScrollIntentRef.current,
+                    viewport: event.currentTarget
+                  });
+                  if (!nextFollowing) {
+                    if (wasFollowing) enterHistoryMode();
+                    else captureHistoryPosition(event.currentTarget);
+                  } else {
+                    isFollowingLatestRef.current = true;
+                    setIsFollowingLatest(true);
+                    historyAnchorRef.current = null;
+                    historySeenCueIdsRef.current = new Set(cues.map((cue) => cue.cueId).filter(Boolean));
+                    setUnseenCueCount(0);
+                  }
+                  userScrollIntentRef.current = false;
+                }} data-testid="meeting-viewer-cue-viewport" role="log" tabIndex={0} aria-live="polite" aria-label="即時字幕列表">
+                <div style={{ height: rowLayout.totalHeight, position: 'relative' }}>
+                  {visibleCues.map((cue, index) => {
+                    const cueIndex = startIndex + index;
+                    return <article className={`viewer-cue-row${cueIndex === cues.length - 1 ? ' is-latest' : ''}`} key={cue.cueId || `${cue.sequence}-${cueIndex}`} style={{ position: 'absolute', top: rowLayout.offsets[cueIndex], left: 0, right: 0 }} data-cue-index={cueIndex} data-cue-id={cue.cueId || undefined} data-testid="meeting-viewer-cue-row">
+                      {showSource ? <div className="viewer-cue-source"><span className="viewer-cue-language">原文</span><p>{cue.sourceText || '—'}</p></div> : null}
+                      {showTranslation && (cue.translatedText || !showSource) ? <div className="viewer-cue-translation"><span className="viewer-cue-language">翻譯</span><p>{cue.translatedText || '翻譯處理中…'}</p></div> : null}
+                    </article>;
+                  })}
+                </div>
+              </div>
+            </>}
+            {!isFollowingLatest ? <button className="button detail-button viewer-follow-latest" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕{unseenCueCount > 0 ? `（${unseenCueCount} 則新字幕）` : ''}</button> : null}
+          </section>
+        ) : null}
+        </div>
+      </div>
     </PublicSessionLayout>
   );
 }
 
-function isCueListAtLatestPosition(list) { return list.scrollHeight - list.scrollTop - list.clientHeight < 24; }
+function viewerConnectionLabel(value) {
+  if (value === 'connected' || value === 'restored') return `🟢 ${webRtcConnectionLabel(value)}`;
+  if (value === 'reconnecting') return '🟠 正在重新連線…';
+  if (value === 'recovery_failed') return '🔴 即時字幕連線異常';
+  return webRtcConnectionLabel(value);
+}

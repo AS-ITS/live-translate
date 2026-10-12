@@ -1,4 +1,7 @@
+import { createHash } from 'node:crypto';
 import { isSupportedLanguage } from './languages.js';
+import { mergeMeetingGlossaryEntries } from '../src/lib/meetingGlossary.js';
+import { serializeEffectiveGlossary } from '../src/lib/glossaryRevision.js';
 
 export const DEFAULT_LIVE_TRANSLATE_MODEL = 'gemini-3.5-live-translate-preview';
 export const LIVE_TRANSLATE_MODEL = DEFAULT_LIVE_TRANSLATE_MODEL;
@@ -141,6 +144,11 @@ export async function createLiveToken(body, options = {}) {
   const liveModel = request.mode === 'transcription'
     ? (options.liveTranscriptionModel ?? resolveLiveTranscriptionModel(process.env))
     : liveTranslateModel;
+  const globalGlossaryEntries = request.meetingId
+    ? (options.glossary === undefined
+      ? []
+      : (await options.glossary.entriesFor(request.targetLanguageCode, { scope: 'live' })) || [])
+    : undefined;
   const meeting = request.meetingId && options.meetingRepository
     ? await options.meetingRepository.getMeeting(request.meetingId)
     : null;
@@ -150,8 +158,19 @@ export async function createLiveToken(body, options = {}) {
     error.code = 'meeting_not_found';
     throw error;
   }
-  const glossaryEntries = meeting
-    ? [...(meeting.glossaryEntries || []), ...privateGlossaryEntriesForTarget(meeting.privateGlossaryEntries, request.targetLanguageCode)]
+  const meetingSettings = meeting
+    ? options.authoritativeSegment?.settingsSnapshot
+      || await activeMeetingSettingsSnapshot(meeting, options.meetingRepository)
+    : null;
+  const authoritativeGlobalGlossaryEntries = Array.isArray(meetingSettings?.globalGlossaryEntries)
+    ? meetingSettings.globalGlossaryEntries
+    : globalGlossaryEntries;
+  const glossaryEntries = meetingSettings
+    ? mergeMeetingGlossaryEntries(
+      [...authoritativeGlobalGlossaryEntries, ...(meetingSettings.glossaryEntries || [])],
+      meetingSettings.privateGlossaryEntries,
+      request.targetLanguageCode
+    )
     : options.glossary === undefined
       ? undefined
       : await options.glossary.entriesFor(request.targetLanguageCode, { scope: 'live' });
@@ -170,6 +189,13 @@ export async function createLiveToken(body, options = {}) {
     { ...request, liveTranslateModel: liveModel, ...(targetGlossaryEntries === undefined ? {} : { glossaryEntries: targetGlossaryEntries }) },
     now
   );
+  const effectiveGlossaryRevision = createHash('sha256')
+    .update(serializeEffectiveGlossary({
+      sourceLanguageCode: request.sourceLanguageCode,
+      targetLanguageCode: request.targetLanguageCode,
+      entries: targetGlossaryEntries || []
+    }))
+    .digest('hex');
   const client = options.client || (await createGenAiClient(apiKey));
 
   try {
@@ -179,7 +205,12 @@ export async function createLiveToken(body, options = {}) {
       expiresAt: configWithGlossary.expireTime,
       liveConnectModel: liveModel,
       liveConnectConfig: configWithGlossary.liveConnectConstraints.config,
-      liveGlossaryEntries: targetGlossaryEntries || []
+      liveGlossaryEntries: targetGlossaryEntries || [],
+      effectiveGlossaryRevision,
+      glossaryEntryCount: targetGlossaryEntries?.length || 0,
+      ...(options.authoritativeBinding
+        ? { authoritativeSegment: { ...options.authoritativeBinding } }
+        : {})
     };
   } catch (cause) {
     const error = new Error('Failed to create Gemini ephemeral token');
@@ -227,12 +258,13 @@ export function resolveLiveTranscriptionModel(env = process.env) {
   return value.trim();
 }
 
-function privateGlossaryEntriesForTarget(entries, targetLanguageCode) {
-  return (Array.isArray(entries) ? entries : []).map((entry) => ({
-    source: entry.source,
-    target: entry.translations?.[targetLanguageCode],
-    replacementAliases: entry.replacementAliases?.[targetLanguageCode] || []
-  })).filter((entry) => typeof entry.target === 'string' && entry.target.trim() !== '');
+async function activeMeetingSettingsSnapshot(meeting, meetingRepository) {
+  if (typeof meetingRepository?.listMeetingSegments !== 'function') return meeting;
+  const segments = await meetingRepository.listMeetingSegments(meeting.id);
+  const active = [...segments]
+    .sort((left, right) => (right.sequence ?? 0) - (left.sequence ?? 0))
+    .find((segment) => ['active', 'created'].includes(segment.status) && segment.settingsSnapshot);
+  return active?.settingsSnapshot || meeting;
 }
 
 export function resolveLiveTranslateModel(env = process.env) {
@@ -256,8 +288,11 @@ export function resolveLiveTranslateModel(env = process.env) {
 
 function glossaryInstruction(entries) {
   return [
-    'Glossary instructions: when a source term occurs, use its specified target translation in both translated speech audio and output transcription.',
-    'Do not say or write the source term in the translated output when a required translation is provided.',
+    'Authoritative terminology replacements for the current target language: each source term maps to its required target translation; this is a replacement rule, not an additional hint.',
+    'Use the required glossary translation once for each corresponding occurrence of the source term.',
+    'Preserve intentional repetitions, repeated words, pauses, and distinct utterances. Do not summarize, collapse, or omit repeated speech.',
+    'Apply the required glossary translation in the corresponding position in both translated speech audio and output transcription.',
+    'Do not also output the ordinary translation, paraphrase, explanation, or source term for the matched source term.',
     ...entries.map((entry) => `Source term: ${entry.source}\nRequired translation: ${entry.target}`)
   ].join('\n');
 }

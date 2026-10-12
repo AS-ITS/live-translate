@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle2, ExternalLink, KeyRound, ShieldCheck } from 'lucide-react';
 import { AppLayout } from '../../layouts/AppLayout.jsx';
-import { MEETING_MANAGEMENT_HASH } from '../../app/routes.js';
+import { consumeGeminiSettingsReturnLocation } from '../../app/routes.js';
 import { clearLiveCredential, getLiveCredential, hasLiveCredential, setLiveCredential, subscribeToLiveCredentialClear } from '../../lib/liveCredentialHolder.js';
 
 export function GeminiCredentialPage() {
@@ -15,6 +15,7 @@ export function GeminiCredentialPage() {
 
   const appliedKey = isConfigured ? getLiveCredential() || '' : '';
   const lastFour = maskedCredential(appliedKey);
+  const [returnHash] = useState(consumeGeminiSettingsReturnLocation);
 
   function applyKey(event) {
     event.preventDefault();
@@ -23,6 +24,7 @@ export function GeminiCredentialPage() {
     setLiveCredential(value);
     setDraftKey(value);
     setIsConfigured(true);
+    window.location.hash = returnHash;
   }
 
   function cancelKey() {
@@ -32,7 +34,7 @@ export function GeminiCredentialPage() {
   }
 
   return (
-    <AppLayout className="meeting-app-shell meeting-management-shell" showGeminiKeyAction={false} title="Gemini API Key" subtitle="僅供目前頁面生命週期的即時翻譯使用。" headerAction={<a className="button secondary meeting-header-action" href={MEETING_MANAGEMENT_HASH}>返回會議管理</a>} headerClassName="meeting-app-header">
+    <AppLayout className="meeting-app-shell meeting-management-shell" title="Gemini API Key" subtitle="僅供目前頁面生命週期的即時翻譯使用。" headerAction={<a className="button secondary meeting-header-action" href={returnHash}>返回上一頁</a>} headerClassName="meeting-app-header">
       <section className="feature-page gemini-credential-page" aria-labelledby="gemini-credential-title">
         <div className="gemini-credential-layout">
           <div className="gemini-credential-guide">
@@ -70,7 +72,7 @@ export function GeminiCredentialPage() {
                 <strong className="gemini-credential-key-value">{lastFour}</strong>
                 <span className="gemini-credential-key-label">Gemini API Key</span>
               </div> : null}
-              <label className="field"><span>Gemini API Key</span><input type="password" value={draftKey} onChange={(event) => setDraftKey(event.target.value)} autoComplete="new-password" placeholder="AIza…" /></label>
+              <label className="field"><span>Gemini API Key</span><input type="password" value={draftKey} onChange={(event) => setDraftKey(event.target.value)} autoComplete="new-password" placeholder="AIza…" autoFocus /></label>
               <div className="gemini-credential-actions">
                 <button className="button primary" type="submit" disabled={!draftKey.trim()}>設定金鑰</button>
                 <button className="button secondary" type="button" onClick={cancelKey} disabled={!draftKey.trim() && !isConfigured}>撤消金鑰</button>

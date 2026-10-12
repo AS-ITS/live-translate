@@ -40,6 +40,10 @@ export function createSegmentSwitchOrchestrator({
   function schedule(expectedGeneration) {
     clearTimer();
     if (!active) return;
+    onStatusChange?.('scheduled', {
+      rolloverGeneration: expectedGeneration,
+      delayMs: normalizedIntervalMs
+    });
     timer = setTimeoutFn(() => {
       timer = null;
       void runSwitch(expectedGeneration);
@@ -49,19 +53,19 @@ export function createSegmentSwitchOrchestrator({
   async function runSwitch(expectedGeneration) {
     if (!active || switching || expectedGeneration !== generation) return false;
     switching = true;
-    onStatusChange?.('switching');
+    onStatusChange?.('switching', { rolloverGeneration: expectedGeneration });
 
     try {
       await switchSegment({ generation: expectedGeneration });
       if (!active || expectedGeneration !== generation) return false;
-      onStatusChange?.('switched');
+      onStatusChange?.('switched', { rolloverGeneration: expectedGeneration });
       schedule(expectedGeneration);
       return true;
     } catch (error) {
       if (active && expectedGeneration === generation) {
-        active = false;
-        onStatusChange?.('error');
+        onStatusChange?.('error', { rolloverGeneration: expectedGeneration, error });
         onError?.(error);
+        schedule(expectedGeneration);
       }
       return false;
     } finally {

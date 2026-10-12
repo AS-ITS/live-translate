@@ -185,7 +185,7 @@ function normalizeStream(stream = 'translation') {
 }
 
 function textForStream(cue, stream, variant = 'refined') {
-  const source = effectiveSourceForCue(cue, variant);
+  const source = effectiveSourceForCue(cue, 'raw');
   const translation = effectiveTranslationForCue(cue, variant);
   if (stream === 'source') return validCueText(source) ? source : '';
   if (stream === 'translation') return validCueText(translation) ? translation : '';

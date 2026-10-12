@@ -2,6 +2,105 @@
 
 ## Unreleased
 
+- 修正 Pause → Continue 時 Gemini Live provider 在 setup 階段關閉仍被標記為 `listening` 的 silent failure；Continue 現在必須確認新 session 完成啟動，否則停止該 session、顯示可診斷錯誤，且不啟用 Recorder callback 或 Cue 更新。
+
+- 修正 Viewer 字幕 auto-follow 在快速 Cue、Partial/Final 高度變化、Pause/Continue、WebRTC reconnect 與手機全螢幕 viewport 變化後停在舊位置的問題；歷史閱讀改以穩定 Cue ID 保存位置，並以唯一 Cue ID 顯示未查看的新字幕數量。Pause → Continue 後 DataChannel open 會先取消 negotiation timeout；UI 以健康且開啟的 DataChannel 顯示已連線，不再等待可能延遲的 PeerConnection `connected` 事件，暫時 ICE disconnected 也不拆除健康通道，真正失效仍維持最多 6 次 recovery。Viewer transport 診斷同步記錄 Peer/ICE/DataChannel 狀態、generation、heartbeat、Cue sequence、delivery source 與 reconnect reason/attempt。
+
+- 修正同一 `audioTurnId` 的 late final 翻譯片段被 Cue revision 誤判為完整快照：`textMergeMode: append` 現在保留 finalized Cue 已累積的前文，真正的 cumulative snapshot 仍維持 replace；未變更 Viewer／WebRTC transport、provider epoch fencing 或 glossary correction。
+- 修正 Viewer 在 WebRTC `disconnected` 的 5 秒暫態寬限期內過早顯示「重新連線中」：DataChannel 仍可用時維持「已連線」，短暫 signaling heartbeat 失敗只重試 signaling；只有寬限期到期或 DataChannel／PeerConnection 確實失敗才重建 transport 並消耗最多 6 次 recovery。另從 Recorder 與 Viewer 一般介面移除「匯出診斷紀錄」按鈕及其 UI 樣式，保留 diagnostics collector、Debug API、trace 與底層匯出函式。
+- 修復 Viewer 中途加入：等待 Recorder 時會沿用同一 negotiation 定期重送 `viewer-ready`，不再把「尚無 Recorder」計入 transport recovery；Recorder signaling `/join` 成功即重設 recovery budget，Viewer peer 離開只回到等待狀態而不停止 discovery。保留定向多 Viewer、健康 DataChannel 遇 signaling 503 不拆線，以及 Snapshot／Replay／Live Cue 合併。
+- Recorder 與 Viewer 在 `LIVE_PIPELINE_TRACE_ENABLED=true` 的診斷模式新增手機可用的 JSON 匯出：優先使用系統檔案分享、否則下載 Blob，匯出失敗不影響錄音或 WebRTC。Trace 採 `live-pipeline-trace/v1` allowlist schema 與 20,000 筆 ring buffer，補齊 lifecycle、snapshot、visibility、signaling、offer/answer、ICE/DataChannel、recovery、generation 與 negotiation 關聯欄位；不輸出字幕、音訊、憑證、share token/code、SDP、ICE candidate/IP 或原始 HTTP payload。本次僅補強診斷能力，不代表 Viewer Late Join 根因已修復。
+- 修正 Stop／Continue 後 successor Segment 的 Cue 被錯誤判定為 `recorder_session_mismatch`：Recorder 寫入現在接受同 Meeting 中反向綁定相同 Session 的 Segment，同時保留舊 Segment 延後重送；Cue、checkpoint 與 terminal retry 由單一 Cloud save state 聚合，Stop 會重播本機 Cue，成功重試可清除 stale failure。Continue diagnostics 從點擊起記錄 barrier、Resume、Token、Provider、Audio 與 listening elapsed time；320–480px toolbar 改為分列並保留 44px touch target。
+- 將字典修正與錄音 Resume 解耦：Provider glossary 仍為 Segment immutable token/system-instruction snapshot；Correction glossary 在 Save 後透過既有 API hot reload，依 Turn 固定 revision，舊 partial/final/late-final 與已完成 Cue 不追溯修改。Refresh 失敗會保留上一個已確認 snapshot 並顯示 pending，不阻止合法錄音。
+- 修正同頁 Continue 僅依賴 volatile lifecycle ref 導致 v2 錄音誤走 Legacy Resume 的問題；現在同時查驗 durable Session 與 authoritative Meeting lifecycle version，並保留 lease/fence、checkpoint、transactional resume、stable operationId 與 lost-ACK reconciliation。
+
+- 修正 Legacy Continue 在暫時性 503／timeout 後只能靠重新整理恢復：同一頁現在先對帳 durable operation，再以同一 `operationId`、payload 與 `nextLiveSessionId` 做有限重試；reload 也重用相同 recovery path，且只有 Token、Provider、revision 與錄音都 ready 後才完成本機 operation。Session Command 日誌另加入正確的 `resume_legacy_meeting_segment` RPC 名稱、RPC attempted、cloud capability source、failure stage、commit status 與 service-role SQLSTATE 安全診斷欄位。
+- 修正 Legacy Stop → Save Glossary → Continue 使用舊 Segment snapshot：Continue 現在以 service-role-only transactional RPC、durable IndexedDB operationId 與 lost-ACK reconciliation 建立唯一 successor Segment；新 Segment 凍結最新 Global + Meeting glossary，Token、Provider 與 deterministic correction 必須綁定同一 revision 後才恢復錄音。
+
+- 修正會議字典 Save → Stop/Continue 設定過期：Lifecycle v2 Resume 的 authoritative Segment 現在透過 session/segment/lifecycle version/lease/fence 綁定 `/api/live-token`；Provider instruction 與 deterministic correction 共用 `effective-glossary-v1` SHA-256 snapshot。revision 或 Segment 不一致時不會啟動 Gemini 或顯示聆聽中，而會回到可重試的暫停狀態。
+
+- 修正相同帳號的 Supabase `TOKEN_REFRESHED`／重複 `SIGNED_IN` 會讓 `AuthGate` 顯示 blocking loading shell 並卸載錄音 App：同一 `user.id` 現改為背景重新驗證 Profile，保留錄音、Gemini rollover、canonical Cue 與 Viewer DataChannel；換帳號、停用帳號、`auth_invalid` 與 `SIGNED_OUT` 仍會撤銷錄音存取。既有 pipeline trace 補上 Auth、React mount/unmount、rollover commit/failure 與 Gemini provider lifecycle，且不記錄 token 或字幕內容。
+
+- 新增僅限本機或明確 diagnostic build 的 Raw Translation Comparison：以同一 provider event identity 串接 raw source／raw translation、normalized、glossary-corrected 與 Cue canonical 階段，記錄 revision/version、authoritative snapshot 與 token-loss 訊號。資料只存瀏覽器記憶體，最多 500 筆、15 分鐘到期，可手動匯出、清除及關閉；不改 Cue association、merge policy 或翻譯行為。
+- 修正 Glossary occurrence canonicalization：來源詞改採 longest-match、non-overlapping 計數；只有完全由字典 spans 組成的來源才安全補足 target 次數，混合句保留 provider 原譯並標記 `correction_uncertain`。Live Cue 分開追蹤 provider raw translation 與 corrected translation，partial／final／late-final correction 均由 raw translation 重算。
+
+- 修正 Recorder Stop→Continue 後 Viewer 被錯誤標記為會議結束並進入永久重連：Pause cleanup 不再發送 `meeting.stopped` 或撤銷 signaling，Viewer snapshot 新增 authoritative `recordingState`，暫停時顯示等待且不消耗六次 transport recovery，Continue 後自動重建原 Meeting 的 Viewer transport；真正 End Meeting 維持 terminal 與不可重開語意。
+
+- 修正長會議 rollover 失敗後永久停用排程與 transition callback 丟失：新增 bounded reconciliation/retry（同一 operationId 與 immutable payload）、語意邊界 Provider drain、有界 PCM overflow 警示及 Cue durability timeout。timeout 先視為結果未知並查詢 authoritative Segment；不重播 OPFS 歷史 PCM 至 Gemini，避免字幕重複／錯序。錄音、分段、雲端保存與 Viewer 狀態分離，rollover／checkpoint 失敗不拆除健康 WebRTC DataChannel，且不清除既有 IndexedDB／OPFS 會議資料。
+
+- Viewer 全螢幕在 Fullscreen API 缺席或拒絕時改用 fixed、dynamic viewport height 與 safe-area inset 的 CSS presentation mode，進入／退出不會 remount fullscreen shell，並保留 reconnect、字幕捲動及原文／翻譯顯示狀態。原生全螢幕拒絕提示現在可手動關閉、5 秒自動消失，重複嘗試與 component unmount 會清理舊 timer。
+
+- Viewer bounded transport recovery exhausted 後會進入 `recovery_failed`，保留既有字幕、閱讀位置、顯示偏好與 fullscreen，並在頁內顯示「重新整理頁面」按鈕；系統不會自動 reload，只有使用者點擊才刷新，底層 transport 若自行恢復則回到 connected 並隱藏提示。
+- Viewer 新增穩定 presentation boundary 的 Browser Fullscreen；WebRTC DataChannel generation 重建、replay/snapshot 與 reconnect 不會替換 fullscreen target，並保留原文／翻譯顯示與字幕 auto-follow/scroll state。Viewer Header 與內嵌 QR 位於同一 fullscreen element，重連後仍可見與操作；未修改 signaling/reconnect protocol。
+
+- 修正 Viewer 長時間連線後 WebRTC recovery 卡死：Redis signaling cursor 現在隨 participant heartbeat 保持單調，避免新 `viewer-ready` 落到 Recorder 舊 `after` cursor 之前；Viewer `connected` 改以健康 PeerConnection／ICE／open DataChannel 為準，加入 10 秒 ping/pong、25 秒 liveness timeout、5 秒 disconnect grace、generation-bound timer、bounded peer rebuild，以及 DataChannel reopen 後自動 replay/snapshot。Recorder signaling 503 仍不拆健康 peer，狀態另帶 signaling health、peer count 與 healthy peer count。
+
+- 修正 Live Meeting 字典命中後被 Gemini 當成附加提示的問題：translation Cue 在進入 canonical state 前會先套用 authoritative replacement；完整 source 命中時只保留一次指定 target，句中命中會先移除已知舊翻譯 alias 再去重，同一 `cueId` 的 partial、final 與 refinement 不再累加普通翻譯或重複 target。
+- 修正帳號管理與稽核紀錄頁的 grid 剩餘高度被錯誤分配至 header，並讓稽核列表只讀取畫面實際使用的既有欄位，避免新角色稽核欄位尚未部署時回傳 `supabase_request_failed` 503。
+
+- Live 工作區新增以 Meeting `started_at` 推導的 `HH:MM:SS` 會議計時；pause、resume、reconnect 與 rollover 不會重設，也不會產生每秒資料庫寫入。Pipeline trace 同步加入 `meetingElapsedMs` 與 provider epoch 的 `sessionElapsedMs`。
+- Meeting 完成 30 分鐘後改為一般使用者與 Viewer 不可見、`super_admin` 顯示「待刪除」並沿用既有刪除路徑手動清理；移除 Meeting GET 觸發的自動實體清理，保留 immutable `ended_at`／`purge_at` 與 canonical `meeting_content_expired`。
+
+- 帳號管理新增 `member`／`super_admin` 升降權。後端與 service-role-only Supabase RPC 會在 advisory lock 內重新驗證操作者、禁止自我降權與最後一位管理者降權，並以同一 transaction 寫入角色變更與既有 audit log；角色與帳號狀態、Meeting ownership、Viewer 權限及 domain auto-activation 維持獨立。
+
+- 修正 Recorder WebRTC signaling heartbeat 遇到暫時性雲端 503 時錯誤拆除健康 Viewer DataChannel 的問題；既有 Viewer 連線現在持續接收本機 Cue，signaling control-plane 獨立重試，並補齊 persistence、checkpoint、WebRTC、DataChannel、Realtime 與分享狀態的因果 trace。
+
+- Gemini API Key 設定成功後會自動返回進入設定前的內部頁面；從 Live Meeting 進入時會回到同一場會議，可立即開始錄製。直接開啟設定頁則返回會議管理。
+
+- 修正 Viewer 長時間連線後 Supabase Realtime channel 中斷時，被已排程的 JWT refresh timer 阻擋 reconnect 的問題；token refresh 與故障重連改用獨立 timer/generation，並補齊 WebRTC peer/ICE/DataChannel、packet receive/drop、Viewer store 與 React render transport trace。Segment rollover 與 Recorder lifecycle 未變更。
+
+- Viewer 頂部新增常駐會議分享 Header，共用 Meeting Settings 的 canonical Viewer URL 與 QR Code 產生邏輯；字幕維持獨立捲動，手機版縮小 QR Code，重連時不會重建 Header。字幕顯示、回到最新與重新連線操作統一使用高對比主色按鈕。
+- 修正 Viewer 在 auto-follow 狀態載入較舊字幕後不顯示「回到最新字幕」的問題；載入歷史字幕現在會明確進入回看狀態，按鈕可回到最新 Cue。
+- 優化錄製頁與 Viewer 的原文／翻譯顯示開關：按鈕不再因至少顯示一側而停用；隱藏唯一可見字幕時會自動切換至另一側，且不再顯示冗餘提示。無效的全隱藏偏好仍會自動修復，顯示選擇不影響 Cue 接收、同步、儲存、複製或匯出。
+
+- 修正 Live Recorder 在單邊字幕延遲補齊時，WebRTC cue revision 與 source/translation side version 比較不一致，導致 `null` DataChannel envelope 的白畫面回歸。`subtitle-webrtc/v1` 現由共用 builder/validator 允許 source-only 與 translation-only，固定以 `rawSource` 為 canonical source，拒絕完全空白 Cue，並在 transport boundary 隔離、追蹤失敗發布而不中斷錄音 UI。
+- 修正 Viewer 即時 Cue 缺少 `segmentSequence` 時被排在新字幕之後的回歸：依相同 `segmentId` 的已知順序補齊，讓新字幕維持在列表底部；加入正式 Viewer DOM 的連續發布、回看、延遲翻譯與斷線補齊測試。
+- 修正已結束會議因舊 Session 狀態及 audit 外鍵而無法刪除；新增受保護刪除標記、限量 Storage 刪除與冪等授權。完成錄製後由資料庫固定 30 分鐘期限；到期後封鎖內容、Viewer、直接 Supabase 讀寫與遲到工作，保留會議設定及稽核。既有會議 GET 觸發持久節流的分批雲端清理，本機 IndexedDB／OPFS 以持久期限和分頁鎖清理。無 Cron 時雲端實體清理不保證準點。
+
+- 修正 QR Viewer 即時字幕排序與連線恢復：雲端事件和錄音端 DataChannel 補齊經驗證的 Segment 順序，原文／翻譯版本分別合併；Viewer 晚加入會要求定向協商，多位 Viewer 使用獨立 PeerConnection，舊 epoch 訊息不再覆蓋新連線，replay 超出保留範圍時改送 snapshot。WebRTC 已連線時仍發布雲端 Cue 供補漏，Viewer 將兩條通道狀態分開，虛擬列表於最新列更新與高度變更後維持跟隨。跨網路 TURN 與真實手機仍待 Preview 雙機驗證。
+
+- 修正 QR Viewer 長時間與暫時斷線恢復：signaling `/join` heartbeat 續租 participant、8 秒 request timeout、協商完成後停止高頻 poll、5 秒 disconnected grace、Device ICE restart、6 次 jitter backoff、online/前景恢復與舊 connection epoch 隔離；DataChannel 使用 source ID 做 snapshot/replay，Viewer 在 snapshot 503 與 Realtime/SSE 重連時保留 Cue，terminal share 立即停止，並提供「已恢復連線」與手動「重新連線」。新增 server-only `WEBRTC_ICE_SERVERS_JSON` 嚴格 STUN/TURN 驗證；TURN 與跨網路實機仍待 Preview 驗收。
+
+- 新增 lifecycle regression protection：Live 會議現在使用完整 Global Dictionary 加 Meeting Dictionary，後者同原文會覆蓋前者；`recordAudio=false` 不建立本機錄音，已完成的 OPFS/IndexedDB manifest 可在會議結果直接發現與下載；停止錄音會留在 Live 的 active Meeting，Continue Recording 與 End Meeting 共用可重試且等待 finalize 的 lifecycle。
+
+- 未完成會議現在會先開啟會議設定供使用者確認，再由設定頁進入即時字幕；已完成會議仍直接開啟翻譯紀錄。
+
+- 修正結束會議後詳情與 TXT 匯出誤讀雲端空資料的問題：Stop 會先等待完整 Final Cue 寫入 IndexedDB，詳情與瀏覽器匯出共用同一份本機 Cue，並保留 source-only、translation-only、延遲補齊與最後一句。本機保存失敗時不會清空頁面資料，重複 Stop 可安全重試。
+- 修正正式錄製流程未可靠套用會議詞彙：同名原詞現在由會議詞彙覆蓋共用詞彙，Gemini Live prompt、provider reconnect、resume 與 rollover 使用 Segment 字典快照；字幕校正改為只在同一 Cue 原文命中時套用，並保留模型原始翻譯供比對，Recorder 與 Viewer 顯示同一有效翻譯。錄製中修改詞彙從下一個 Segment 生效，既有字幕與 Gemini 原生音訊不回溯修改。
+
+- Google Workspace accounts matching `AUTH_ALLOWED_EMAIL_DOMAINS` now auto-activate through a service-role-only conditional `pending -> active` RPC after backend JWT/domain validation. Manual approval UI/API was removed; disabled accounts, super-admin roles, Meeting permissions, Viewer access, audit history, and Gemini key boundaries remain unchanged.
+
+- 修正 provider boundary 後單側字幕延遲抵達時，誤沿用該側更早 `audioTurnId` 的問題；晚到原文或翻譯現在綁定觸發等待狀態時保存的 turn identity。另修正本機靜音 finalize 後重播待處理尾字會建立額外 Cue，以及第一筆遲到事件過早清除等待 turn 的問題；新語音開始時會輪替本機 turn，而同一側多筆遲到更新仍會回到原 Cue。整合回歸涵蓋自動斷句後連續句、真正重複句、中途停頓、延遲雙側與 Recorder／Viewer 一致性。Preview pipeline trace 另加入有界序號、Cue 更新前後文字、terminal replay provenance 與 JSON 匯出。
+
+- 修正 Gemini transcript text 與獨立 `turnComplete` 邊界後，下一句錯誤沿用前一句 `audioTurnId` 並合併 Cue 的問題；新增由 server-only `LIVE_PIPELINE_TRACE_ENABLED=true` 明確啟用的 PCM → provider → normalized transcript → Cue → React render bounded spoken-turn trace，供 Vercel Preview 診斷；Production 預設停用且不保留 trace。
+
+- 修正 lifecycle v1 錄音在 lifecycle v2 Cue 外鍵上回傳 503 的相容性問題；checkpoint／cue 的伺服器日誌現在只記錄安全的 Supabase 上游狀態、錯誤分類與 constraint，不記錄 JWT、憑證或資料內容。
+- 正式錄音流程改以 OPFS 保存 MediaRecorder chunks、IndexedDB 保存 cue／checkpoint 與恢復狀態；錄製期間 WebRTC 正常時不再週期性寫入雲端 checkpoint／cue，Viewer 連線失敗時才橋接既有雲端 cue fallback，停止時補齊雲端 cue 供歷史與匯出使用。
+- 正式錄音與 Viewer 流程已接入 WebRTC DataChannel：Device 使用登入 JWT 與既有 canRecord 規則，Viewer 沿用 code/token 分享連結，自動處理 snapshot、cue append/update、replay、去重、重連與安全狀態；Realtime/SSE 仍是依賴雲端 cue 寫入的 fallback。
+- Phase 0 contract documentation now fixes the browser/local-service boundary:
+  immutable OPFS chunks are explicitly sent by the browser and the service
+  cannot read page OPFS. Cue, checkpoint, operation, and audio delivery each
+  use a browser durable pending queue with explicit ACK, resend, conflict, and
+  recovery ordering. Viewer sharing is separate from host export permission;
+  Viewer/Recorder shares stop immediately while host export/audio download
+  remains available for 30 minutes. Deployed Origin/CORS is Preview/Production
+  allowlist-only, and failed or environment-blocked tests cannot be reported
+  as a passing baseline. Phase 1 real-device acceptance remains pending.
+- Cue 的原文與翻譯現在分別追蹤完成狀態；任一側穩定後即可發布至 Viewer，延遲抵達的另一側會更新同一 `cueId`。source-only／translation-only Cue 可保存與 replay，DEV 模式並加入 Live-to-Viewer latency timestamps。
+- 修正 Viewer 在 Realtime replay 時把 SSE `: keep-alive` 心跳當成 JSON 解析、錄製一段時間後顯示錯誤的問題；replay 現在明確要求 JSON，且保留 EventSource 的 SSE fallback。
+- 會議設定的觀看連結現在會以新分頁開啟，公開 Viewer 路由也不再要求 Workspace 登入。
+- 修正即時錄製開始後頂部會議狀態仍顯示「已暫停」的問題，並在暫停完成前等待翻譯字幕儲存，重新進入後仍保留原文與翻譯。
+- Viewer header 現在只保留即時字幕標題與會議名稱，不再顯示 Gemini Key、管理入口或帳號選單。
+- 修正已登入使用者開啟 Viewer 時，共用 Supabase client 會覆寫短效 Viewer Realtime token，導致即時字幕頻道無法訂閱的問題；Viewer 現在使用獨立的 Realtime client。
+- 修正全域字典新增詞條時只保存第一個目標語言翻譯的問題；多語言翻譯現在會完整保存，新增語言也會自動選擇尚未使用的語言。新增與編輯彈窗同步改為分區表單、獨立翻譯管理卡片、行內驗證與固定操作列。
+- 修正公開 Viewer share 解析錯誤要求登入者 Supabase client，導致 Viewer detail 與 telemetry 回傳 503 的問題。
+- 強化全域字典批次操作的按鈕辨識度，並新增具確認提示的批次刪除功能。
+- 移除會議管理與即時錄製提示卡內的 Gemini API Key 輸入框，統一由頁首的 Gemini Key 設定頁輸入。
+
+- Clarified GSK-04: Live token issuance uses only recorder request-scoped keys;
+  legacy profile credential storage is removed from the current flow, with
+  isolated `GEMINI_API_KEY` use retained only for non-Live workers.
+
 - Fixed cloud Meeting creation failing with HTTP 503 after retention columns were added to the Supabase schema.
 
 ## 2026-09-23

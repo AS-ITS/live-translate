@@ -3,7 +3,9 @@ import { classifyConnectionFailure, httpStatusFromError } from '../../lib/connec
 const MEETING_CHECKPOINT_STATUS_LABELS = {
   idle: '會議模式：尚未啟用',
   ready: '會議模式：準備中',
+  ending: '正在結束會議…',
   syncing: '會議模式：保存中',
+  retrying: '會議模式：正在重試雲端保存',
   synced: '會議模式：已保存',
   switching: '會議模式：切換段落中',
   switched: '會議模式：下一段已開始',
@@ -28,6 +30,21 @@ const TRANSLATED_AUDIO_STATUS_LABELS = {
   saved: '音檔已保存，請到翻譯紀錄下載。',
   error: '翻譯語音音檔無法使用。'
 };
+
+export function liveMeetingStatusLabel(meeting, recordingStatus = '') {
+  if (['requesting-permission', 'connecting', 'listening', 'reconnecting', 'switching-segment'].includes(recordingStatus)) {
+    return '進行中';
+  }
+  if (recordingStatus === 'paused') return '已暫停';
+
+  return meeting?.status === 'active'
+    ? '進行中'
+    : meeting?.status === 'interrupted'
+      ? '已暫停'
+      : meeting
+        ? '準備就緒'
+        : '尚未選擇會議';
+}
 
 export function meetingCheckpointStatusLabel(status) {
   return MEETING_CHECKPOINT_STATUS_LABELS[status] || MEETING_CHECKPOINT_STATUS_LABELS.idle;

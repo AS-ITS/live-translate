@@ -98,6 +98,11 @@ export function createSessionControlLease({
     return Boolean(sessionId && ownedSessionId === sessionId && readLease()?.tabId === tabId && !isExpired(readLease()));
   }
 
+  function isHeldByAnotherTab() {
+    const current = readLease();
+    return Boolean(current && !isExpired(current) && current.tabId !== tabId);
+  }
+
   function subscribe(listener) {
     if (typeof listener !== 'function') throw new TypeError('listener must be a function.');
     listeners.add(listener);
@@ -114,6 +119,7 @@ export function createSessionControlLease({
     tryAcquire,
     release,
     owns,
+    isHeldByAnotherTab,
     subscribe,
     current() {
       const current = readLease();

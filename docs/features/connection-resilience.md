@@ -15,8 +15,9 @@ top of that lifecycle model.
 
 This capability does not change the browser-to-Gemini Live API architecture.
 The browser continues to connect directly to Gemini Live API using ephemeral
-tokens issued by the backend. The backend continues to own `GEMINI_API_KEY` and
-must not proxy live audio.
+tokens issued by the backend. Live token requests supply a recorder
+request-scoped key; an isolated `GEMINI_API_KEY` may remain configured for
+non-Live workers. The backend must not proxy live audio.
 
 ## Failure Classification
 
@@ -368,8 +369,8 @@ Use reactive token refresh first.
 - Do not reuse old ephemeral tokens for reconnect.
 - Request a fresh token through the existing `POST /api/live-token` endpoint
   before each reconnect attempt that opens a new Gemini Live session.
-- Keep the backend-owned `GEMINI_API_KEY` and existing token validation flow
-  unchanged.
+- Keep the request-scoped Live token validation flow unchanged. Do not use a
+  non-Live environment key as a Live token fallback.
 - Do not introduce frontend access to long-lived credentials.
 - Do not add proactive refresh until Gemini Live SDK behavior and token/session
   semantics are confirmed.
@@ -494,6 +495,12 @@ Low:
 - Additional unit test surface.
 - Additional status labels and recovery messages.
 - Documentation updates across capability references.
+
+## Legacy Continue Recovery
+
+Legacy Stop → Continue stores one immutable local operation before the server mutation. A timeout or recoverable 5xx is handled in this order: reconcile the same operation, confirm the authoritative source Segment is still active, then perform a bounded retry with the same operation ID, payload hash, and next live-session ID. A committed successor is replayed instead of creating another Segment.
+
+The operation remains recoverable until the successor Token and Provider report the same effective glossary revision and raw audio recording resumes. Reload uses this same durable operation path; non-recoverable ownership, authorization, terminal-meeting, and payload-conflict errors are never retried.
 
 ## Acceptance Criteria
 

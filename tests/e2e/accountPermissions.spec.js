@@ -20,11 +20,14 @@ test('account management shows users and reloads after disable', async ({ page }
   });
   await page.route(/\/api\/admin\/users(?:\?.*)?$/, async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
-    return route.fulfill({ json: { users: [{ id: 'admin-1', email: 'admin@example.com', role: 'super_admin', status: 'active' }, { id: 'source-1', email: 'source@example.com', role: 'member', status: disabled ? 'disabled' : 'active' }, { id: 'target-1', email: 'target@example.com', role: 'member', status: 'active' }], transferTargets: [{ id: 'admin-1', email: 'admin@example.com' }, { id: 'source-1', email: 'source@example.com' }, { id: 'target-1', email: 'target@example.com' }], counts: { all: 3, active: disabled ? 2 : 3, disabled: disabled ? 1 : 0 }, pagination: { page: 1, pageSize: 12, total: 3, totalPages: 1 } } });
+    return route.fulfill({ json: { users: [{ id: 'admin-1', email: 'admin@example.com', role: 'super_admin', status: 'active' }, { id: 'source-1', email: 'source@example.com', role: 'member', status: disabled ? 'disabled' : 'active' }, { id: 'target-1', email: 'target@example.com', role: 'member', status: 'active' }, { id: 'pending-1', email: 'pending@example.com', role: 'member', status: 'pending' }], transferTargets: [{ id: 'admin-1', email: 'admin@example.com' }, { id: 'source-1', email: 'source@example.com' }, { id: 'target-1', email: 'target@example.com' }], counts: { all: 4, active: disabled ? 2 : 3, disabled: disabled ? 1 : 0 }, pagination: { page: 1, pageSize: 12, total: 4, totalPages: 1 } } });
   });
   page.on('dialog', (dialog) => dialog.accept());
   await page.goto('/#admin');
-  await expect(page.locator('.account-summary-card strong').first()).toHaveText('3');
+  await expect(page.locator('.account-summary-card strong').first()).toHaveText('4');
+  await expect(page.getByRole('combobox', { name: '篩選狀態' }).locator('option[value="pending"]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '核准帳號' })).toHaveCount(0);
+  await expect(page.locator('.account-management-data-grid .ag-row').filter({ hasText: 'pending@example.com' })).toContainText('登入後自動啟用');
   await expect(page.locator('.account-management-data-grid .ag-row').filter({ hasText: 'admin@example.com' }).getByText('目前帳號')).toBeVisible();
   const searchInput = page.getByRole('textbox', { name: '搜尋帳號' });
   await searchInput.fill('source@example.com');
@@ -91,9 +94,10 @@ test('keeps an unauthorized personal account on an access-denied screen until ac
   await expect.poll(() => oauthUrl).toContain('prompt=select_account');
 });
 
-test('keeps a domain-matching pending account on the approval waiting screen', async ({ page }) => {
+test('does not show an approval waiting screen when activation is incomplete', async ({ page }) => {
   await page.route(/\/api\/profile(?:\?.*)?$/, async (route) => route.fulfill({ json: { profile: { id: 'pending-1', email: 'pending@example.com', role: 'member', status: 'pending' } } }));
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: '等待管理員核准' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '暫時無法啟用帳號' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '等待管理員核准' })).toHaveCount(0);
   await expect(page.getByText('pending@example.com')).toBeVisible();
 });

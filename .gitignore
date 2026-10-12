@@ -23,3 +23,5 @@ translation-glossary.json
 data/
 supabase/.branches/
 supabase/.temp/
+.vercel
+.env*

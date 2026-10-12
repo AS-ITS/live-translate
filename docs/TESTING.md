@@ -1,12 +1,87 @@
 # Testing
 
+Live pipeline trace vocabulary: use `TRANSCRIPT_NORMALIZED`, `TURN_ASSIGNED`, `CUE_CREATED`, `CUE_UPDATED`, `CUE_FINALIZED`, `CUE_PUBLISHED`, `SPEECH_ACTIVITY_STARTED`, `SPEECH_ACTIVITY_CONTINUED`, `LOCAL_SILENCE_DETECTED`, and lifecycle reconnect/rollover stages. Legacy `NORMALIZED`, `CUE_STATE`, and `LOCAL_SILENCE_FINALIZE` names are not canonical. `audioTurnId` is authoritative at the audio boundary; `turnKey` belongs to normalized logical turns; `cueId` belongs to Cue state. Diagnostics never use one identity as another's fallback.
+
+## WebRTC 正式流程
+
+最小自動化驗證：
+
+```bash
+node --test tests/unit/webrtcSignalingRoute.test.js tests/unit/webrtcSubtitleDataChannel.test.js tests/unit/webrtcSubtitleTransport.test.js tests/unit/viewerLongSessionRecovery.test.js tests/unit/meetingViewerSnapshot.test.js tests/unit/meetingViewerState.test.js tests/unit/meetingViewerRealtime.test.js tests/unit/webrtcPocPage.test.js
+node --test tests/integration/webrtcLateJoin.integration.test.js
+npm run build
+```
+
+`webrtcSubtitleTransport.test.js` 另覆蓋 Viewer 在 Recorder 出現前持續 discovery、Device 成功 join 重設 recovery budget，以及 persistence 故障域隔離：已開啟的
+DataChannel 在 signaling heartbeat 回 `503` 時不得 teardown、不得切換為
+`reconnecting`，Cue 2／Cue 3 必須沿用同一 transport generation 繼續發布；雲端
+control-plane 恢復後只恢復 heartbeat，不得重複發布已送達的 Cue。
+
+`webrtcLateJoin.integration.test.js` 使用 fake clock 驗證 Recorder 維持 60 分鐘 signaling lease 後，第一個 Viewer 仍能完成定向 `viewer-ready -> offer`；這不等同真實 60 分鐘手機測試。
+
+這些測試涵蓋 Viewer code/token 分流、Device `canRecord` 授權邊界、拒絕 expired/revoked/mismatch/stopped、Viewer 禁止 offer/stop、participant heartbeat、8 秒 signaling timeout、暫時 poll 失敗、5 秒 disconnected grace、ICE restart、DataChannel close/error、舊 epoch、6 次重試耗盡、Realtime token refresh 與故障 reconnect timer 隔離、reconnect snapshot/replay、Segment sequence domain、snapshot 503 retry、same-source replay、sidecar 清理與 Cue 去重。跨網路實機仍依 [WebRTC Preview runbook](verification/webrtc-browser-deployment.md) 執行，不得以單元測試替代。
+
+## Vercel Relay PoC verification boundary
+
+The Relay PoC is documentation and operator validation only in this round; it
+does not modify production code or enable a paid Vercel/Upstash plan. Keep the
+following evidence classes separate:
+
+- **Automated local proof:** run the existing local-device unit/E2E commands
+  and `git diff --check`. This proves browser-to-local-device packet
+  persistence, ACK/idempotency, reconnect backfill, and stop behavior only.
+- **Preview/account proof:** requires a real Vercel Preview deployment, an
+  Upstash Redis account/database, configured Preview environment variables,
+  and an approved HTTPS/network path. It must exercise the two-hour relay
+  matrix in [local-device-poc.md](verification/local-device-poc.md): Function
+  expiry, redeploy, Viewer reconnect, and independent relay versus recording
+  lifecycle heartbeats.
+- **Not proven by this round:** production deployment, paid-plan activation,
+  cross-network device reachability, exactly-once Pub/Sub delivery, durable
+  subtitle history in Redis, or cloud audio storage/download. Audio download
+  remains a future host-authorized range endpoint against the local permanent
+  source.
+
+The relay test report must state that Redis Pub/Sub is routing only (not
+Streams), the registry has metadata only and no socket references, Redis has
+no subtitle history, and a publisher ACK means `PUBLISH` completed—not Viewer
+render or durable receipt. Include `requestId`, timeout/retry outcome,
+deployment ID, account/region, Viewer count, and the exact source snapshot
+used for recovery. Do not put REST tokens, ephemeral tokens, raw audio, or
+transcript payloads in the report.
+
+For cost/quotas and the formula for a two-hour meeting at different Viewer
+counts, use the operator section in [local-device-poc.md](verification/local-device-poc.md)
+and verify live limits at the linked official Vercel and Upstash pricing pages.
+
+## Phase 0 contract evidence
+
+Test the browser as the only OPFS reader, immutable chunk checksums, four
+durable pending queues (`cue`, `checkpoint`, `operation`, `audio`), ACK loss
+and resend, duplicate idempotency, stale fence/version/hash conflicts, and
+the recovery order: operations, dependent checkpoints/Cues, then audio.
+Queues must ACK independently so audio failure does not block Cue/checkpoint
+delivery and vice versa.
+
+Evidence must separately prove that stopping a Meeting immediately invalidates
+Viewer/Recorder shares, while the authenticated host alone can export
+TXT/SRT/VTT and download completed audio for 30 minutes. Origin/CORS tests
+cover only approved Preview and Production origins.
+
+Existing failures, skipped checks, and environment blockers are non-passing
+baseline evidence. Reports must retain the command, result, and blocker; they
+must never label a failed or blocked run as `baseline passed`. Phase 1 physical
+acceptance is still pending for Mac/Windows microphones, reload/crash queue
+recovery, OPFS quota/offline resend, audio loss/recovery, and deployed
+Origin/CORS checks.
+
 ## Google Workspace accounts
 
-Google OAuth is not automated in the regular E2E suite. Deterministic identity tests cover the email-domain gate, pending profile provisioning, disabled-account rejection, and super-admin access using signed JWT fixtures.
+Google OAuth is not automated in the regular E2E suite. Deterministic identity tests cover exact email-domain matching, pending profile auto-activation, missing/update failure rejection, disabled-account rejection, and super-admin role preservation using signed JWT fixtures and mocked Supabase responses.
 
-## Issue #33 account approval coverage
+## Domain auto-activation coverage
 
-Deterministic tests cover pending profile provisioning, `/api/profile` visibility, `auth_pending` rejection, approval authorization and idempotency, pending Meeting invitation rejection, and the existing active/disabled management flow. Tests do not call Google OAuth, Gemini, or production APIs.
+Deterministic tests cover transient pending provisioning, trusted `pending -> active`, concurrent disable behavior, `/api/profile` fail-closed responses, removed approval UI/API, Meeting authorization, anonymous Viewer access, and existing active/disabled management. Tests do not call Google OAuth, Gemini, or production APIs.
 
 ## CI and cloud validation
 
@@ -151,6 +226,21 @@ The manual workflow `.github/workflows/cloud-validation.yml` is production-only 
 
 ## Account permissions
 
+Account role management uses the following deterministic service, HTTP, migration, domain-activation, and browser checks:
+
+```bash
+node --test tests/unit/adminService.test.js tests/unit/auditLogService.test.js tests/unit/accountRoleHttpApi.test.js tests/unit/accountRoleManagementMigration.test.js tests/unit/domainAutoActivationMigration.test.js tests/unit/profileService.test.js
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/accountRoleManagement.spec.js
+```
+
+After local Supabase migrations are applied, run the real concurrent cross-demotion regression:
+
+```bash
+RUN_SUPABASE_ROLE_TESTS=true node --test tests/integration/accountRoleConcurrency.integration.test.js
+```
+
+It starts two active `super_admin` profiles, concurrently attempts A→B and B→A demotions, and verifies exactly one succeeds, at least one administrator remains, the loser receives `auth_forbidden`, and only the successful audit event exists.
+
 Coverage includes actor/resource-owner separation, disabled-profile refresh, member recording scope, owner-only private resources, atomic transfer rollback, credential exclusion, and safe audit failures. Local DB validation uses `supabase migration up --local` followed by `supabase db lint --local`.
 
 Run the deterministic Issue #33 coverage without production Supabase or Gemini:
@@ -222,7 +312,7 @@ Live, History Detail, and Viewer routes, plus global/private glossary
 boundaries.
 
 Global glossary UI coverage includes card-grid filtering, category counts,
-multi-language editing, enabled-state batch actions, and the side drawer. The
+multi-language editing, enabled-state and delete batch actions, and the side drawer. The
 global page manages only entries shared by all Meetings; private entries remain
 covered by the Meeting glossary drawer tests.
 
@@ -359,6 +449,25 @@ node --test tests/unit/meetingCheckpointService.test.js
 node --test tests/unit/segmentSwitchOrchestrator.test.js
 ```
 
+Run the focused Auth/rollover isolation regression without a real Supabase or
+Gemini request:
+
+```bash
+node --test tests/unit/authState.test.js tests/unit/accessToken.test.js \
+  tests/unit/livePipelineTrace.test.js tests/unit/segmentSwitchOrchestrator.test.js \
+  tests/unit/rolloverRecoveryCoordinator.test.js tests/unit/liveSessionProviderTransition.test.js
+
+npx playwright test --config tests/e2e/playwright.config.js \
+  tests/e2e/liveTranslate.spec.js \
+  -g "lifecycle v2 rollover survives|keeps Recorder mounted when one-sided cues|real auth sign-out revokes|auth-invalid profile revalidation|newer same-user auth state"
+```
+
+The accelerated rollover case injects same-user `TOKEN_REFRESHED` while the
+rollover request is in flight. It must preserve the mounted recorder, audio
+capture, replacement Gemini session, canonical Cue persistence, and Viewer
+DataChannel publication. Explicit `SIGNED_OUT` and `auth_invalid` cases must
+still stop microphone capture and unmount the protected App.
+
 Current unit coverage:
 
 - Cue UI timecode formatting, sequence sorting, cueId upsert, single partial
@@ -406,6 +515,18 @@ node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integratio
 The loader intercepts `@google/genai`, so `POST /api/live-token` uses the real
 local route handler while Gemini token creation is mocked.
 
+Run the focused Gemini credential boundary tests:
+
+```bash
+node --test tests/integration/liveTokenRoute.test.js tests/unit/liveTokenSecurity.test.js tests/unit/geminiCredentialHttpApi.test.js
+```
+
+These tests verify request-scoped key handling, Viewer rejection, expired JWT
+rejection, logout cleanup, `no-store` responses, and that keys do not enter
+persistent storage or logs. The legacy profile credential test is retained
+only while its removal is being completed and must not be used as Live flow
+evidence.
+
 Run the Gemini Live normalized Cue flow integration test:
 
 ```bash
@@ -440,7 +561,7 @@ Current integration coverage:
 
 - Successful `POST /api/live-token`
 - Invalid language
-- Missing `GEMINI_API_KEY`
+- Missing request-scoped `geminiApiKey`
 - Provider expired-token style failure
 - Structured error response for invalid JSON
 - Demo access-token gate
@@ -669,3 +790,96 @@ node --test \
 These tests verify the 30-minute deadline read model, stable `410` expiry
 contract, v1 read compatibility with v2 legacy-column write suppression, and
 best-effort purge metrics. They do not call Gemini or remote Supabase.
+
+## Mobile diagnostic export
+
+Focused deterministic coverage:
+
+```bash
+node --test tests/unit/livePipelineTrace.test.js tests/unit/clientDiagnostics.test.js tests/unit/webrtcSubtitleTransport.test.js tests/unit/viewerLongSessionRecovery.test.js
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/liveTranslate.spec.js -g "diagnostic export|viewer diagnostics"
+```
+
+The unit tests verify ring-buffer bounds, schema/version fields, timestamp/Meeting/generation/negotiation correlation, allowlist filtering, Web Share and Blob download paths, visibility lifecycle events, and sensitive-value exclusion. Playwright verifies that Recorder export does not stop an active session, Paused Recorder and Viewer can still export, export failure remains isolated, and the control fits a 412×915 viewport in Chromium and mobile WebKit. Native iPhone Safari and Android Chrome share-sheet/file-save behavior remains a real-device Preview acceptance item.
+
+## Local raw translation comparison
+
+Use only a local development build, or a diagnostic test build explicitly compiled with `LIVE_TRANSLATE_DIAGNOSTICS=true`. In browser DevTools:
+
+```js
+window.__liveTranslateDebug.enableTranslationComparison()
+window.__liveTranslateDebug.getTranslationComparisons()
+const json = window.__liveTranslateDebug.exportTranslationComparisons()
+copy(json)
+window.__liveTranslateDebug.clearTranslationComparisons()
+window.__liveTranslateDebug.disableTranslationComparison()
+```
+
+Reloading also clears the in-memory records. Use a non-Production meeting, synthetic speech, and an explicitly authorized test Gemini key. Never use Production meetings, Production keys, sensitive recordings, or real confidential subtitles.
+
+The controlled manual matrix must cover: (1) repeated words, `你好你好你好。`; (2) numbers, `車子 123。`; (3) the long sentence `現在正在進行會議測試，請確認每一句翻譯是否完整。`; (4) at least 30 seconds of continuous speech; (5) pause then continue; (6) glossary enabled and disabled; and (7) partial plus late-final revision.
+
+For each event, inspect identity fields, provider raw/normalized/glossary-corrected/canonical text, source and translation versions, final/late-final status, authoritative snapshot application, and revision analysis. Source coverage remains `unverified` unless independent alignment evidence exists; neither the longer nor shorter translation is automatically correct.
+
+## Spoken turn trace and real-microphone acceptance
+
+Automated coverage must use the mock Gemini adapter. For a local or Vercel
+Preview runtime, set server-only `LIVE_PIPELINE_TRACE_ENABLED=true`, redeploy or
+restart, then inspect a turn with:
+
+```js
+const trace = window.__liveTranslateDebug.getPipelineTrace()
+window.__liveTranslateDebug.getTurnTrace(trace.at(-1)?.audioTurnId)
+const exportedTrace = window.__liveTranslateDebug.exportPipelineTrace()
+copy(exportedTrace)
+```
+
+Local terminal replay entries include bounded `originEventId`,
+`terminalStatus`, `terminalReason`, `localFinalize`, and
+`isTerminalReplay` fields. Use these fields to distinguish a local-silence
+flush from a new provider transcript; they never contain API keys, tokens, or
+audio.
+
+The endpoint exposes only `{ livePipelineTraceEnabled: true }`; the trace stays
+in browser memory and resets on reload. Every entry has a bounded
+`traceSequence`; normalized and Cue transitions keep their provider
+`eventSequence`; Cue updates include bounded before/after source and translation
+text. `exportPipelineTrace()` returns the same bounded, secret-free entries as
+formatted JSON for saving from Preview DevTools. For each spoken turn, verify the trace
+reaches `PCM_CAPTURED`, `PCM_SENT`,
+`PROVIDER_EVENT`, `TRANSCRIPT_NORMALIZED`, `TURN_ASSIGNED`, one of `CUE_CREATED`
+or `CUE_UPDATED`, and `REACT_RENDER`. Speech activity emits
+`SPEECH_ACTIVITY_STARTED` and `SPEECH_ACTIVITY_CONTINUED`; local silence emits
+`LOCAL_SILENCE_DETECTED` with non-empty `audioTurnId`; correlate later
+`TURN_ASSIGNED` and Cue stages by that same `audioTurnId`; reconnect and segment replacement emit lifecycle stages.
+A `drop` entry must include `dropReason`. Also inspect the subtitle DOM for missing or duplicate
+Cue rows and the browser console for runtime errors.
+
+Real browser and real microphone acceptance remains manual and must cover:
+
+1. One sentence and two consecutive sentences (two separate Cues).
+2. Five rapid sentences and sentences separated by 2–3 seconds.
+3. One continuous 20–30 second sentence with partial updates and one final Cue.
+4. Pause/resume followed immediately by speech.
+5. Provider reconnect/rollover followed immediately by speech.
+
+Mocks, unit tests, Playwright, and DOM inspection cannot mark these real-device
+cases as passing. Each case passes only after the spoken text is confirmed
+through PCM, provider, normalized transcript, Cue state, React render, and the
+visible subtitle.
+# Recording retention and completed Meeting deletion
+
+Current policy (2026-10-07): expiry is an authorization boundary only. Targeted
+tests must verify ordinary-user hiding, Viewer `410 meeting_content_expired`,
+active `super_admin` pending-delete visibility, and explicit canonical deletion.
+Legacy cleanup-worker tests cover dormant compatibility code; no GET or timer
+may invoke that worker.
+
+Run focused tests with `node --test tests/unit/localMeetingRetention.test.js tests/unit/supabaseMeetingCleanupWorker.test.js tests/unit/meetingDeletionService.test.js tests/unit/meetingDeletionHttpApi.test.js tests/unit/meetingReadQueryService.test.js`.
+With local Supabase running and migrations applied, execute
+`psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -v ON_ERROR_STOP=1 -f tests/integration/recording_retention_local.sql`
+and the equivalent `meeting_deletion_local.sql`. Both fixtures roll back;
+they do not call Production, wait 30 minutes, or invoke Gemini. The SQL test
+checks direct RLS/Storage visibility, immutable deadlines, late writes,
+authorization, persisted cleanup throttling, and bounded continuation.
+Browser UI regression: `playwright test tests/e2e/meetingManagementDelete.spec.js --config tests/e2e/playwright.config.js`.

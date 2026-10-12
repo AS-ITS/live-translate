@@ -137,9 +137,14 @@ If the SDK event does not expose a reliable partial/final flag:
 - Transcript events that arrive after a provider turn boundary may revise the
   same active/finalized Cue when they are cumulative extensions within the
   existing revision window; unrelated later turns remain separate.
-- The latest finalized Cue remains revisable for 1500ms. A late source or
+- The latest finalized Cue remains revisable for 5000ms. A late source or
   translation fragment may monotonically merge into that same Cue id, sequence,
   persistence record, and checkpoint.
+- Matching `audioTurnId` and arrival inside the 5000ms revision window provide
+  context but are not sufficient proof that an event revises the same Cue. The
+  event must also be a valid cumulative update, late counterpart, terminal
+  replay, or authoritative late final. Independent complete utterances remain
+  separate even when their text and `audioTurnId` match.
 - Adjacent final bilingual Cues in the same Segment are coalesced when neither
   Cue has reached sentence punctuation and they arrive within the adjacent
   fragment window, including when one or both Cues were finalized after a
@@ -211,11 +216,17 @@ If the SDK event does not expose a reliable partial/final flag:
 
 ### Duplicate Text
 
-- Identical partial text for the same stream should not create a new item.
-- Identical final text should not be appended twice if it matches the last final
-  item in the same stream and arrives within the same segment context.
-- Exact duplicate detection should be stream-local. Source and translation text
-  must not be compared against each other.
+- Text equality is not an event deduplication key. Independent final events with
+  identical text remain independent utterances.
+- Replay deduplication requires the same stable event or revision identity and
+  remains stream-local. Source and translation text must not be compared against
+  each other.
+- A cumulative partial snapshot may replace the previous partial for the same
+  stream identity; an unrelated identical event must not be collapsed into it.
+- Glossary correction preserves every required-target occurrence already emitted
+  by the provider. It may remove a known ordinary-translation alias only when
+  locally adjacent to the corresponding required target; it must not globally
+  delete repeated target text or infer missing repetitions from source counts.
 - Avoid broad fuzzy matching until real SDK event behavior is confirmed.
 
 ### Out-of-Order Events
@@ -338,3 +349,42 @@ Implementation guidance:
 - No API changes.
 - No database or persistence changes.
 - No real Gemini API calls are required for validation.
+
+## 11. Spoken Turn Identity and Development Trace
+
+`turnComplete` and `generationComplete` describe the same provider boundary
+when they arrive consecutively without intervening transcript text. The first
+accepted boundary rotates the local `audioTurnId`; the second must not rotate it
+again. Transcript text arriving after that boundary belongs to the new spoken
+turn unless it is an actual late/cumulative continuation of one side of the
+previous turn. Source and translation may therefore retain different active
+turn identities while a late counterpart is completed.
+
+Provider event IDs are deduplicated within a provider epoch. Reconnect and
+rollover epochs must not collide with an earlier provider event carrying the
+same ID.
+
+An explicit server runtime flag, `LIVE_PIPELINE_TRACE_ENABLED=true`, exposes the
+bounded browser-memory trace through:
+
+```js
+window.__liveTranslateDebug.getPipelineTrace(filter)
+window.__liveTranslateDebug.getTurnTrace(audioTurnId)
+window.__liveTranslateDebug.clearPipelineTrace()
+```
+
+## 12. Local Raw Translation Comparison
+
+The raw translation comparison diagnostic is available only in local development or builds explicitly compiled with `LIVE_TRANSLATE_DIAGNOSTICS=true`. It stays disabled until manually enabled through `window.__liveTranslateDebug`.
+
+Each provider event is recorded under one normalized event identity so provider raw source and translation can be compared with normalized, glossary-corrected, and Cue canonical translations. The Cue stage only observes the existing reducer result; it does not change Cue association, snapshot selection, merge behavior, or revision timing.
+
+Records are allow-listed, kept only in browser memory, capped at 500 entries, and expire after 15 minutes. The diagnostic sends no network request and writes no server log or persistent storage. Disabling it clears all retained text. Production builds do not expose the API unless diagnostics were explicitly enabled at build time.
+
+The browser reads only `{ livePipelineTraceEnabled }` from
+`/api/runtime-config`; it never reads the server environment directly. The trace
+covers microphone input, PCM capture/send, provider events, normalized
+transcript events, Cue append/update/finalize/merge/drop, and React render.
+Every drop includes `dropReason`. With the flag disabled, the tracer retains and
+logs nothing and the full trace API is not exposed. Production must keep the
+flag disabled.

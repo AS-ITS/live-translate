@@ -5,7 +5,7 @@ import { classifyConnectionFailure } from '../../src/lib/connectionFailures.js';
 import { createAudioContext, LiveTranslateSession } from '../../src/lib/liveSession.js';
 import { createReconnectController } from '../../src/lib/reconnectController.js';
 
-test('live token setup preserves missing Gemini credential error details', async () => {
+test('live token setup does not map retired Gemini credential errors to Live UX copy', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({
     ok: false,
@@ -22,8 +22,8 @@ test('live token setup preserves missing Gemini credential error details', async
       (error) => {
         assert.equal(error.code, 'gemini_credential_not_configured');
         assert.equal(error.status, 409);
-        assert.equal(error.message, '請先在伺服器設定 Gemini API Key，再開始即時翻譯。');
-        assert.equal(error.userMessage, '請先在伺服器設定 Gemini API Key，再開始即時翻譯。（HTTP 409）');
+        assert.equal(error.message, '無法準備即時翻譯請求。');
+        assert.equal(error.userMessage, '無法準備即時翻譯請求。（HTTP 409）');
         return true;
       }
     );
@@ -350,6 +350,32 @@ test('live session uses Safari webkitAudioContext fallback', async () => {
   }
 });
 
+test('disabled translated audio playback does not enqueue output audio', () => {
+  let createBufferCalls = 0;
+  const outputChunks = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: false,
+    onOutputAudioChunk: (chunk) => outputChunks.push(chunk)
+  });
+  session.audioContext = {
+    createBuffer() {
+      createBufferCalls += 1;
+    }
+  };
+
+  session.handleMessage({
+    serverContent: {
+      modelTurn: {
+        parts: [{ inlineData: { data: 'AAAA' } }]
+      }
+    }
+  });
+
+  assert.equal(createBufferCalls, 0);
+  assert.deepEqual(outputChunks, []);
+});
+
 test('offline signal emits a recoverable failure after cleanup', async () => {
   const failures = [];
   const session = createTestSession({ onConnectionFailure: (failure) => failures.push(failure) });
@@ -429,6 +455,7 @@ test('provider reconnect rotates live session id across meeting segments', async
     targetLanguageCode: 'en'
   });
   let connectOptions = null;
+  const previousAudioTurnId = session.audioTurnId;
   session.connectProvider = async (options) => {
     connectOptions = options;
     return true;
@@ -444,7 +471,41 @@ test('provider reconnect rotates live session id across meeting segments', async
   );
   assert.equal(session.segmentId, 'segment-2');
   assert.equal(session.liveSessionId, 'live-session-2');
+  assert.notEqual(session.audioTurnId, previousAudioTurnId);
   assert.deepEqual(connectOptions, { forceRefresh: true });
+});
+
+test('transparent provider reconnect preserves the incomplete local audio turn identity', async () => {
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-session-1',
+    segmentId: 'segment-1',
+    targetLanguageCode: 'en'
+  });
+  const previousAudioTurnId = session.audioTurnId;
+  session.connectProvider = async () => true;
+
+  assert.equal(await session.reconnectProvider({ forceRefresh: true }), true);
+  assert.equal(session.audioTurnId, previousAudioTurnId);
+});
+
+test('turnComplete followed by generationComplete rotates the audio turn only once', () => {
+  const sourceEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    onCueEvent: (event) => {
+      if (event.stream === 'source') sourceEvents.push(event);
+    }
+  });
+
+  session.handleMessage({ eventId: 'text-1', serverContent: { inputTranscription: { text: 'first sentence' } } });
+  session.handleMessage({ eventId: 'turn-1', serverContent: { turnComplete: true } });
+  const nextAudioTurnId = session.audioTurnId;
+  session.handleMessage({ eventId: 'generation-1', serverContent: { generationComplete: true } });
+  assert.equal(session.audioTurnId, nextAudioTurnId);
+
+  session.handleMessage({ eventId: 'text-2', serverContent: { inputTranscription: { text: 'second sentence' } } });
+  assert.equal(sourceEvents.length, 2);
+  assert.notEqual(sourceEvents[0].audioTurnId, sourceEvents[1].audioTurnId);
 });
 
 test('turn completion finalizes preceding input and output transcript partials', () => {
@@ -1162,14 +1223,14 @@ test('live session applies glossary replacements only to output transcript event
 
   session.handleMessage({
     serverContent: {
-      inputTranscription: { text: '麥克風' },
+      inputTranscription: { text: 'microphone' },
       outputTranscription: { text: 'microphone and mic' },
       turnComplete: true
     }
   });
 
-  assert.deepEqual(inputEvents.map(transcriptEventSummary), [{ text: '麥克風', isFinal: true, sourceLanguageCode: 'zh-Hant' }]);
-  assert.deepEqual(outputEvents.map(transcriptEventSummary), [{ text: 'Alan speak and Alan speak', isFinal: true, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }]);
+  assert.deepEqual(inputEvents.map(transcriptEventSummary), [{ text: 'microphone', isFinal: true, sourceLanguageCode: 'zh-Hant' }]);
+  assert.deepEqual(outputEvents.map(transcriptEventSummary), [{ text: 'Alan speak', isFinal: true, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }]);
 });
 
 test('live session emits final output transcript events after glossary replacement', () => {
@@ -1185,6 +1246,7 @@ test('live session emits final output transcript events after glossary replaceme
 
   session.handleMessage({
     serverContent: {
+      inputTranscription: { text: 'microphone' },
       outputTranscription: { text: 'microphone' },
       turnComplete: true
     }
@@ -1206,6 +1268,7 @@ test('turn completion flush keeps replacement text when finalizing output partia
 
   session.handleMessage({
     serverContent: {
+      inputTranscription: { text: 'microphone' },
       outputTranscription: { text: 'microphone' }
     }
   });
@@ -1323,7 +1386,7 @@ test('stop marks unconfirmed provider partials as saved-pending terminal state',
   assert.equal(inputEvents[0].providerEndResult, 'sdk-returned-void');
 });
 
-test('session stop flush applies glossary replacement to pending output without changing input', async () => {
+test('session stop flush preserves mixed-source output and marks glossary correction uncertain', async () => {
   const inputEvents = [];
   const outputEvents = [];
   const session = new LiveTranslateSession({
@@ -1349,9 +1412,9 @@ test('session stop flush applies glossary replacement to pending output without 
     { text: 'microphone source', isFinal: false },
     { text: 'microphone source', isFinal: true }
   ]);
-  assert.deepEqual(outputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
-    { text: 'Alan speak', isFinal: false },
-    { text: 'Alan speak', isFinal: true }
+  assert.deepEqual(outputEvents.map(({ text, isFinal, glossaryCorrectionStatus }) => ({ text, isFinal, glossaryCorrectionStatus })), [
+    { text: 'microphone', isFinal: false, glossaryCorrectionStatus: 'correction_uncertain' },
+    { text: 'microphone', isFinal: true, glossaryCorrectionStatus: 'correction_uncertain' }
   ]);
 });
 

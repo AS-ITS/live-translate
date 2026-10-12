@@ -8,13 +8,19 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
   const cloud = () => env.SUPABASE_URL && env.SUPABASE_SECRET_KEY;
   const clientForContext = createSupabaseContextClient({ env, fetchImpl });
   return {
-    async getProfile(user) {
+    async getProfile(user, { activatePending = false } = {}) {
       if (!user?.id) throw new Error('Authenticated user identity required.');
- const fallback = { id: user.id, email: user.email, fullName: user.claims?.user_metadata?.full_name || null, avatarUrl: user.claims?.user_metadata?.avatar_url || null, role: user.role || 'member', status: user.status || (cloud() ? 'pending' : 'active') };
+      const fallback = { id: user.id, email: user.email, fullName: user.claims?.user_metadata?.full_name || null, avatarUrl: user.claims?.user_metadata?.avatar_url || null, role: user.role || 'member', status: user.status || 'active' };
       if (!cloud()) return fallback;
       const rows = await restRequest(`/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,email,full_name,avatar_url,role,status,created_at,updated_at`);
-      const profile = rows[0];
-      return profile ? { ...profile, fullName: profile.full_name, avatarUrl: profile.avatar_url, role: profile.role || 'member', status: profile.status || 'active' } : fallback;
+      let profile = rows[0];
+      if (!profile) throw accountError('profile_not_found', 503);
+      if (activatePending && profile.status === 'pending') {
+        const activated = await serviceRoleRequest('/rest/v1/rpc/activate_pending_profile', 'POST', { target_user_id: user.id });
+        profile = activated[0];
+        if (!profile || profile.status === 'pending') throw accountError('profile_activation_failed', 503);
+      }
+      return profileDto(profile);
     },
     async findMeetingMembership(meetingId, userId) {
       if (!meetingId || !userId) return null;
@@ -118,6 +124,31 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
     }
     return response.status === 204 ? [] : response.json();
   }
+
+  async function serviceRoleRequest(path, method = 'GET', body) {
+    const response = await fetchImpl(`${env.SUPABASE_URL.replace(/\/$/u, '')}${path}`, {
+      method,
+      headers: {
+        apikey: env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
+        Prefer: 'return=representation',
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+    });
+    if (!response.ok) throw accountError('supabase_request_failed', response.status);
+    return response.status === 204 ? [] : response.json();
+  }
 }
 
-function accountError(code) { const error = new Error(code); error.code = code; return error; }
+function profileDto(profile) {
+  return {
+    ...profile,
+    fullName: profile.full_name,
+    avatarUrl: profile.avatar_url,
+    role: profile.role || 'member',
+    status: profile.status || 'active'
+  };
+}
+
+function accountError(code, status) { const error = new Error(code); error.code = code; error.status = status; return error; }

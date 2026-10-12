@@ -2,12 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LiveTranslateSession } from '../../src/lib/liveSession.js';
 import { LiveTranscriptionSession } from '../../src/lib/liveTranscriptionSession.js';
+import { recordCueTransitionTrace } from '../../src/features/live/useLiveRecordingController.js';
 import {
   applySubtitleCueEvent,
   createSubtitleCueState,
   finalizePendingSubtitleCue,
   resolveIdleSubtitleCue
 } from '../../src/lib/subtitleCues.js';
+import { cueListForDisplay } from '../../src/lib/cueUi.js';
+import { applyMeetingCueEvent, mergeMeetingViewerSnapshot } from '../../src/lib/meetingViewerState.js';
 
 test('Gemini mock event flow produces one final cue from input/output partials', () => {
   let cueState = createSubtitleCueState();
@@ -38,6 +41,68 @@ test('Gemini mock event flow produces one final cue from input/output partials',
   assert.equal(cueState.finalCues[0].sourceText, 'hello world');
   assert.equal(cueState.finalCues[0].translatedText, 'bonjour le monde');
   assert.equal(cueState.currentCue, null);
+});
+
+test('separate turnComplete assigns the next sentence a new audioTurnId and Cue', () => {
+  let cueState = createSubtitleCueState();
+  let clock = 0;
+  const sourceEvents = [];
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-separate-boundary',
+    sessionId: 'session-separate-boundary',
+    segmentId: 'segment-separate-boundary',
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'zh-Hant',
+    echoTargetLanguage: false,
+    sessionClock: () => clock,
+    onCueEvent(event) {
+      if (event.stream === 'source') sourceEvents.push(event);
+      cueState = applySubtitleCueEvent(cueState, event);
+    }
+  });
+
+  clock = 100;
+  session.handleMessage({
+    eventId: 'first-text',
+    serverContent: {
+      inputTranscription: { text: '第一句測試完成' },
+      outputTranscription: { text: 'First sentence complete' }
+    }
+  });
+  clock = 200;
+  session.handleMessage({ eventId: 'first-boundary', serverContent: { turnComplete: true } });
+  const firstCandidate = cueState.currentCue || cueState.pendingCues[0];
+  cueState = resolveIdleSubtitleCue(cueState, {
+    cueId: firstCandidate.cueId,
+    updatedTimeMs: firstCandidate.updatedTimeMs,
+    sessionTimeMs: firstCandidate.boundaryAtMs + 700
+  }).state;
+
+  clock = 1_000;
+  session.handleMessage({
+    eventId: 'second-text',
+    serverContent: {
+      inputTranscription: { text: '第二句現在開始' },
+      outputTranscription: { text: 'Second sentence starts now' }
+    }
+  });
+  clock = 1_100;
+  session.handleMessage({ eventId: 'second-boundary', serverContent: { turnComplete: true } });
+  const secondCandidate = cueState.currentCue || cueState.pendingCues[0];
+  if (secondCandidate) {
+    cueState = resolveIdleSubtitleCue(cueState, {
+      cueId: secondCandidate.cueId,
+      updatedTimeMs: secondCandidate.updatedTimeMs,
+      sessionTimeMs: secondCandidate.boundaryAtMs + 700
+    }).state;
+  }
+
+  assert.notEqual(sourceEvents[0].audioTurnId, sourceEvents[1].audioTurnId);
+  assert.deepEqual(cueState.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [
+    ['第一句測試完成', 'First sentence complete'],
+    ['第二句現在開始', 'Second sentence starts now']
+  ]);
+  assert.equal(new Set(cueState.finalCues.map((cue) => cue.cueId)).size, 2);
 });
 
 test('terminal transcript flush emits final Cue events for pending subtitles', () => {
@@ -108,6 +173,66 @@ test('local silence finalize commits a complete Cue immediately without ending p
   );
   assert.equal(cueState.currentCue, null);
   assert.deepEqual(providerCalls, []);
+  await session.cleanup({ closeSession: false });
+});
+
+test('Gemini late output fragment keeps the complete same-turn translation after local silence', async () => {
+  let cueState = createSubtitleCueState();
+  let clock = 0;
+  const normalizedTranslationEvents = [];
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-late-output-fragment',
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'zh-Hant',
+    silenceFinalizeMs: 20,
+    sessionClock: () => (clock += 50),
+    onCueEvent: (event) => {
+      if (event.stream === 'translation') normalizedTranslationEvents.push(event);
+      cueState = applySubtitleCueEvent(cueState, event);
+      if (event.localFinalize) {
+        cueState = finalizePendingSubtitleCue(cueState, {
+          sessionTimeMs: clock + 1,
+          reason: event.finalizedReason
+        });
+      }
+    }
+  });
+
+  session.trackSpeechActivity(new Float32Array(160).fill(0.2));
+  session.handleMessage({
+    eventId: 'reported-source',
+    serverContent: { inputTranscription: { text: '錄音測試，你有聽到嗎？' } }
+  });
+  session.handleMessage({
+    eventId: 'reported-translation-prefix',
+    serverContent: { outputTranscription: { text: 'Recording test, did you hear' } }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  session.handleMessage({
+    eventId: 'reported-translation-tail',
+    serverContent: { outputTranscription: { text: 'me?' } }
+  });
+
+  const tailEvent = normalizedTranslationEvents.at(-1);
+  assert.deepEqual(
+    {
+      text: tailEvent.text,
+      textMergeMode: tailEvent.textMergeMode,
+      isFinal: tailEvent.isFinal,
+      isLateTranscript: tailEvent.isLateTranscript,
+      audioTurnId: tailEvent.audioTurnId
+    },
+    {
+      text: 'me?',
+      textMergeMode: 'append',
+      isFinal: true,
+      isLateTranscript: true,
+      audioTurnId: normalizedTranslationEvents[0].audioTurnId
+    }
+  );
+  assert.equal(cueState.finalCues.length, 1);
+  assert.equal(cueState.finalCues[0].translatedText, 'Recording test, did you hear me?');
+
   await session.cleanup({ closeSession: false });
 });
 
@@ -346,4 +471,272 @@ test('Live session keeps numeric tail fragments in the same live Cue', () => {
   cueState = finalizePendingSubtitleCue(cueState, { sessionTimeMs: 1000, reason: 'turnComplete' });
   assert.equal(cueState.finalCues.length, 1);
   assert.equal(cueState.finalCues[0].sourceText, '測試測試123');
+});
+test('production normalization, turn assignment, and Cue path emits canonical trace', async () => {
+  const { configureLivePipelineTrace, livePipelineTrace } = await import('../../src/lib/livePipelineTrace.js');
+  configureLivePipelineTrace(true);
+  let cueState = createSubtitleCueState();
+  const traceCue = { getSessionId: () => 'live-trace-integration', getSegmentId: () => 'segment-trace-integration' };
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-trace-integration', segmentId: 'segment-trace-integration',
+    targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant',
+    onCueEvent: (event) => {
+      const previous = cueState;
+      cueState = applySubtitleCueEvent(cueState, event);
+      recordCueTransitionTrace({ cue: traceCue, event, previous, next: cueState, cueAction: 'transition' });
+    }
+  });
+  session.handleMessage({ eventId: 'trace-source', serverContent: { inputTranscription: { text: '整合測試' } } });
+  session.handleMessage({ eventId: 'trace-output', serverContent: { outputTranscription: { text: 'integration test' } } });
+  session.handleMessage({ eventId: 'trace-boundary', serverContent: { turnComplete: true } });
+  const stages = livePipelineTrace.get().map((entry) => entry.stage);
+  assert.ok(stages.includes('TRANSCRIPT_NORMALIZED'));
+  assert.ok(stages.includes('TURN_ASSIGNED'));
+  const created = livePipelineTrace.get({ stage: 'CUE_CREATED' });
+  assert.equal(created.length, 1);
+  assert.ok(created[0].cueId);
+  assert.equal(cueState.currentCue?.sourceText || cueState.pendingCues[0]?.sourceText, '整合測試');
+  livePipelineTrace.clear();
+  configureLivePipelineTrace(false);
+});
+test('local silence trace retains authoritative turn correlation', async () => {
+  const { configureLivePipelineTrace, livePipelineTrace } = await import('../../src/lib/livePipelineTrace.js');
+  configureLivePipelineTrace(true);
+  const cueEvents = [];
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-local-trace', targetLanguageCode: 'en', silenceFinalizeMs: 1,
+    onCueEvent: (event) => cueEvents.push(event)
+  });
+  session.trackSpeechActivity(new Float32Array(32).fill(0.2));
+  session.handleMessage({ eventId: 'local-trace-source', serverContent: { inputTranscription: { text: 'local source' } } });
+  session.handleMessage({ eventId: 'local-trace-output', serverContent: { outputTranscription: { text: 'local output' } } });
+  session.localFinalizePendingTranscripts();
+  const trace = livePipelineTrace.get({ stage: 'LOCAL_SILENCE_DETECTED' }).at(-1);
+  const event = cueEvents.find((item) => item.localFinalize);
+  assert.equal(trace.audioTurnId, session.audioTurnId);
+  assert.ok(event?.audioTurnId);
+  assert.equal(trace.audioTurnId, event.audioTurnId);
+  assert.equal(trace.turnKey, null);
+  assert.equal(trace.cueId, null);
+  assert.equal(trace.providerTurnId, null);
+  const assigned = livePipelineTrace.get({ stage: 'TURN_ASSIGNED' })
+    .find((entry) => entry.audioTurnId === trace.audioTurnId);
+  assert.ok(assigned?.turnKey);
+  livePipelineTrace.clear();
+  configureLivePipelineTrace(false);
+  await session.cleanup({ closeSession: false });
+});
+
+test('production local silence correlation stays fail-closed across assignment and Cue transition', async () => {
+  const { configureLivePipelineTrace, livePipelineTrace } = await import('../../src/lib/livePipelineTrace.js');
+  configureLivePipelineTrace(true);
+  let cueState = createSubtitleCueState();
+  const traceCue = { getSessionId: () => 'live-silence-correlation', getSegmentId: () => 'segment-silence-correlation' };
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-silence-correlation', segmentId: 'segment-silence-correlation',
+    targetLanguageCode: 'en', silenceFinalizeMs: 1,
+    onCueEvent: (event) => {
+      const previous = cueState;
+      cueState = applySubtitleCueEvent(cueState, event);
+      recordCueTransitionTrace({ cue: traceCue, event, previous, next: cueState, cueAction: 'transition' });
+    }
+  });
+  session.trackSpeechActivity(new Float32Array(32).fill(0.2));
+  session.handleMessage({ eventId: 'silence-correlation-source', serverContent: { inputTranscription: { text: 'correlated source' } } });
+  session.handleMessage({ eventId: 'silence-correlation-output', serverContent: { outputTranscription: { text: 'correlated output' } } });
+  session.localFinalizePendingTranscripts();
+  const silence = livePipelineTrace.get({ stage: 'LOCAL_SILENCE_DETECTED' });
+  assert.equal(silence.length, 1);
+  assert.ok(silence[0].audioTurnId);
+  assert.equal(silence[0].turnKey, null);
+  assert.equal(silence[0].cueId, null);
+  const audioTurnId = silence[0].audioTurnId;
+  const assigned = livePipelineTrace.get({ stage: 'TURN_ASSIGNED' }).filter((entry) => entry.audioTurnId === audioTurnId);
+  const cueTransitions = livePipelineTrace.get().filter((entry) => ['CUE_CREATED', 'CUE_UPDATED', 'CUE_FINALIZED'].includes(entry.stage) && entry.cueId);
+  assert.ok(assigned.length > 0);
+  assert.ok(assigned.every((entry) => entry.turnKey));
+  assert.ok(cueTransitions.length > 0);
+  assert.ok(cueTransitions.every((entry) => entry.audioTurnId === audioTurnId));
+  await session.cleanup({ closeSession: false });
+  livePipelineTrace.clear();
+  configureLivePipelineTrace(false);
+});
+
+test('auto boundaries preserve three following sentences, pauses, delayed sides, repeats, and Viewer ownership', () => {
+  let cueState = createSubtitleCueState();
+  let clock = 0;
+  const sourceEvents = [];
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-auto-boundary-regression',
+    sessionId: 'session-auto-boundary-regression',
+    segmentId: 'segment-auto-boundary-regression',
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'zh-Hant',
+    sessionClock: () => (clock += 50),
+    onCueEvent(event) {
+      if (event.stream === 'source') sourceEvents.push(event);
+      cueState = applySubtitleCueEvent(cueState, event);
+    }
+  });
+  const provider = (eventId, serverContent) => session.handleMessage({ eventId, serverContent });
+  const settle = (reason) => {
+    cueState = finalizePendingSubtitleCue(cueState, { sessionTimeMs: clock + 900, reason });
+  };
+
+  provider('first-source-partial', { inputTranscription: { text: '這一句' } });
+  provider('first-source-snapshot', { inputTranscription: { text: '這一句不能消失。' } });
+  provider('first-translation', { outputTranscription: { text: 'This sentence cannot disappear.' } });
+  provider('first-boundary', { turnComplete: true });
+  settle('first-auto-boundary');
+
+  provider('second-source', { inputTranscription: { text: '第二句完整保留。' } });
+  provider('second-boundary', { turnComplete: true });
+  settle('second-auto-boundary');
+  provider('second-translation-late', { outputTranscription: { text: 'Keep the complete second sentence.' } });
+
+  provider('third-source-repeat', { inputTranscription: { text: '第二句完整保留。' } });
+  provider('third-translation', { outputTranscription: { text: 'Keep the repeated sentence too.' } });
+  provider('third-boundary', { turnComplete: true });
+  provider('third-generation-complete', { generationComplete: true });
+  settle('third-auto-boundary');
+
+  provider('fourth-source-before-pause', { inputTranscription: { text: '中途停頓' } });
+  session.localFinalizePendingTranscripts();
+  settle('local-silence');
+  provider('fourth-source-after-pause', { inputTranscription: { text: '中途停頓後繼續說。' } });
+  provider('fourth-translation', { outputTranscription: { text: 'Continue after a pause.' } });
+  provider('fourth-boundary', { turnComplete: true });
+  settle('fourth-auto-boundary');
+
+  provider('fifth-translation-first', { outputTranscription: { text: 'Source can arrive later too.' } });
+  provider('fifth-boundary', { turnComplete: true });
+  settle('fifth-auto-boundary');
+  provider('fifth-source-late', { inputTranscription: { text: '原文也可以延遲抵達。' } });
+
+  const recorderCues = cueListForDisplay(cueState, { includePartial: false });
+  assert.deepEqual(recorderCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]), [
+    ['這一句不能消失。', 'This sentence cannot disappear.'],
+    ['第二句完整保留。', 'Keep the complete second sentence.'],
+    ['第二句完整保留。', 'Keep the repeated sentence too.'],
+    ['中途停頓後繼續說。', 'Continue after a pause.'],
+    ['原文也可以延遲抵達。', 'Source can arrive later too.']
+  ]);
+  assert.equal(new Set(recorderCues.map((cue) => cue.cueId)).size, 5);
+  assert.equal(new Set(sourceEvents.slice(0, 4).map((event) => event.audioTurnId)).size >= 2, true);
+
+  let viewer = mergeMeetingViewerSnapshot(null, { cursor: { eventId: 0, cueSequence: 0 }, cues: [] });
+  recorderCues.forEach((cue, index) => {
+    viewer = applyMeetingCueEvent(viewer, { type: 'cue.append', eventId: index + 1, cue });
+  });
+  assert.deepEqual(
+    viewer.cues.map(({ cueId, sourceText, translatedText }) => ({ cueId, sourceText, translatedText })),
+    recorderCues.map(({ cueId, sourceText, translatedText }) => ({ cueId, sourceText, translatedText }))
+  );
+});
+
+test('local silence terminal replay does not duplicate a finalized tail fragment', () => {
+  let cueState = createSubtitleCueState();
+  let clock = 0;
+  const outputEvents = [];
+  const sessionId = 'session-terminal-replay';
+  const segmentId = 'segment-terminal-replay';
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-terminal-replay',
+    sessionId,
+    segmentId,
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'zh-Hant',
+    sessionClock: () => (clock += 50),
+    onOutputTranscript(transcript) {
+      outputEvents.push(transcript);
+    },
+    onCueEvent(event) {
+      cueState = applySubtitleCueEvent(cueState, event);
+      if (event.localFinalize) {
+        cueState = finalizePendingSubtitleCue(cueState, {
+          sessionTimeMs: clock + 700,
+          reason: event.finalizedReason || 'localSilence'
+        });
+      }
+    }
+  });
+  const provider = (eventId, serverContent) => session.handleMessage({ eventId, serverContent });
+  const settle = (reason) => {
+    cueState = finalizePendingSubtitleCue(cueState, {
+      sessionTimeMs: clock + 700,
+      reason
+    });
+  };
+
+  provider('sentence-source-prefix', { inputTranscription: { text: '這句不能' } });
+  provider('sentence-translation-prefix', { outputTranscription: { text: 'This sentence' } });
+  provider('sentence-source-tail', { inputTranscription: { text: '消失。' } });
+  provider('sentence-translation-tail', { outputTranscription: { text: ' cannot disappear.' } });
+  settle('stable-pair');
+
+  assert.deepEqual(
+    cueState.finalCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]),
+    [['這句不能消失。', 'This sentence cannot disappear.']]
+  );
+
+  // The silence flush replays the last provider fragments as terminal events.
+  // They must revise the existing Cue instead of creating tail-only Cue.
+  session.localFinalizePendingTranscripts();
+  assert.deepEqual(
+    cueState.finalCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]),
+    [['這句不能消失。', 'This sentence cannot disappear.']]
+  );
+
+  provider('same-side-late-output-1', { outputTranscription: { text: 'This sentence cannot disappear.' } });
+  provider('same-side-late-output-2', { outputTranscription: { text: 'This sentence cannot disappear.' } });
+  assert.deepEqual(
+    outputEvents.slice(-2).map(({ isLateTranscript }) => Boolean(isLateTranscript)),
+    [true, true]
+  );
+
+  session.trackSpeechActivity(new Float32Array(160).fill(0.2));
+
+  provider('repeat-source', { inputTranscription: { text: '消失。' } });
+  provider('repeat-translation', { outputTranscription: { text: 'Disappear.' } });
+  settle('repeat-spoken');
+
+  provider('next-source', { inputTranscription: { text: '下一句完整保留。' } });
+  provider('next-translation', { outputTranscription: { text: 'Keep the next sentence complete.' } });
+  provider('next-boundary', { turnComplete: true });
+  settle('next-sentence');
+
+  provider('late-translation', { outputTranscription: { text: 'Late source still belongs here.' } });
+  provider('late-boundary', { turnComplete: true });
+  settle('late-side-boundary');
+  provider('late-source', { inputTranscription: { text: '遲到原文仍屬於這句。' } });
+
+  const recorderCues = cueListForDisplay(cueState, { includePartial: false });
+  assert.deepEqual(
+    recorderCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]),
+    [
+      ['這句不能消失。', 'This sentence cannot disappear.'],
+      ['消失。', 'Disappear.'],
+      ['下一句完整保留。', 'Keep the next sentence complete.'],
+      ['遲到原文仍屬於這句。', 'Late source still belongs here.']
+    ]
+  );
+  assert.equal(new Set(recorderCues.map((cue) => cue.cueId)).size, 4);
+
+  let viewer = mergeMeetingViewerSnapshot(null, {
+    sessionId,
+    segmentId,
+    cursor: { eventId: 0, cueSequence: 0 },
+    cues: []
+  });
+  recorderCues.forEach((cue, index) => {
+    viewer = applyMeetingCueEvent(viewer, {
+      type: 'cue.append',
+      eventId: index + 1,
+      cue
+    });
+  });
+  assert.deepEqual(
+    viewer.cues.map(({ cueId, sourceText, translatedText }) => ({ cueId, sourceText, translatedText })),
+    recorderCues.map(({ cueId, sourceText, translatedText }) => ({ cueId, sourceText, translatedText }))
+  );
 });

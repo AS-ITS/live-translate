@@ -29,12 +29,15 @@ function makeRequest(handler, { method = 'GET', url, headers = {}, body = '' } =
 
 const admin = { id: 'admin-1', role: 'super_admin', status: 'active' };
 
-test('auth event audit records active and blocked profile outcomes', async () => {
+test('auth event audit records active, auto-activated, and disabled outcomes', async () => {
   const entries = [];
   let user = { id: 'active-1', email: 'active@example.com' };
   const handler = createRequestHandler({
     accessControl: { validateRequest: () => user },
-    profileService: { getProfile: async () => ({ ...user, status: user.id === 'active-1' ? 'active' : user.id === 'pending-1' ? 'pending' : 'disabled' }) },
+    profileService: { getProfile: async (_user, options) => ({
+      ...user,
+      status: user.id === 'disabled-1' ? 'disabled' : options?.activatePending ? 'active' : 'pending'
+    }) },
     authEventAuditLogService: { record: async (entry) => entries.push(entry) }
   });
 
@@ -44,9 +47,9 @@ test('auth event audit records active and blocked profile outcomes', async () =>
   assert.equal(entries[0].result, 'success');
 
   user = { id: 'pending-1', email: 'pending@example.com' };
-  const failure = await makeRequest(handler, { method: 'POST', url: '/api/auth-events', headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' }, body: JSON.stringify({ event: 'login' }) });
-  assert.equal(failure.statusCode, 202);
-  assert.equal(entries[1].result, 'failure');
+  const activated = await makeRequest(handler, { method: 'POST', url: '/api/auth-events', headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' }, body: JSON.stringify({ event: 'login' }) });
+  assert.equal(activated.statusCode, 202);
+  assert.equal(entries[1].result, 'success');
 
   user = { id: 'disabled-1', email: 'disabled@example.com' };
   const disabled = await makeRequest(handler, { method: 'POST', url: '/api/auth-events', headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' }, body: JSON.stringify({ event: 'login' }) });

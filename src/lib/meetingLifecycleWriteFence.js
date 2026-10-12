@@ -16,6 +16,9 @@ export function meetingLifecycleWriteHeaders(meetingId, segmentId = null) {
     'x-meeting-session-id': activeFence.sessionId,
     'x-meeting-segment-id': activeFence.segmentId,
     'x-meeting-lease-id': activeFence.leaseId,
-    'x-meeting-fence-token': String(activeFence.fenceToken)
+    'x-meeting-fence-token': String(activeFence.fenceToken),
+    ...(Number.isSafeInteger(activeFence.lifecycleVersion)
+      ? { 'x-meeting-lifecycle-version': String(activeFence.lifecycleVersion) }
+      : {})
   };
 }

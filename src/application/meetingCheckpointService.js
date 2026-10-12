@@ -154,7 +154,12 @@ export function createMeetingCheckpointService({
         : meeting;
       const withLiveSession = segment.withLiveSession(validateRequiredString(liveSessionId, 'liveSessionId'));
       const activeSegment = segment.status === 'created'
-        ? await meetingRepository.updateMeetingSegment(withLiveSession.activate(now))
+        ? await meetingRepository.updateMeetingSegment(withLiveSession.transitionTo('active', {
+          startedAt: now,
+          endedAt: null,
+          errorInfo: null,
+          settingsSnapshot: meetingSettingsSnapshot(activeMeeting)
+        }))
         : await meetingRepository.updateMeetingSegment(withLiveSession);
       return { meeting: activeMeeting, segment: activeSegment };
     },

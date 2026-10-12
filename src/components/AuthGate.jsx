@@ -2,6 +2,8 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from '
 import { AudioLines, Languages, LoaderCircle, Radio, ShieldCheck } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseAuth.js';
 import { clearLiveCredential } from '../lib/liveCredentialHolder.js';
+import { classifyAuthTransition } from '../lib/authState.js';
+import { recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
 
 const AuthContext = createContext({ session: null, profile: null, signOut: async () => {}, switchAccount: async () => {} });
 export function useAuth() { return useContext(AuthContext); }
@@ -13,15 +15,187 @@ function accountEmail(session, profile) { return profile?.email || session?.user
 
 export function AuthGate({ children }) {
   const [session, setSession] = useState(null); const [profile, setProfile] = useState(null); const [authLoading, setAuthLoading] = useState(Boolean(supabase)); const [profileState, setProfileState] = useState('idle'); const [profileErrorCode, setProfileErrorCode] = useState(null);
-  useEffect(() => { if (!supabase) return undefined; let active = true; supabase.auth.getSession().then(({ data }) => { if (active) { if (!data.session) clearLiveCredential(); setSession(data.session); setAuthLoading(false); } }); const { data: subscription } = supabase.auth.onAuthStateChange((event, nextSession) => { if (!nextSession || event === 'SIGNED_OUT') clearLiveCredential(); setSession(nextSession); setAuthLoading(false); if (event === 'SIGNED_IN' && nextSession?.access_token) { void fetch('/api/auth-events', { method: 'POST', headers: { Authorization: `Bearer ${nextSession.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ event: 'login' }) }).catch(() => {}); } }); return () => { active = false; subscription.subscription.unsubscribe(); }; }, []);
-  useEffect(() => { if (!session?.access_token) { clearLiveCredential(); setProfile(null); setProfileState('idle'); setProfileErrorCode(null); return undefined; } const controller = new AbortController(); let active = true; setProfile(null); setProfileState('loading'); setProfileErrorCode(null); fetch('/api/profile', { headers: { Authorization: `Bearer ${session.access_token}` }, signal: controller.signal }).then(async (response) => { const body = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error('Profile request failed'); error.code = errorCode(body); error.status = response.status; throw error; } return body; }).then((body) => { if (active) { setProfile(body?.profile || null); setProfileState('ready'); } }).catch((error) => { if (!active || error.name === 'AbortError') return; if (error.code === 'auth_required' || error.code === 'auth_invalid') clearLiveCredential(); setProfileErrorCode(error.code || null); setProfileState(error.status === 403 && error.code === 'auth_forbidden' ? 'forbidden' : 'error'); }); return () => { active = false; controller.abort(); }; }, [session?.access_token]);
+  useEffect(() => {
+    if (!supabase) return undefined;
+
+    let active = true;
+    let currentSession = null;
+    let validatedUserId = null;
+    let profileRequestGeneration = 0;
+    let profileController = null;
+
+    const traceAuth = (stage, details = {}) => recordLivePipelineTrace({
+      stage,
+      authEvent: details.authEvent,
+      reason: details.reason,
+      httpStatus: details.httpStatus,
+      errorCode: details.errorCode
+    });
+
+    const invalidateProfileRequest = () => {
+      profileRequestGeneration += 1;
+      profileController?.abort();
+      profileController = null;
+    };
+
+    const expireAuthentication = (code, status) => {
+      invalidateProfileRequest();
+      validatedUserId = null;
+      currentSession = null;
+      clearLiveCredential();
+      setSession(null);
+      setProfile(null);
+      setProfileState('idle');
+      setProfileErrorCode(code || null);
+      traceAuth('AUTH_PROFILE_CHECK_FAILED', {
+        authEvent: 'SIGNED_OUT',
+        reason: 'auth_invalid',
+        httpStatus: status,
+        errorCode: code
+      });
+      void supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+    };
+
+    const validateProfile = async (nextSession, { blocking, authEvent }) => {
+      const generation = profileRequestGeneration + 1;
+      invalidateProfileRequest();
+      profileRequestGeneration = generation;
+      const controller = new AbortController();
+      profileController = controller;
+
+      if (blocking) {
+        setProfile(null);
+        setProfileState('loading');
+      }
+      setProfileErrorCode(null);
+      traceAuth('AUTH_PROFILE_CHECK_STARTED', {
+        authEvent,
+        reason: blocking ? 'blocking_identity_validation' : 'background_same_user_revalidation'
+      });
+
+      try {
+        const response = await fetch('/api/profile', {
+          headers: { Authorization: `Bearer ${nextSession.access_token}` },
+          signal: controller.signal
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const error = new Error('Profile request failed');
+          error.code = errorCode(body);
+          error.status = response.status;
+          throw error;
+        }
+        if (!active || generation !== profileRequestGeneration) {
+          traceAuth('AUTH_PROFILE_CHECK_STALE', { authEvent, reason: 'newer_auth_state' });
+          return;
+        }
+        const nextProfile = body?.profile || null;
+        validatedUserId = nextSession.user.id;
+        setProfile(nextProfile);
+        setProfileState('ready');
+        setProfileErrorCode(null);
+        traceAuth('AUTH_PROFILE_CHECK_SUCCEEDED', {
+          authEvent,
+          reason: nextProfile?.status || 'profile_missing'
+        });
+      } catch (error) {
+        if (!active || generation !== profileRequestGeneration || error.name === 'AbortError') return;
+        const code = error.code || null;
+        if (code === 'auth_required' || code === 'auth_invalid') {
+          expireAuthentication(code, error.status);
+          return;
+        }
+        if (error.status === 403 && code === 'auth_forbidden') {
+          validatedUserId = null;
+          setProfile(null);
+          setProfileErrorCode(code);
+          setProfileState('forbidden');
+          traceAuth('AUTH_PROFILE_CHECK_FAILED', {
+            authEvent,
+            reason: 'profile_forbidden',
+            httpStatus: error.status,
+            errorCode: code
+          });
+          return;
+        }
+        traceAuth('AUTH_PROFILE_CHECK_FAILED', {
+          authEvent,
+          reason: blocking ? 'blocking_profile_failure' : 'background_profile_failure',
+          httpStatus: error.status,
+          errorCode: code
+        });
+        if (!blocking && validatedUserId === nextSession.user.id) return;
+        validatedUserId = null;
+        setProfileErrorCode(code);
+        setProfileState('error');
+      }
+    };
+
+    const applyAuthState = (event, nextSession) => {
+      const transition = classifyAuthTransition({
+        event,
+        currentSession,
+        nextSession,
+        validatedUserId
+      });
+      traceAuth('AUTH_STATE_CHANGED', {
+        authEvent: event,
+        reason: transition.kind
+      });
+      currentSession = nextSession;
+      setSession(nextSession);
+      setAuthLoading(false);
+
+      if (transition.kind === 'signed-out') {
+        invalidateProfileRequest();
+        validatedUserId = null;
+        clearLiveCredential();
+        setProfile(null);
+        setProfileState('idle');
+        setProfileErrorCode(null);
+        return;
+      }
+
+      void validateProfile(nextSession, {
+        blocking: transition.blockingProfileCheck,
+        authEvent: event
+      });
+
+      if (event === 'SIGNED_IN' && nextSession?.access_token) {
+        void fetch('/api/auth-events', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${nextSession.access_token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ event: 'login' })
+        }).catch(() => {});
+      }
+    };
+
+    void supabase.auth.getSession().then(({ data }) => {
+      if (active) applyAuthState('INITIAL_SESSION', data.session);
+    });
+    const { data: subscription } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (active) applyAuthState(event, nextSession);
+    });
+    const handleE2EAuthState = (event) => {
+      if (import.meta.env?.DEV && window.__liveTranslateE2EAuthEvents === true) {
+        applyAuthState(event.detail?.event, event.detail?.session || null);
+      }
+    };
+    window.addEventListener('live-translate:e2e-auth-state', handleE2EAuthState);
+    return () => {
+      active = false;
+      invalidateProfileRequest();
+      subscription.subscription.unsubscribe();
+      window.removeEventListener('live-translate:e2e-auth-state', handleE2EAuthState);
+    };
+  }, []);
   const startGoogleSignIn = async ({ selectAccount = false } = {}) => { if (selectAccount) { clearLiveCredential(); try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* account switching can continue */ } } return supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin, ...(selectAccount ? { queryParams: { prompt: 'select_account' } } : {}) } }); };
   const signOut = async () => { clearLiveCredential(); return supabase?.auth.signOut(); };
   const value = useMemo(() => ({ session, profile, signOut, switchAccount: () => startGoogleSignIn({ selectAccount: true }) }), [session, profile]);
   if (!isSupabaseConfigured()) return <AuthShell><AuthBrand /><div className="auth-form-content"><p className="auth-eyebrow">WORKSPACE ACCESS</p><h1 id="auth-title">登入服務尚未設定</h1><p className="auth-description">請設定 Supabase 登入後重新載入頁面。</p></div></AuthShell>;
   if (authLoading || (session && profileState === 'loading')) return <AuthShell><AuthBrand /><div className="auth-loading" role="status" aria-live="polite"><LoaderCircle className="auth-loading-icon" size={22} aria-hidden="true" /><p>正在檢查登入狀態…</p></div></AuthShell>;
-  if (!session) return <AuthShell><AuthBrand /><div className="auth-form-content"><p className="auth-eyebrow">WORKSPACE ACCESS</p><h1 id="auth-title">歡迎回來</h1><p className="auth-description">使用公司 Google Workspace 帳號登入，開始管理會議與即時字幕。</p><button className="button auth-google-button" type="button" onClick={() => startGoogleSignIn()}><img src="/google-g.svg" alt="" aria-hidden="true" /><span>使用 Google 登入</span></button><p className="auth-security-note"><ShieldCheck size={16} aria-hidden="true" /> 僅開放已授權的 Workspace 網域</p></div></AuthShell>;
-  if (profileState === 'ready' && profile?.status === 'pending') return <AuthShell><AuthBrand /><div className="auth-form-content auth-access-denied"><p className="auth-eyebrow">WORKSPACE ACCESS</p><h1 id="auth-title">等待管理員核准</h1><p className="auth-account-email" data-testid="auth-account-email">{accountEmail(session, profile)}</p><p className="auth-description">你的 Google Workspace 帳號符合登入網域，目前正在等待 super_admin 核准。核准後即可使用會議與即時字幕功能。</p><button className="button auth-google-button" type="button" onClick={() => value.switchAccount()}><img src="/google-g.svg" alt="" aria-hidden="true" /><span>切換 Google 帳號</span></button><button className="button auth-secondary-button" type="button" onClick={() => value.signOut()}>登出</button></div></AuthShell>;
+  if (!session) return <AuthShell><AuthBrand /><div className="auth-form-content"><p className="auth-eyebrow">WORKSPACE ACCESS</p><h1 id="auth-title">歡迎回來</h1><p className="auth-description">使用公司 Google Workspace 帳號登入。符合授權網域即可直接使用會議與即時字幕。</p><button className="button auth-google-button" type="button" onClick={() => startGoogleSignIn()}><img src="/google-g.svg" alt="" aria-hidden="true" /><span>使用 Google 登入</span></button><p className="auth-security-note"><ShieldCheck size={16} aria-hidden="true" /> 僅開放已授權的 Workspace 網域</p></div></AuthShell>;
+  if (profileState === 'ready' && profile?.status !== 'active') return <AuthShell><AuthBrand /><div className="auth-form-content auth-access-denied"><p className="auth-eyebrow">WORKSPACE ACCESS</p><h1 id="auth-title">暫時無法啟用帳號</h1><p className="auth-account-email" data-testid="auth-account-email">{accountEmail(session, profile)}</p><p className="auth-description">後端尚未完成帳號啟用，請重新載入；若問題持續發生，請聯絡管理員。</p><button className="button auth-secondary-button" type="button" onClick={() => window.location.reload()}>重新載入</button><button className="button auth-secondary-button" type="button" onClick={() => value.signOut()}>登出</button></div></AuthShell>;
   if (profileState === 'forbidden') return <AuthShell><AuthBrand /><div className="auth-form-content auth-access-denied"><p className="auth-eyebrow">WORKSPACE ACCESS</p><h1 id="auth-title">此帳號無法使用此 Workspace</h1><p className="auth-account-email" data-testid="auth-account-email">{accountEmail(session, profile)}</p><p className="auth-description">僅允許指定的 Google Workspace 網域。請切換至已授權的帳號。</p><button className="button auth-google-button" type="button" onClick={() => value.switchAccount()}><img src="/google-g.svg" alt="" aria-hidden="true" /><span>切換 Google 帳號</span></button><button className="button auth-secondary-button" type="button" onClick={() => value.signOut()}>登出</button>{profileErrorCode && <p className="auth-error-code">錯誤代碼：{profileErrorCode}</p>}</div></AuthShell>;
   if (profileState === 'error') { const expired = profileErrorCode === 'auth_required' || profileErrorCode === 'auth_invalid'; return <AuthShell><AuthBrand /><div className="auth-form-content"><p className="auth-eyebrow">WORKSPACE ACCESS</p><h1 id="auth-title">{expired ? '登入狀態已失效' : '暫時無法驗證帳號'}</h1><p className="auth-description">{expired ? '請重新登入以繼續使用 Workspace。' : '目前無法確認你的 Workspace 權限，請稍後再試。'}</p>{expired ? <button className="button auth-google-button" type="button" onClick={() => value.signOut()}>重新登入</button> : <button className="button auth-secondary-button" type="button" onClick={() => window.location.reload()}>重新載入</button>}</div></AuthShell>; }
   if (profileState !== 'ready') return null;

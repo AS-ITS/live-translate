@@ -29,10 +29,12 @@ export function createSupabaseMeetingCueService({ env = process.env, fetchImpl =
         session_id: sessionId,
         segment_id: segmentId,
         sequence: cue.sequence,
-        source_text: cue.sourceText,
+        source_text: cue.sourceText || null,
         translated_text: cue.translatedText || null,
-        source_version: cue.sourceVersion || 1,
-        translation_version: cue.translationVersion || 0,
+        source_status: cue.sourceStatus || (cue.sourceText ? 'finalized' : 'pending'),
+        translation_status: cue.translationStatus || (cue.translatedText ? 'finalized' : 'pending'),
+        source_version: Number.isInteger(cue.sourceVersion) ? cue.sourceVersion : (cue.sourceText ? 1 : 0),
+        translation_version: Number.isInteger(cue.translationVersion) ? cue.translationVersion : (cue.translatedText ? 1 : 0),
         started_at: cue.startTimeMs,
         ended_at: cue.endTimeMs
       };

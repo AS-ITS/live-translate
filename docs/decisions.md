@@ -28,8 +28,10 @@ Status: Accepted
 
 Context:
 
-The app needs a trusted server-side component to hold `GEMINI_API_KEY` and issue
-short-lived Gemini ephemeral tokens.
+The app needs a trusted server-side component to validate recorder requests and
+issue short-lived Gemini ephemeral tokens. Live requests provide the Gemini
+key in request-scoped memory; isolated non-Live workers may use a server
+`GEMINI_API_KEY`.
 
 Decision:
 
@@ -80,7 +82,9 @@ Use Gemini ephemeral tokens issued by the backend.
 
 Consequences:
 
-- `GEMINI_API_KEY` remains server-side.
+- Live token issuance does not read `GEMINI_API_KEY`; it uses only the
+  recorder's request-scoped key. Non-Live workers keep any environment key
+  isolated to their own provider composition.
 - Browser sessions receive only short-lived scoped credentials.
 - The backend must validate token configuration before issuing a token.
 - Token creation failures must be surfaced as recoverable frontend errors.
@@ -105,4 +109,3 @@ Consequences:
 - Persistent transcript history remains out of scope for v1.
 - Audio format conversion and playback are first-class frontend concerns.
 - The smoke test must verify both translated audio and transcript updates.
-

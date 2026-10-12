@@ -1,6 +1,48 @@
 # Architecture Overview
 
+## Phase 0 contract delta, 2026-10-01
+
+The browser is the only owner of page storage. It writes immutable audio
+chunks to page OPFS, then explicitly sends each chunk to the local service;
+the local service must never read page OPFS directly or use browser storage
+APIs. The direct browser-to-Gemini path remains separate.
+
+The browser maintains four durable pending queues in IndexedDB: Cue,
+checkpoint, operation, and audio. Audio bytes remain in OPFS; its queue stores
+the object reference, immutable sequence, range, checksum, and retry state.
+Every queue record has an idempotency key, dependency, payload hash, and
+version. ACK is valid only after durable commit of the matching key/version.
+Lost ACKs are resent with the same key; duplicates return the original result.
+Stale fence, version, or hash is a structured conflict, never a silent
+overwrite.
+
+Recovery order is fixed: validate queues and checksums, replay lifecycle
+operations, replay dependent checkpoints and Cues in sequence/version order,
+then replay audio chunks in immutable chunk order. Queues ACK independently,
+so audio does not block Cue/checkpoint delivery and those failures do not
+discard captured audio. Local Supabase on the recording device is the only
+recording lifecycle owner. Cloud Supabase stores only accounts, permissions,
+meeting settings, dictionaries, and device/meeting entry data; it is not the
+recording-data owner. Browser queues provide delivery and recovery only.
+
+Viewer sharing is read-only and separate from host export permission. Stopping
+a Meeting immediately revokes Viewer and Recorder shares; the host retains
+completed audio download and TXT/SRT/VTT export for 30 minutes only. Origin
+and CORS approval is allowlist-only for approved Preview and Production
+origins, with no wildcard or arbitrary localhost approval.
+
+Phase 1 real-device acceptance remains pending: Mac and Windows microphones,
+reload/crash queue recovery, OPFS quota/offline resend, audio loss/recovery,
+and approved Preview/Production Origin/CORS checks.
+
 ## Meeting lifecycle v2
+
+Current expiry policy: `purge_at` is an immutable visibility deadline, not an
+automatic deletion trigger. Ordinary users and Viewer shares lose access at the
+deadline; active `super_admin` users retain a derived pending-delete metadata
+view and may invoke the canonical manual deletion flow. No GET-triggered worker
+or Cron physically deletes expired Meeting content. This supersedes older
+automatic-cleanup wording retained later in this historical overview.
 
 Supabase is the lifecycle source of truth for new Meetings. A single database
 transaction owns each start, pause, resume, rollover, recover, takeover, and
@@ -15,20 +57,21 @@ Function invocation.
   optimistic `lifecycle_version` for competing commands.
 - Recorder liveness is renewed every 3 seconds; Meeting liveness is persisted
   at most once per 30 seconds and retains the 15-minute lost-recorder policy.
-- The CRON worker calls `expire_stale_meetings` in bounded batches. A v2
-  Meeting with no persisted heartbeat for 15 minutes ends atomically: its active
-  Segment becomes `interrupted`, its open Session stops, Viewer shares and the
-  recorder lease are revoked, and retention is scheduled for 30 minutes later.
-- Terminal v2 Meetings reject new lifecycle, Segment, share, and Cue writes.
-  `retention_policy_version` and the purge claim fields provide a
-  `FOR UPDATE SKIP LOCKED` handoff to the bounded CRON purge worker. The
-  worker deletes private audio/export Storage objects before deleting the
-  Meeting row; database cascades remove dependent transcript, Session,
-  Segment, share, and artifact metadata. Failed claims remain retryable.
-- The read model exposes `purge_at` as `purgeAt` for owner UI deadline
-  guidance. Expired v2 content uses stable `410 meeting_content_expired` before
-  physical deletion. Purge counters and latency use low-cardinality
-  `retention` observability labels; metric failures never affect cleanup.
+- Lost-recorder handling may interrupt a stale active Meeting, but does not
+  start the 30-minute countdown. Only successful completion freezes one
+  database-generated `ended_at` and `purge_at` per recording. The stable
+  `meeting_recordings.id` groups every related Session/rollover Segment;
+  provider Session IDs are not recording IDs.
+- A protected deletion tombstone and restrictive table/Storage policies reject
+  late writes and direct reads after deletion or expiration. Meeting settings,
+membership, glossary, and audit history remain until manual deletion.
+Before expiry, manual deletion remains owner/super-admin-authorized; after
+expiry, only an active super-admin may delete. Cleanup may require several
+bounded Storage batches before the Meeting row is removed.
+- Expiry does not schedule a cleanup worker or Cron job. Legacy cleanup claim
+  RPCs are service-role-only no-ops retained for deployment compatibility.
+  Storage deletion uses the Storage API; DB cleanup remains phased and retryable.
+  Local OPFS/IndexedDB cleanup uses persisted deadlines and browser locks.
 - v2 repository writes leave legacy `sessions.segment_id`,
   `meeting_segments.live_session_id`, and `sessions.transcript_items` empty or
   null while retaining read compatibility for v1 rows.
@@ -38,8 +81,14 @@ Function invocation.
 - An audio upload may begin only with the active recorder fence. An artifact
   that already began may complete or fail after the Meeting stops, but not at or
   after its `purge_at` deadline.
-- Provider reconnect stays inside the current Segment. User pause/resume,
-  rollover, and browser-crash recovery create Segment boundaries.
+- Provider reconnect stays inside the current Segment and retains its provider
+  glossary revision. User pause/resume, rollover, and browser-crash recovery
+  create Segment boundaries. Resume confirms the authoritative Segment before
+  token issuance. Token and Gemini instruction use the Segment-immutable
+  provider glossary snapshot. Local deterministic correction has an independent
+  SHA-256 revision that hot reloads after a successful glossary save and binds
+  each Turn/Cue on first accepted event; refresh failure preserves the last
+  confirmed snapshot and never blocks a legal recording resume.
 
 Meetings already active on lifecycle v1 remain on the legacy flow until they
 stop. Legacy relationship columns remain readable during that compatibility
@@ -87,8 +136,10 @@ Relevant background docs:
 
 Supabase Google OAuth uses PKCE in the browser. The backend validates the
 Supabase access JWT before private dispatch, including issuer, audience,
-expiry, authenticated role, and `AUTH_ALLOWED_EMAIL_DOMAINS`. Profile data is
-served by `GET /api/profile`; the service-role key is server-only. P1
+expiry, authenticated role, and `AUTH_ALLOWED_EMAIL_DOMAINS`. Matching pending
+profiles are conditionally activated by a service-role-only RPC before private
+dispatch; disabled profiles are never auto-activated. Profile data is served by
+`GET /api/profile`; the service-role key is server-only. P1
 Supabase migrations apply owner-scoped composite foreign keys and RLS to all
 private tables, and the production composition now wires owner-scoped
 Supabase adapters for the supported cloud capabilities. If the required
@@ -105,7 +156,7 @@ flowchart LR
 
   User -->|uses| Frontend
   Frontend -->|POST /api/live-token| Backend
-  Backend -->|uses GEMINI_API_KEY| Gemini
+Backend -->|uses recorder request key| Gemini
   Frontend -->|ephemeral token + direct Live connection| Gemini
 ```
 
@@ -177,7 +228,8 @@ compatibility mapping.
 
 The Meeting Live recorder uses the direct translation path backed by
 `LiveTranslateSession` and `gemini-3.5-live-translate-preview`. Gemini returns
-paired source and translated transcript events for the same live Cue, while
+source and translation events for the same live Cue. Either side may finalize
+and publish independently; a delayed counterpart updates the same `cueId`, while
 the existing Session/Meeting checkpoint, rollover, interrupted recovery, and
 Viewer ordering remain shared with the recording path. The source-only
 `LiveTranscriptionSession` remains available for a future asynchronous
@@ -666,7 +718,8 @@ identifiers.
 
 ## 5. Authentication and Token Flow
 
-- `GEMINI_API_KEY` exists only on the backend.
+- Live token issuance uses only the authenticated recorder's request-scoped
+  key. `GEMINI_API_KEY`, when configured, is isolated to non-Live workers.
 - The browser receives only a short-lived ephemeral token.
 - `POST /api/live-token` keeps its access gate, origin validation, rate limit,
   and structured error handling.

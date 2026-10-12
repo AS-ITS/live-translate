@@ -160,6 +160,33 @@ state, cleanup reason, and connection epoch. User-visible errors identify the
 failed stage instead of treating token, socket, AudioContext, and PCM failures
 as microphone permission failures.
 
+Legacy meeting resume reads the server's latest active or created segment before
+starting or recovering; a stale local draft cannot select an interrupted
+predecessor. A recover conflict is retried at most once, and only if the server
+has advanced to another open segment. An unchanged conflict stops automatic
+retry, preserves the local resume draft and recording data, and reports the
+actual operation, status, error code, and request ID when available. Reconnect
+binds the new Live session and cue identity to the recovered segment before
+callbacks run; stop/end cancellation cannot start that replacement session.
+
+## Bounded Segment Rollover Recovery
+
+Supabase Auth refresh is independent from Recorder and Gemini lifecycle. A
+`TOKEN_REFRESHED` event, or a duplicate `SIGNED_IN` event for the same
+`user.id`, updates the current session and revalidates the account profile in
+the background without replacing the mounted Live recorder. Initial sign-in,
+account changes, disabled/forbidden profiles, `auth_invalid`, and `SIGNED_OUT`
+remain blocking authorization boundaries. Profile checks use a request
+generation guard so an older response cannot overwrite a newer Auth state.
+
+Segment rollover uses one logical operation with a stable `operationId` and immutable request payload. Network errors, HTTP timeout, 408, 425, 429, and 5xx are bounded-retry candidates. Before every retry, the client reads the authoritative Segment timeline. A timeout is an unknown outcome, never proof that the mutation failed. If the next active Segment already exists, the client replays the same idempotent lifecycle operation only to recover the stored response and current lease. HTTP 403 is not retried; HTTP 409 is reconciled before any decision.
+
+The recorder keeps capturing during provider transition. New PCM is held in a bounded memory queue while the old provider is drained using `turnComplete`/`generationComplete`, `audioTurnId`, provider epoch, a short event-quiet condition, and a hard upper bound. Accepted callbacks remain enabled and retain their original Segment/provider ownership. On a pre-commit failure, queued PCM resumes against the confirmed old provider. After a committed mutation, PCM is never replayed to the old Segment.
+
+OPFS remains the durable source for original MediaRecorder audio. It is not used to replay historical PCM to Gemini: the current provider protocol has no client idempotency key or acknowledged PCM watermark, so replay could duplicate transcript text or reorder turns across provider epochs. If the bounded PCM queue overflows, original audio remains available but transcript completeness is explicitly marked degraded. Existing IndexedDB, OPFS, Session, Cue, and recording records are retained without migration or deletion.
+
+Rollover, checkpoint, Cue persistence, and provider transition do not own the WebRTC DataChannel lifecycle. A healthy Viewer channel must remain open through Supabase or lifecycle failures.
+
 ## UI State Mapping
 
 | State | Start Button | Stop Button | Device Selector | Export Controls | Status Message | Error Display |

@@ -11,7 +11,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'env NODE_ENV=test E2E_TEST_MODE=true SUPABASE_URL= SUPABASE_SECRET_KEY= SUPABASE_JWKS_URL= AUTH_ALLOWED_EMAIL_DOMAINS= dev_frontend_origin=http://127.0.0.1:5174 GEMINI_API_KEY=test SESSION_RECORDS_FILE=/private/tmp/live-translate-e2e-session-records.json npm run server',
+      command: 'env NODE_ENV=test E2E_TEST_MODE=true SUPABASE_URL= SUPABASE_SECRET_KEY= SUPABASE_JWKS_URL= AUTH_ALLOWED_EMAIL_DOMAINS= LIVE_PIPELINE_TRACE_ENABLED=true dev_frontend_origin=http://127.0.0.1:5174 GEMINI_API_KEY=test SESSION_RECORDS_FILE=/private/tmp/live-translate-e2e-session-records.json npm run server',
       url: 'http://127.0.0.1:3000/healthz',
       reuseExistingServer: false,
       timeout: 30_000
@@ -27,6 +27,10 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] }
+    },
+    {
+      name: 'mobile-webkit',
+      use: { ...devices['iPhone 13'] }
     }
   ]
 });

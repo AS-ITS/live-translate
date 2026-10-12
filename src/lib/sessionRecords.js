@@ -26,6 +26,7 @@ export function createSessionRecord(input = {}, options = {}) {
     ...(Object.hasOwn(input, 'echoTargetLanguage') ? { echoTargetLanguage: input.echoTargetLanguage !== false } : {}),
     ...(Object.hasOwn(input, 'shouldRecordInputAudio') ? { shouldRecordInputAudio: input.shouldRecordInputAudio === true } : {}),
     meetingId: input.meetingId || null,
+    recordingId: input.recordingId || null,
     segmentId: input.segmentId || null,
     ...(Object.hasOwn(input, 'meetingGlossaryEntries')
       ? { meetingGlossaryEntries: Array.isArray(input.meetingGlossaryEntries) ? input.meetingGlossaryEntries.map(clonePlain) : [] }

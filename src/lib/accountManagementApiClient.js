@@ -13,11 +13,15 @@ export function createAccountManagementApiClient({ fetchImpl = globalThis.fetch,
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), query, status });
       return call(`/api/admin/users?${params.toString()}`);
     },
-    approve: async (userId) => (await call(`/api/admin/users/${encodeURIComponent(userId)}/approve`, { method: 'POST' })).user,
     listAuditLogs: async ({ page = 1, pageSize = 25, query = '', action = 'all', result = 'all' } = {}) => {
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), query, action, result });
       return call(`/api/admin/audit-logs?${params.toString()}`);
     },
+    updateRole: async (userId, role) => call(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role })
+    }),
     enable: async (userId) => (await call(`/api/admin/users/${encodeURIComponent(userId)}/enable`, { method: 'POST' })).user,
     disable: async (userId, transferToUserId) => (await call(`/api/admin/users/${encodeURIComponent(userId)}/disable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transferToUserId }) })).user
   });

@@ -64,10 +64,11 @@ test('meeting settings steps navigate to each settings card', async ({ page }) =
 
   await stepButtons.nth(3).click();
   await expect(page.locator('#meeting-dictionary-settings-title')).toBeInViewport();
+  await expect(page.getByText('錄製開始後儲存的變更會從下一個段落生效')).toBeVisible();
   await expect(stepButtons.nth(3)).toHaveAttribute('aria-current', 'step');
 });
 
-test('keeps the microphone-only audio controls in a compact 20px control row', async ({ page }) => {
+test('keeps the microphone-only audio controls in a compact control row', async ({ page }) => {
   await page.addInitScript(() => {
     if (globalThis.AudioContext?.prototype) {
       Object.defineProperty(globalThis.AudioContext.prototype, 'setSinkId', { configurable: true, value: undefined });
@@ -87,7 +88,7 @@ test('keeps the microphone-only audio controls in a compact 20px control row', a
   const desktopGaps = await page.evaluate(() => {
     const grid = document.querySelector('.meeting-audio-device-grid');
     const select = document.querySelector('.meeting-audio-device-grid select');
-    const button = document.querySelector('.meeting-audio-controls > .button');
+    const button = document.querySelector('.meeting-audio-confirm-action > .button');
     const statusNode = document.querySelector('.meeting-audio-status');
     const selectRect = select.getBoundingClientRect();
     const buttonRect = button.getBoundingClientRect();
@@ -99,8 +100,8 @@ test('keeps the microphone-only audio controls in a compact 20px control row', a
       statusCenterOffset: Math.abs((statusRect.top + statusRect.bottom) / 2 - (selectRect.top + selectRect.bottom) / 2)
     };
   });
-  expect(desktopGaps.gridToButton).toBe(20);
-  expect(desktopGaps.buttonToStatus).toBe(20);
+  expect(desktopGaps.gridToButton).toBe(12);
+  expect(desktopGaps.buttonToStatus).toBe(12);
   expect(desktopGaps.buttonCenterOffset).toBeLessThanOrEqual(1);
   expect(desktopGaps.statusCenterOffset).toBeLessThanOrEqual(1);
 
@@ -109,10 +110,77 @@ test('keeps the microphone-only audio controls in a compact 20px control row', a
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await expect.poll(() => page.evaluate(() => {
     const controls = document.querySelector('.meeting-audio-controls').getBoundingClientRect();
-    const button = document.querySelector('.meeting-audio-controls > .button').getBoundingClientRect();
+    const button = document.querySelector('.meeting-audio-confirm-action > .button').getBoundingClientRect();
     return Math.abs(button.width - controls.width) <= 1;
   })).toBe(true);
   await expect(status).toBeVisible();
+});
+
+test('keeps mobile audio and glossary import controls compact without overflow', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (globalThis.AudioContext?.prototype) {
+      Object.defineProperty(globalThis.AudioContext.prototype, 'setSinkId', { configurable: true, value: undefined });
+    }
+  });
+  await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
+  await page.goto('/#meeting-settings?mode=create');
+
+  for (const width of [1280, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const layout = await page.evaluate(() => {
+      const controls = document.querySelector('.meeting-audio-controls');
+      const importButton = document.querySelector('.meeting-dictionary-section-heading .glossary-import-button');
+      return {
+        flexDirection: getComputedStyle(controls).flexDirection,
+        importHeight: importButton.getBoundingClientRect().height,
+        importWhiteSpace: getComputedStyle(importButton).whiteSpace,
+        hasHorizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      };
+    });
+    expect(layout.flexDirection).toBe('row');
+    expect(layout.importHeight).toBeGreaterThanOrEqual(44);
+    expect(layout.importWhiteSpace).toBe('nowrap');
+    expect(layout.hasHorizontalOverflow).toBe(false);
+  }
+
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 900 });
+    const layout = await page.evaluate(() => {
+      const grid = document.querySelector('.meeting-audio-device-grid');
+      const select = grid.querySelector('select');
+      const confirmButton = document.querySelector('.meeting-audio-confirm-action > .button');
+      const status = document.querySelector('.meeting-audio-status');
+      const importButton = document.querySelector('.meeting-dictionary-section-heading .glossary-import-button');
+      const gridRect = grid.getBoundingClientRect();
+      const selectRect = select.getBoundingClientRect();
+      const buttonRect = confirmButton.getBoundingClientRect();
+      const statusRect = status.getBoundingClientRect();
+      return {
+        viewportWidth: window.innerWidth,
+        controlGap: getComputedStyle(document.querySelector('.meeting-audio-controls')).gap,
+        flexDirection: getComputedStyle(document.querySelector('.meeting-audio-controls')).flexDirection,
+        gridTrailingSpace: gridRect.bottom - selectRect.bottom,
+        gridToButtonGap: buttonRect.top - gridRect.bottom,
+        buttonToStatusGap: statusRect.top - buttonRect.bottom,
+        importHeight: importButton.getBoundingClientRect().height,
+        importWhiteSpace: getComputedStyle(importButton).whiteSpace,
+        importTextFits: importButton.scrollWidth <= importButton.clientWidth,
+        hasHorizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      };
+    });
+    expect(layout.viewportWidth).toBe(width);
+    expect(layout.controlGap).toBe('12px');
+    expect(layout.flexDirection).toBe('column');
+    expect(layout.gridTrailingSpace).toBeLessThanOrEqual(1);
+    expect(layout.gridToButtonGap).toBeGreaterThanOrEqual(12);
+    expect(layout.gridToButtonGap).toBeLessThanOrEqual(16);
+    expect(layout.buttonToStatusGap).toBeGreaterThanOrEqual(12);
+    expect(layout.buttonToStatusGap).toBeLessThanOrEqual(16);
+    expect(layout.importHeight).toBeGreaterThanOrEqual(44);
+    expect(layout.importWhiteSpace).toBe('nowrap');
+    expect(layout.importTextFits).toBe(true);
+    expect(layout.hasHorizontalOverflow).toBe(false);
+  }
 });
 
 test('keeps both audio device selectors in a two-column layout when output selection is supported', async ({ page }) => {
@@ -252,6 +320,9 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
       }
     });
   });
+  await page.route('**/api/meetings/meeting-1/members', async (route) => route.fulfill({
+    json: { members: [{ userId: 'member-1', email: 'member@example.com', canRecord: true }] }
+  }));
 
   await page.goto('/#meeting-settings?mode=create');
 
@@ -280,13 +351,12 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
     'meeting-audio-settings-title',
     'meeting-dictionary-settings-title',
     'meeting-share-results-title',
-    'meeting-members-title',
-    'meeting-recording-permissions-title'
+    'meeting-members-title'
   ]);
-  await expect(page.locator('.meeting-share-results .eyebrow')).toHaveText('STEP 5');
+  await expect(page.locator('.meeting-share-results .eyebrow')).toHaveText('步驟 5');
   await expect(page.locator('.meeting-share-results .meeting-settings-card-number')).toHaveText('5');
   const memberCard = page.locator('.meeting-settings-card').filter({ has: page.locator('#meeting-members-title') });
-  await expect(memberCard.locator('.eyebrow')).toHaveText('STEP 6 · ACCESS');
+  await expect(memberCard.locator('.eyebrow')).toHaveText('步驟 6');
   await expect(memberCard.locator('.meeting-settings-card-number')).toHaveText('6');
   const memberInvite = memberCard.locator('.meeting-member-invite');
   await expect(memberInvite.locator('input')).toHaveCSS('height', '56px');
@@ -311,6 +381,9 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   expect(desktopShareLayout.previewRight).toBeLessThanOrEqual(desktopShareLayout.detailsLeft);
   expect(desktopShareLayout.columns).toBe(2);
   await expect(page.locator('.share-result-details .share-url')).toBeVisible();
+  const shareLink = page.locator('.share-result-details .share-url a');
+  await expect(shareLink).toHaveAttribute('target', '_blank');
+  await expect(shareLink).toHaveAttribute('rel', 'noopener noreferrer');
   await expect(page.locator('.share-result-details .detail-button')).toBeVisible();
   await expect.poll(() => page.evaluate(() => {
     const submitButton = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('儲存變更'));
@@ -329,8 +402,13 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(page.locator('.meeting-share-results')).toBeInViewport();
   await page.getByRole('button', { name: '成員與錄製權限' }).click();
   await expect(page.locator('#meeting-members-title')).toBeInViewport();
-  await page.locator('#meeting-recording-permissions-title').scrollIntoViewIfNeeded();
-  await expect(page.locator('#meeting-recording-permissions-title')).toBeInViewport();
+  await memberInvite.locator('input').fill('member@example.com');
+  await memberInvite.getByRole('button', { name: '邀請成員' }).click();
+  await expect(memberCard.locator('.meeting-member-row')).toHaveCount(1);
+  await expect(memberCard.getByText('member@example.com', { exact: true })).toHaveCount(1);
+  await expect(memberCard.getByLabel('允許 member@example.com 錄製')).toBeChecked();
+  await expect(memberCard.getByRole('button', { name: '移除' })).toBeVisible();
+  await expect(page.locator('#meeting-recording-permissions-title')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '成員與錄製權限' })).toHaveAttribute('aria-current', 'step');
   await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' }));
   await expect.poll(() => page.evaluate(() => Math.ceil(window.scrollY + window.innerHeight) >= document.documentElement.scrollHeight)).toBe(true);
@@ -338,6 +416,13 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await page.setViewportSize({ width: 600, height: 800 });
   await expect.poll(() => page.locator('.share-result').evaluate((card) => getComputedStyle(card).gridTemplateColumns.split(' ').length)).toBe(1);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+  const expectedShareUrl = await shareLink.getAttribute('href');
+  const popupPromise = page.waitForEvent('popup');
+  await shareLink.click();
+  const viewerPage = await popupPromise;
+  await expect(viewerPage).toHaveURL(expectedShareUrl);
+  await viewerPage.close();
 });
 
 test('automatically creates shares when an existing meeting has no links', async ({ page }) => {

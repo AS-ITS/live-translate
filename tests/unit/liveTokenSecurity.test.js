@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
-import { createRequestHandler, resolveAllowedOrigin } from '../../server/index.js';
+import { createRequestHandler, resolveAllowedOrigin, resolveAllowedOrigins } from '../../server/index.js';
 import { createAccessControl } from '../../server/accessControl.js';
 import { createLiveToken } from '../../server/tokenService.js';
 
-function makeRequest(handler, body, { user = { id: 'recorder-1', role: 'member', status: 'active' }, canRecord = true, resolveKey, headers } = {}) {
+function makeRequest(handler, body, { user = { id: 'recorder-1', role: 'member', status: 'active' }, canRecord = true, headers } = {}) {
   const req = Readable.from([JSON.stringify(body)]);
   req.method = 'POST';
   req.url = '/api/live-token';
@@ -16,11 +16,10 @@ function makeRequest(handler, body, { user = { id: 'recorder-1', role: 'member',
   return handler(req, response).then(() => ({ status: response.statusCode, headers: response.headers, body: JSON.parse(response.body || '{}') }));
 }
 
-function handlerFor({ user = { id: 'recorder-1', role: 'member', status: 'active' }, canRecord = true, resolveKey, logs = [] } = {}) {
+function handlerFor({ user = { id: 'recorder-1', role: 'member', status: 'active' }, canRecord = true, logs = [] } = {}) {
   return createRequestHandler({
     accessControl: { validateRequest: async () => user },
     profileService: { async getProfile() { return { role: user?.role || 'member', status: user?.status || 'active' }; } },
-    credentialRepository: { async resolveKey() { resolveKey?.(); return 'stored-key'; } },
     meetingMembershipService: { async canRecord() { return canRecord; }, async getMeetingOwner() { return canRecord ? 'owner-1' : null; } },
     sessionReadController: { async getSession() { return { sessionRecord: { meetingId: 'meeting-1', targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant' } }; } },
     requestLogger: (event) => logs.push(event),
@@ -41,17 +40,15 @@ test('live-token fails closed for unauthenticated and viewer requests', async ()
 
 test('live-token uses only request key and redacts secrets from response and logs', async () => {
   const logs = [];
-  let resolveCalls = 0;
-  const handler = handlerFor({ logs, resolveKey: () => { resolveCalls += 1; } });
+  const handler = handlerFor({ logs });
   const result = await makeRequest(handler, validBody);
 
   assert.equal(result.status, 200);
   assert.equal(result.headers['Cache-Control'], 'no-store');
   assert.equal(result.body.token, 'ephemeral-token');
   assert.equal(result.body.receivedKey, undefined);
-  assert.equal(resolveCalls, 0);
-  assert.doesNotMatch(JSON.stringify(result.body), /request-only-secret|stored-key/);
-  assert.doesNotMatch(JSON.stringify(logs), /request-only-secret|ephemeral-token/);
+  assert.doesNotMatch(JSON.stringify(result.body), /request-only-secret|signed-token/);
+  assert.doesNotMatch(JSON.stringify(logs), /request-only-secret|ephemeral-token|signed-token/);
 });
 
 test('live-token trims the request key before invoking the provider', async () => {
@@ -87,6 +84,8 @@ test('live-token records safe provider diagnostics for Google 403 and returns 50
 
   const result = await makeRequest(failingHandler, validBody);
   assert.equal(result.status, 502);
+  assert.equal(result.headers['Cache-Control'], 'no-store');
+  assert.doesNotMatch(JSON.stringify(result.body), /request-only-secret|signed-token|AIzaSyDoNotLogThis/);
   const diagnostic = logs.find((event) => event.event === 'gemini_token_provider_failure');
   assert.equal(diagnostic.stage, 'google_auth_token_request');
   assert.equal(diagnostic.hasSupabaseAccessToken, true);
@@ -180,6 +179,54 @@ test('origin resolver preserves explicit APP_ORIGIN for Preview and Production',
   assert.equal(resolveAllowedOrigin({ NODE_ENV: 'production', APP_ORIGIN: 'https://preview.example', VERCEL_URL: 'preview.vercel.app' }), 'https://preview.example');
   assert.equal(resolveAllowedOrigin({ NODE_ENV: 'production', VERCEL_URL: 'prod.vercel.app' }), 'https://prod.vercel.app');
   assert.equal(resolveAllowedOrigin({ NODE_ENV: 'development', APP_ORIGIN: 'http://localhost:5173', dev_frontend_origin: '' }), 'http://localhost:5173');
+});
+
+test('origin resolver uses exact production and preview allowlists', () => {
+  assert.deepEqual(
+    [...resolveAllowedOrigins({
+      NODE_ENV: 'production',
+      VERCEL_ENV: 'preview',
+      APP_ORIGIN: 'https://branch.example/app/?source=preview',
+      VERCEL_URL: 'immutable.vercel.app',
+      VERCEL_BRANCH_URL: 'branch.vercel.app'
+    })],
+    ['https://branch.example', 'https://immutable.vercel.app', 'https://branch.vercel.app']
+  );
+  assert.deepEqual(
+    [...resolveAllowedOrigins({
+      NODE_ENV: 'production',
+      VERCEL_ENV: 'production',
+      APP_ORIGIN: 'https://app.example/',
+      VERCEL_URL: 'immutable.vercel.app',
+      VERCEL_BRANCH_URL: 'branch.vercel.app'
+    })],
+    ['https://app.example']
+  );
+});
+
+test('malformed production APP_ORIGIN fails closed without Vercel or Host fallback', () => {
+  for (const appOrigin of [
+    'not-a-valid-origin',
+    'ftp://live.example.com',
+    'https://user:password@live.example.com',
+    'https://'
+  ]) {
+    const allowedOrigins = resolveAllowedOrigins({
+      NODE_ENV: 'production',
+      VERCEL_ENV: 'production',
+      APP_ORIGIN: appOrigin,
+      VERCEL_URL: 'deployment-project.vercel.app',
+      VERCEL_BRANCH_URL: 'project-git-feature-user.vercel.app',
+      HOST: 'attacker-controlled.example'
+    });
+
+    assert.deepEqual([...allowedOrigins], []);
+    assert.equal(allowedOrigins.has('https://evil.example.com'), false);
+    assert.equal(allowedOrigins.has('https://unrelated-project.vercel.app'), false);
+    assert.equal(allowedOrigins.has('https://deployment-project.vercel.app'), false);
+    assert.equal(allowedOrigins.has('https://project-git-feature-user.vercel.app'), false);
+    assert.equal(allowedOrigins.has('https://attacker-controlled.example'), false);
+  }
 });
 
 test('transcription provider 403 diagnostic contains the actual model and API version', async () => {

@@ -58,9 +58,13 @@ export function createSupabaseMeetingRepository(options = {}) {
       await client.request('meetings', { method: 'DELETE', query: `?${eq('id', id)}&${eq('owner_user_id', owner())}` });
       return existing;
     },
-    async listMeetings() {
+    async listMeetings({ includeAll = false } = {}) {
       const ownerUserId = owner();
       const actorUserId = currentRequestUserId() || ownerUserId;
+      if (includeAll) {
+        const rows = await client.request('meetings', { query: '?select=*&order=created_at.desc' });
+        return rows.map(meetingFromRow);
+      }
       const memberships = await client.request('meeting_members', {
         query: `?select=meeting_id&${eq('user_id', actorUserId)}`
       });
@@ -83,8 +87,8 @@ export function createSupabaseMeetingRepository(options = {}) {
       const userId = owner();
       return hydrateSegment(client, rows[0], userId);
     },
-    async listMeetingSegments(meetingId) {
-      const userId = owner();
+    async listMeetingSegments(meetingId, explicitOwnerUserId = null) {
+      const userId = explicitOwnerUserId || owner();
       const rows = await client.request('meeting_segments', { query: `?select=*&${eq('meeting_id', meetingId)}&${eq('owner_user_id', userId)}&order=sequence.asc` });
       return Promise.all(rows.map((row) => hydrateSegment(client, row, userId)));
     },
@@ -95,7 +99,7 @@ export function createSupabaseMeetingRepository(options = {}) {
       });
       if (!meetingRows[0]) return null;
 
-      const select = '*,meeting_segments!inner(sequence,settings_snapshot)';
+      const select = '*,meeting_segments:meeting_segments!subtitle_cues_session_segment_relationship_fkey!inner(sequence,settings_snapshot)';
       const base = `?select=${select}&${eq('owner_user_id', userId)}&${eq('meeting_segments.meeting_id', meetingId)}`;
       const queries = before
         ? [
@@ -189,7 +193,7 @@ async function persistCues(client, entity, ownerUserId) {
   await client.request('subtitle_cues', {
     method: 'POST',
     headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-    body: cues.map((cue) => ({ id: cue.cueId, owner_user_id: ownerUserId, session_id: cue.sessionId, segment_id: entity.id, sequence: cue.sequence, source_text: cue.sourceText, translated_text: cue.translatedText || null, source_version: cue.sourceVersion || 1, translation_version: cue.translationVersion || 0, started_at: cue.startTimeMs, ended_at: cue.endTimeMs }))
+    body: cues.map((cue) => ({ id: cue.cueId, owner_user_id: ownerUserId, session_id: cue.sessionId, segment_id: entity.id, sequence: cue.sequence, source_text: cue.sourceText || null, translated_text: cue.translatedText || null, source_status: cue.sourceStatus || (cue.sourceText ? 'finalized' : 'pending'), translation_status: cue.translationStatus || (cue.translatedText ? 'finalized' : 'pending'), source_version: Number.isInteger(cue.sourceVersion) ? cue.sourceVersion : (cue.sourceText ? 1 : 0), translation_version: Number.isInteger(cue.translationVersion) ? cue.translationVersion : (cue.translatedText ? 1 : 0), started_at: cue.startTimeMs, ended_at: cue.endTimeMs }))
   });
 }
 
@@ -212,15 +216,19 @@ function cueFromRow(row, { settingsSnapshot = {}, mode = null } = {}) {
     sessionId: row.session_id,
     segmentId: row.segment_id,
     sequence: row.sequence,
-    sourceText: row.source_text,
+    sourceText: row.source_text || '',
     translatedText: row.translated_text || '',
+    sourceStatus: row.source_status || (row.source_text ? 'finalized' : 'pending'),
+    translationStatus: row.translation_status || (row.translated_text ? 'finalized' : 'pending'),
+    sourceVersion: Number.isInteger(row.source_version) ? row.source_version : (row.source_text ? 1 : 0),
+    translationVersion: Number.isInteger(row.translation_version) ? row.translation_version : (row.translated_text ? 1 : 0),
     status: 'final',
     startTimeMs: toMilliseconds(row.started_at),
     endTimeMs: toMilliseconds(row.ended_at),
     sourceLanguageCode,
     targetLanguageCode,
     ...(transcription ? { mode: 'transcription' } : {}),
-    rawSource: row.source_text,
+    rawSource: row.source_text || '',
     rawTranslation: row.translated_text || '',
     finalizedReason: 'final'
   };

@@ -7,6 +7,7 @@ test('meeting detail and viewer reads return stable 410 after the v2 purge deadl
     id: 'meeting-1',
     status: 'completed',
     lifecycleContractVersion: 2,
+    retentionPolicyVersion: 2,
     purgeAt: '2020-01-01T00:00:00.000Z'
   };
   const repository = {

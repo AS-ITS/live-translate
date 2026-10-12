@@ -21,11 +21,15 @@ test('meeting checkpoint API persists through production file-backed composition
   };
 
   const firstDependencies = createProductionApplicationDependencies(productionOptions({ env }));
+  let meetingId;
+  let firstSegmentId;
 
   await withServer(firstDependencies.requestHandler, async (baseUrl) => {
     const created = await postJson(`${baseUrl}/api/meetings`, {});
     assert.equal(created.status, 201);
     const { meeting, segment } = await created.json();
+    meetingId = meeting.id;
+    firstSegmentId = segment.id;
 
     const checkpointResponse = await putJson(
       `${baseUrl}/api/meetings/${encodeURIComponent(meeting.id)}/segments/${encodeURIComponent(segment.id)}/checkpoint`,
@@ -86,13 +90,13 @@ test('meeting checkpoint API persists through production file-backed composition
 
   const reloadedDependencies = createProductionApplicationDependencies(productionOptions({ env }));
   await withServer(reloadedDependencies.requestHandler, async (baseUrl) => {
-    const response = await getJson(`${baseUrl}/api/meetings/meeting-1/segments/segment-1/checkpoint`);
+    const response = await getJson(`${baseUrl}/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(firstSegmentId)}/checkpoint`);
     const body = await response.json();
-    const segmentsResponse = await getJson(`${baseUrl}/api/meetings/meeting-1/segments`);
+    const segmentsResponse = await getJson(`${baseUrl}/api/meetings/${encodeURIComponent(meetingId)}/segments`);
     const segmentsBody = await segmentsResponse.json();
     const meetingsResponse = await getJson(`${baseUrl}/api/meetings`);
     const meetingsBody = await meetingsResponse.json();
-    const meetingDetailResponse = await getJson(`${baseUrl}/api/meetings/meeting-1`);
+    const meetingDetailResponse = await getJson(`${baseUrl}/api/meetings/${encodeURIComponent(meetingId)}`);
     const meetingDetailBody = await meetingDetailResponse.json();
 
     assert.equal(response.status, 200);
@@ -108,8 +112,8 @@ test('meeting checkpoint API persists through production file-backed composition
     assert.deepEqual(
       segmentsBody.segments.map(({ id, status, liveSessionId, errorInfo }) => ({ id, status, liveSessionId, errorInfo })),
       [
-        { id: 'segment-1', status: 'interrupted', liveSessionId: null, errorInfo: { reason: 'token_expired', category: 'token' } },
-        { id: 'segment-2', status: 'active', liveSessionId: 'live-session-2', errorInfo: null }
+        { id: firstSegmentId, status: 'interrupted', liveSessionId: null, errorInfo: { reason: 'token_expired', category: 'token' } },
+        { id: segmentsBody.segments[1].id, status: 'active', liveSessionId: 'live-session-2', errorInfo: null }
       ]
     );
     assert.equal(meetingsResponse.status, 200);
@@ -121,7 +125,7 @@ test('meeting checkpoint API persists through production file-backed composition
       })),
       [
         {
-          id: 'meeting-1',
+          id: meetingId,
           segmentSummary: {
             totalSegments: 2,
             countsByStatus: { interrupted: 1, active: 1 },
@@ -147,9 +151,9 @@ test('meeting checkpoint API persists through production file-backed composition
         text
       })),
       [
-        { segmentId: 'segment-1', segmentStatus: 'interrupted', stream: 'source', sequence: 1, text: 'hello' },
-        { segmentId: 'segment-1', segmentStatus: 'interrupted', stream: 'translation', sequence: 2, text: 'world' },
-        { segmentId: 'segment-1', segmentStatus: 'interrupted', stream: 'source', sequence: 3, text: 'resume' }
+        { segmentId: firstSegmentId, segmentStatus: 'interrupted', stream: 'source', sequence: 1, text: 'hello' },
+        { segmentId: firstSegmentId, segmentStatus: 'interrupted', stream: 'translation', sequence: 2, text: 'world' },
+        { segmentId: firstSegmentId, segmentStatus: 'interrupted', stream: 'source', sequence: 3, text: 'resume' }
       ]
     );
   });
@@ -162,9 +166,12 @@ test('long meeting reliability scenario persists and reloads 2+ hours of ordered
     SESSION_RECORDS_FILE: join(directory, 'sessions.json'),
     TRANSLATION_GLOSSARY_FILE: join(directory, 'glossary.json')
   };
-  const scenario = buildLongMeetingScenario();
+  const scenario = buildValidLongMeetingScenario();
 
-  const firstDependencies = createProductionApplicationDependencies(productionOptions({ env }));
+  const firstDependencies = createProductionApplicationDependencies(productionOptions({
+    env,
+    idGenerator: scenarioIdGenerator(scenario)
+  }));
   await withServer(firstDependencies.requestHandler, async (baseUrl) => {
     const created = await postJson(`${baseUrl}/api/meetings`, {
       liveSessionId: scenario.segments[0].liveSessionId
@@ -210,7 +217,7 @@ test('long meeting reliability scenario persists and reloads 2+ hours of ordered
 
   const reloadedDependencies = createProductionApplicationDependencies(productionOptions({ env }));
   await withServer(reloadedDependencies.requestHandler, async (baseUrl) => {
-    const detailResponse = await getJson(`${baseUrl}/api/meetings/meeting-1`);
+    const detailResponse = await getJson(`${baseUrl}/api/meetings/${encodeURIComponent(scenario.meetingId)}`);
     assert.equal(detailResponse.status, 200);
     const detail = await detailResponse.json();
 
@@ -234,7 +241,7 @@ test('long meeting reliability scenario persists and reloads 2+ hours of ordered
   });
 });
 
-function productionOptions({ env }) {
+function productionOptions({ env, idGenerator = staticIdGenerator() }) {
   return {
     env,
     requestHandlerFactory: createRequestHandler,
@@ -245,17 +252,45 @@ function productionOptions({ env }) {
     savedTranscriptRetranslationServiceFactory() {
       return { async translateSavedTranscript() {} };
     },
-    idGenerator: staticIdGenerator(),
-    strictCheckpointPathIds: false
+    idGenerator
   };
 }
 
 function staticIdGenerator() {
-  const counters = new Map();
-  return (prefix) => {
-    const next = (counters.get(prefix) ?? 0) + 1;
-    counters.set(prefix, next);
-    return `${prefix}-${next}`;
+  const ids = [
+    '00000000-0000-4000-8000-000000000001',
+    '00000000-0000-4000-8000-000000000002',
+    '00000000-0000-4000-8000-000000000003',
+    '00000000-0000-4000-8000-000000000004',
+    '00000000-0000-4000-8000-000000000005',
+    '00000000-0000-4000-8000-000000000006'
+  ];
+  let index = 0;
+  return () => ids[index++] ?? `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+}
+
+function scenarioIdGenerator(scenario) {
+  const ids = [scenario.meetingId, ...scenario.segments.map((segment) => segment.id)];
+  let index = 0;
+  return () => ids[index++] ?? staticIdGenerator()();
+}
+
+function buildValidLongMeetingScenario() {
+  const source = buildLongMeetingScenario();
+  const meetingId = '00000000-0000-4000-8000-000000000011';
+  const segments = source.segments.map((segment, index) => {
+    const segmentId = `00000000-0000-4000-8000-${String(index + 0x101).padStart(12, '0')}`;
+    return {
+      ...segment,
+      id: segmentId,
+      chunks: segment.chunks.map((chunk) => ({ ...chunk, meetingId, segmentId }))
+    };
+  });
+  return {
+    ...source,
+    meetingId,
+    segments,
+    expectedChunks: segments.flatMap((segment) => segment.chunks)
   };
 }
 

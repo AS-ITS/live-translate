@@ -26,3 +26,17 @@ test('startup timing milestones remain staging-safe and preserve startup stage',
   assert.doesNotMatch(JSON.stringify(snapshot), /audio pipeline failed/);
 });
 
+test('Continue timing starts before token and provider startup', () => {
+  const continueStartedAt = Date.now() - 25;
+  const resumedSession = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    startupStartedAt: continueStartedAt,
+    continueStartedAt
+  });
+  const newSession = new LiveTranslateSession({ targetLanguageCode: 'en' });
+
+  assert.equal(resumedSession.startupTimings.start_click.at, continueStartedAt);
+  assert.equal(resumedSession.continueElapsedMs() >= 25, true);
+  assert.equal(newSession.continueElapsedMs(), null);
+});
+

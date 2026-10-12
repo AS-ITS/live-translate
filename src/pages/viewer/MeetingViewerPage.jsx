@@ -25,7 +25,14 @@ import {
   restoreViewerScrollAnchor,
   scrollViewerToLatest
 } from '../../lib/viewerAutoFollow.js';
+import {
+  readViewerFontSizePreference,
+  VIEWER_FONT_SIZES,
+  writeViewerFontSizePreference
+} from '../../lib/viewerFontSizePreference.js';
 import { ViewerShareHeader } from './ViewerShareHeader.jsx';
+
+const VIEWER_FONT_SIZE_LABELS = Object.freeze({ small: '小', medium: '中', large: '大' });
 
 export function MeetingViewerPage({ token, code }) {
   const [detail, setDetail] = useState(null);
@@ -46,6 +53,7 @@ export function MeetingViewerPage({ token, code }) {
   const rowHeightsRef = useRef(new Map());
   const [rowLayoutVersion, setRowLayoutVersion] = useState(0);
   const [visibility, setVisibility] = useState(() => readSubtitleVisibilityPreference(VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY));
+  const [subtitleFontSize, setSubtitleFontSize] = useState(readViewerFontSizePreference);
   const { showSource, showTranslation } = visibility;
   const [isFollowingLatest, setIsFollowingLatest] = useState(true);
   const [unseenCueCount, setUnseenCueCount] = useState(0);
@@ -60,7 +68,7 @@ export function MeetingViewerPage({ token, code }) {
   const fullscreenErrorTimerRef = useRef(null);
   const fullscreenErrorGenerationRef = useRef(0);
   const isFullscreen = isNativeFullscreen || isCssFullscreen;
-  const estimatedRowHeight = 64;
+  const estimatedRowHeight = subtitleFontSize === 'large' ? 144 : (subtitleFontSize === 'small' ? 72 : 96);
   const shareUrl = useMemo(() => canonicalViewerShareUrl({ code, token }), [code, token]);
 
   useEffect(() => attachClientDiagnosticLifecycle({
@@ -90,9 +98,13 @@ export function MeetingViewerPage({ token, code }) {
   }, [visibility]);
 
   useEffect(() => {
+    writeViewerFontSizePreference(subtitleFontSize);
+  }, [subtitleFontSize]);
+
+  useEffect(() => {
     rowHeightsRef.current.clear();
     setRowLayoutVersion((version) => version + 1);
-  }, [showSource, showTranslation]);
+  }, [showSource, showTranslation, subtitleFontSize]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -708,13 +720,13 @@ export function MeetingViewerPage({ token, code }) {
     });
     viewport.querySelectorAll('.viewer-cue-row').forEach((row) => observer.observe(row));
     return () => observer.disconnect();
-  }, [cues, endIndex, showSource, showTranslation, startIndex]);
+  }, [cues, endIndex, showSource, showTranslation, startIndex, subtitleFontSize]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || isFollowingLatestRef.current || !historyAnchorRef.current) return;
     restoreViewerScrollAnchor(viewport, historyAnchorRef.current, cues, rowLayout.offsets);
-  }, [cues, rowLayout.offsets, showSource, showTranslation, viewportHeight]);
+  }, [cues, rowLayout.offsets, showSource, showTranslation, subtitleFontSize, viewportHeight]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -731,7 +743,13 @@ export function MeetingViewerPage({ token, code }) {
       if (autoFollowFrameRef.current === frame) autoFollowFrameRef.current = null;
     };
   }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.sourceText, cues.at(-1)?.translatedText,
-    isFollowingLatest, rowLayout.totalHeight, showSource, showTranslation, viewportHeight]);
+    isFollowingLatest, rowLayout.totalHeight, showSource, showTranslation, subtitleFontSize, viewportHeight]);
+
+  function changeSubtitleFontSize(nextSize) {
+    if (nextSize === subtitleFontSize) return;
+    if (!isFollowingLatestRef.current) captureHistoryPosition(viewportRef.current);
+    setSubtitleFontSize(nextSize);
+  }
 
   function scrollToLatest() {
     isFollowingLatestRef.current = true;
@@ -836,6 +854,7 @@ export function MeetingViewerPage({ token, code }) {
         ref={fullscreenShellRef}
         className={`viewer-fullscreen-shell${isCssFullscreen ? ' is-css-fullscreen' : ''}`}
         data-fullscreen-mode={isNativeFullscreen ? 'native' : (isCssFullscreen ? 'css' : 'inline')}
+        data-subtitle-font-size={subtitleFontSize}
         data-testid="viewer-fullscreen-shell"
       >
         <ViewerShareHeader meetingTitle={detail?.meeting?.name || '即時字幕'} shareUrl={shareUrl} />
@@ -852,6 +871,18 @@ export function MeetingViewerPage({ token, code }) {
                 <button className={`button detail-button viewer-visibility-toggle${showTranslation ? ' is-active' : ''}`} type="button" aria-pressed={showTranslation} data-testid="viewer-translation-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'translation'))}>{showTranslation ? '隱藏翻譯' : '顯示翻譯'}</button>
               </div>
             ) : null}
+            <div className="viewer-font-size-controls" role="group" aria-label="字幕字體大小">
+              {VIEWER_FONT_SIZES.map((size) => (
+                <button
+                  className={`button detail-button viewer-font-size-button${subtitleFontSize === size ? ' is-active' : ''}`}
+                  type="button"
+                  aria-pressed={subtitleFontSize === size}
+                  data-testid={`viewer-font-size-${size}`}
+                  key={size}
+                  onClick={() => changeSubtitleFontSize(size)}
+                >{VIEWER_FONT_SIZE_LABELS[size]}</button>
+              ))}
+            </div>
             {shareConnection.value === 'failed' ? (
               <button className="button detail-button viewer-retry-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重新連線</button>
             ) : null}

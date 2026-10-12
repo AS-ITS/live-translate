@@ -57,6 +57,8 @@ Live Recorder 與 Viewer 共用同一套原文／翻譯顯示切換規則。兩�
 
 Viewer 全螢幕是 presentation-only state。穩定的 `viewer-fullscreen-shell` 包含 Header、QR 與字幕內容，WebRTC transport generation、PeerConnection、DataChannel、replay 或 snapshot 更新不得替換或重新掛載此 DOM。瀏覽器支援時使用原生 Fullscreen API，並以 `document.fullscreenElement` 及 `fullscreenchange` 同步 UI；API 缺席或拒絕時改用 fixed、dynamic viewport height 與 safe-area inset 的 CSS presentation mode，不承諾隱藏 iOS 瀏覽器工具列。reconnect 不得重設全螢幕、原文／翻譯顯示偏好或字幕 auto-follow／scroll state。原生全螢幕拒絕提示可手動關閉並在 5 秒後自動清除，新嘗試會先清除舊提示與 timer。
 
+Viewer 提供小／中／大三段字幕字級，預設為中，並以 Viewer 專用 localStorage 偏好在重新整理、全螢幕切換與 Pause/Continue 後沿用。字級只影響原文與翻譯的同步視覺呈現；切換時沿用既有 Cue、連線、完整歷史與閱讀錨點，不得 remount Viewer 或強制回到最新字幕。
+
 Viewer 初次載入與停留底部時自動跟隨最新 Cue。使用者向上捲動後，以穩定 `cueId` 保存閱讀錨點，snapshot/replay merge、Cue revision、高度變化、Pause/Continue、reconnect 與 fullscreen viewport 變化都不得強制捲到底部。歷史閱讀期間繼續接收並渲染 Cue，浮動控制以唯一 `cueId` 顯示未查看數量；手動回到底部或點擊控制後恢復 auto-follow。
 
 ### Meeting Management home

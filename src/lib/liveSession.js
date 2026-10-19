@@ -644,6 +644,9 @@ export class LiveTranslateSession {
       }
       else this.providerReconnectAttempts += 1;
       return result;
+    }).catch((error) => {
+      this.providerReconnectAttempts += 1;
+      throw error;
     }).finally(() => { this.providerReconnectInProgress = null; });
     return this.providerReconnectInProgress;
   }
@@ -1952,14 +1955,26 @@ export class LiveTranslateSession {
   }
 
   scheduleProviderReconnect(timeLeft, { forceRefresh = false } = {}) {
-    if (this.closed || this.closeExpected || this.providerReconnectTimer) return;
+    if (this.closed || this.closeExpected || this.providerReconnectTimer || this.providerReconnectInProgress) return;
+    const scheduledProviderEpoch = this.providerEpoch;
+    const scheduledConnectionEpoch = this.connectionEpoch;
     const match = String(timeLeft || '').match(/([\d.]+)\s*(ms|s|m)?/i);
     const value = match ? Number(match[1]) : 0;
     const unit = (match?.[2] || 'ms').toLowerCase();
     const delay = Math.max(0, Math.min(unit === 'm' ? value * 60000 : unit === 's' ? value * 1000 : value, 30000));
     this.providerReconnectTimer = setTimeout(() => {
       this.providerReconnectTimer = null;
-      void this.reconnectProvider({ forceRefresh: forceRefresh || this.tokenExpiresSoon() }).catch(() => {});
+      if (this.closed || this.closeExpected || this.providerReconnectInProgress ||
+          this.providerEpoch !== scheduledProviderEpoch || this.connectionEpoch !== scheduledConnectionEpoch) return;
+      void this.reconnectProvider({ forceRefresh: forceRefresh || this.tokenExpiresSoon() }).catch(async (error) => {
+        if (this.closed || this.closeExpected || this.connectionEpoch !== scheduledConnectionEpoch || this.providerReady) return;
+        this.recordFailureDiagnostic({ source: 'scheduled_reconnect', reasonHint: 'provider_error', rawError: error });
+        try {
+          await this.handleSessionError(error, this.providerEpoch);
+        } catch (reportError) {
+          this.recordFailureDiagnostic({ source: 'scheduled_reconnect', reasonHint: 'failure_reporting_error', rawError: reportError });
+        }
+      });
     }, delay);
     this.providerReconnectTimer?.unref?.();
   }

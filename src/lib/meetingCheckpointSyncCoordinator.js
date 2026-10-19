@@ -1,5 +1,6 @@
 const DEFAULT_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_CHECKPOINT_RETRY_DELAY_MS = 5000;
+const MAX_CONFLICT_RETRIES = 3;
 
 function refinementVersion(cue) {
   return Number.isInteger(cue?.refinement?.version) ? cue.refinement.version : 0;
@@ -41,6 +42,7 @@ export function createMeetingCheckpointSyncCoordinator({
   let contextGeneration = 0;
   let timer = null;
   const retryTimers = new Map();
+  const conflictRetries = new Map();
   let queue = Promise.resolve();
 
   return Object.freeze({
@@ -89,6 +91,7 @@ export function createMeetingCheckpointSyncCoordinator({
     cancel() {
       clearTimer();
       clearRetryTimers();
+      conflictRetries.clear();
       contextGeneration += 1;
       context = null;
       onStatusChange?.('idle');
@@ -143,6 +146,7 @@ export function createMeetingCheckpointSyncCoordinator({
         pendingCueCheckpoints.delete(flushScope);
       }
       clearRetryTimer(flushContext);
+      conflictRetries.delete(flushScope);
       if (isActiveContext(flushContext)) {
         onStatusChange?.(hasPendingFor(flushContext) ? 'ready' : 'synced');
       }
@@ -154,12 +158,20 @@ export function createMeetingCheckpointSyncCoordinator({
             meetingId: flushContext.meetingId,
             segmentId: flushContext.segmentId
           });
-          reconcilePendingWithCheckpoint(latest?.checkpoint, flushContext);
-          if (isActiveContext(flushContext)) {
-            onStatusChange?.(hasPendingFor(flushContext) ? 'ready' : 'synced');
-          }
+          reconcilePendingWithCheckpoint(latest, flushContext);
           if (hasPendingFor(flushContext)) {
-            scheduleRetry(flushContext);
+            const attempts = (conflictRetries.get(flushScope) || 0) + 1;
+            conflictRetries.set(flushScope, attempts);
+            if (attempts <= MAX_CONFLICT_RETRIES) {
+              if (isActiveContext(flushContext)) onStatusChange?.('ready');
+              scheduleRetry(flushContext);
+            } else {
+              if (isActiveContext(flushContext)) onStatusChange?.('error');
+              onError?.(error);
+            }
+          } else {
+            conflictRetries.delete(flushScope);
+            if (isActiveContext(flushContext)) onStatusChange?.('synced');
           }
           return false;
         } catch (reconcileError) {
@@ -203,7 +215,10 @@ export function createMeetingCheckpointSyncCoordinator({
     retryTimers.clear();
   }
 
-  function reconcilePendingWithCheckpoint(checkpoint, checkpointContext) {
+  function reconcilePendingWithCheckpoint(latest, checkpointContext) {
+    if ((latest?.meetingId && latest.meetingId !== checkpointContext.meetingId) ||
+        (latest?.segmentId && latest.segmentId !== checkpointContext.segmentId)) return;
+    const checkpoint = latest?.checkpoint;
     const persistedChunks = Array.isArray(checkpoint?.durableChunks) ? checkpoint.durableChunks : [];
     const persistedByKey = new Map(persistedChunks.map((chunk) => [chunk?.idempotencyKey, chunk]));
     const persistedBySequence = new Map(persistedChunks.map((chunk) => [`${chunk?.stream}:${chunk?.sequence}`, chunk]));
@@ -216,16 +231,25 @@ export function createMeetingCheckpointSyncCoordinator({
       }
     }
 
-    const persistedCues = new Map((Array.isArray(checkpoint?.finalCues) ? checkpoint.finalCues : []).map((cue) => [cue?.cueId, cue]));
+    const persistedCues = new Map((Array.isArray(checkpoint?.finalCues) ? checkpoint.finalCues : [])
+      .map((cue) => [cueKey(checkpointContext, cue), cue]));
     for (const [key, pending] of pendingCues) {
       if (!key.startsWith(`${scopeKey(checkpointContext)}:`)) continue;
-      const persisted = persistedCues.get(pending.cueId);
-      if (!persisted || preferCue(pending, persisted) === persisted) {
+      const persisted = persistedCues.get(key);
+      const sameOwner = persisted?.cueId === pending.cueId &&
+        persisted?.sessionId === pending.sessionId && persisted?.segmentId === pending.segmentId;
+      const sameContent = JSON.stringify(pending) === JSON.stringify(persisted);
+      const confirmedNewerVersion = refinementVersion(persisted) > refinementVersion(pending) &&
+        persisted.sequence === pending.sequence && persisted.sourceText === pending.sourceText &&
+        persisted.translatedText === pending.translatedText &&
+        persisted.startTimeMs === pending.startTimeMs && persisted.endTimeMs === pending.endTimeMs;
+      if (sameOwner && (sameContent || confirmedNewerVersion)) {
         pendingCues.delete(key);
       }
     }
 
-    if (pendingCueCheckpoints.has(scopeKey(checkpointContext)) && checkpoint?.cueCheckpoint) {
+    if (pendingCueCheckpoints.has(scopeKey(checkpointContext)) &&
+        JSON.stringify(pendingCueCheckpoints.get(scopeKey(checkpointContext))) === JSON.stringify(checkpoint?.cueCheckpoint)) {
       pendingCueCheckpoints.delete(scopeKey(checkpointContext));
     }
   }
@@ -287,7 +311,7 @@ function chunkKey(chunk) {
 }
 
 function cueKey(context, cue) {
-  return `${scopeKey(context)}:${cue.cueId}`;
+  return `${scopeKey(context)}:${cue.sessionId}:${cue.cueId}`;
 }
 
 function sortedChunks(chunks) {

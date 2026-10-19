@@ -826,6 +826,14 @@ content returns `409`. Chunks may arrive out of order; stored chunks are read
 back sorted by stream and sequence. Completed or failed Segments reject
 checkpoint updates with `409`.
 
+`durableChunks` and `finalCues` in a PUT are deltas. A successful response and
+subsequent GET contain the cumulative Segment checkpoint. The checkpoint
+`idempotencyKey` identifies one canonical payload: an identical replay has no
+new effect, while reuse with changed content returns `checkpoint_conflict`
+(`409`). Concurrent or stale revisions also return `409`; callers must read
+back and retain any unproven pending content before retrying. Per-Cue saves
+have a separate durability acknowledgment.
+
 ## `GET /api/meetings/:meetingId/segments/:segmentId/checkpoint`
 
 Returns the Segment checkpoint:

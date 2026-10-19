@@ -197,7 +197,7 @@ for (const [name, localOverride, remoteOverride] of [
   });
 }
 
-test('409 acknowledges a newer readback that covers both sides and refinement', async () => {
+test('409 does not acknowledge a newer Cue without operation provenance', async () => {
   const local = validateFinalCue(completeCue({
     sourceVersion: 2, translationVersion: 2, refinement: { version: 1 }
   }));
@@ -209,7 +209,8 @@ test('409 acknowledges a newer readback that covers both sides and refinement', 
   coordinator.enqueueCues([local]);
   assert.equal(await coordinator.flush(), false);
   assert.equal(await coordinator.flush(), true);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].finalCues, [local]);
 });
 
 test('409 retains a Cue when remote Cue ID differs', async () => {
@@ -260,7 +261,7 @@ test('409 replay stops submitting after readback proves the Cue durable', async 
   assert.equal(calls.length, 2);
 });
 
-test('enqueue preserves independent side and refinement versions for compatible Cue snapshots', async () => {
+test('enqueue does not synthesize independent side and refinement versions', async () => {
   const sideNewer = validateFinalCue(completeCue({ sourceVersion: 2, refinement: { version: 1 } }));
   const refinementNewer = validateFinalCue(completeCue({ sourceVersion: 1, refinement: { version: 2 } }));
   const calls = [];
@@ -273,5 +274,8 @@ test('enqueue preserves independent side and refinement versions for compatible 
   coordinator.enqueueCues([refinementNewer]);
   assert.equal(await coordinator.flush(), true);
   assert.equal(calls[0].finalCues[0].sourceVersion, 2);
-  assert.equal(calls[0].finalCues[0].refinement.version, 2);
+  assert.equal(calls[0].finalCues[0].refinement.version, 1);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls[1].finalCues[0].sourceVersion, 1);
+  assert.equal(calls[1].finalCues[0].refinement.version, 2);
 });

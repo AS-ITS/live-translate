@@ -131,6 +131,51 @@ export function createSupabaseMeetingRepository(options = {}) {
       const rows = await client.request('meeting_segments', { method: 'PATCH', query: `?${eq('id', entity.id)}&${eq('owner_user_id', userId)}`, body: segmentRow(entity, userId) });
       if (rows[0]) await persistCues(client, entity, userId);
       return rows[0] ? hydrateSegment(client, rows[0], userId) : null;
+    },
+    async commitCheckpoint({ current, next, incoming }) {
+      const userId = owner();
+      const cues = next.checkpoint.finalCues.map((cue) => ({
+        id: cue.cueId,
+        owner_user_id: userId,
+        session_id: cue.sessionId,
+        segment_id: next.id,
+        sequence: cue.sequence,
+        source_text: cue.sourceText || '',
+        translated_text: cue.translatedText || null,
+        source_status: cue.sourceStatus,
+        translation_status: cue.translationStatus,
+        source_version: cue.sourceVersion,
+        translation_version: cue.translationVersion,
+        started_at: toSupabaseTimestamp(cue.startTimeMs),
+        ended_at: toSupabaseTimestamp(cue.endTimeMs)
+      }));
+      let checkpoint;
+      try {
+        checkpoint = await client.rpc('apply_meeting_checkpoint_operation', {
+          p_owner_user_id: userId,
+          p_meeting_id: next.meetingId,
+          p_segment_id: next.id,
+          p_expected_revision: current.checkpoint?.revision || 0,
+          p_operation_key: incoming.idempotencyKey,
+          p_canonical_payload: next.checkpoint._operationPayloads[incoming.idempotencyKey],
+          p_next_checkpoint: next.checkpoint,
+          p_cues: cues,
+          p_next_status: next.status,
+          p_ended_at: toSupabaseTimestamp(next.endedAt),
+          p_error_info: next.errorInfo
+        });
+      } catch (error) {
+        if (error?.supabaseCode === 'P0041') {
+          error.code = 'checkpoint_revision_conflict';
+          error.status = 409;
+        }
+        if (error?.supabaseCode === 'P0042') {
+          error.code = 'checkpoint_conflict';
+          error.status = 409;
+        }
+        throw error;
+      }
+      return new MeetingSegment({ ...next, checkpoint });
     }
   };
   const exposed = Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method].bind(repository)]));
@@ -141,6 +186,9 @@ export function createSupabaseMeetingRepository(options = {}) {
   Object.defineProperty(exposed, 'getMeetingViewerPage', {
     value: repository.getMeetingViewerPage.bind(repository),
     enumerable: false
+  });
+  Object.defineProperty(exposed, 'commitCheckpoint', {
+    value: repository.commitCheckpoint.bind(repository), enumerable: false
   });
   return Object.freeze(exposed);
 }
@@ -162,7 +210,7 @@ function segmentRow(entity, ownerUserId) {
     ended_at: toSupabaseTimestamp(entity.endedAt),
     live_session_id: Number(entity.lifecycleContractVersion) === 2 ? null : entity.liveSessionId,
     settings_snapshot: entity.settingsSnapshot,
-    checkpoint: { ...(entity.checkpoint || {}), finalCues: undefined },
+    checkpoint: entity.checkpoint || {},
     error_info: entity.errorInfo,
     created_at: toSupabaseTimestamp(entity.createdAt),
     updated_at: toSupabaseTimestamp(entity.updatedAt)
@@ -173,9 +221,13 @@ async function hydrateSegment(client, row, ownerUserId) {
   const cueRows = await client.request('subtitle_cues', { query: `?select=*&${eq('owner_user_id', ownerUserId)}&${eq('segment_id', row.id)}&order=sequence.asc` });
   const storedCheckpoint = isPersistedCheckpoint(row.checkpoint) ? { ...row.checkpoint } : null;
   const settingsSnapshot = row.settings_snapshot || {};
-  const finalCues = cueRows
+  const tableCues = cueRows
     .filter((cue) => cue.segment_id === row.id)
     .map((cue) => cueFromRow(cue, { settingsSnapshot, mode: storedCheckpoint?.mode }));
+  const checkpointCues = Array.isArray(storedCheckpoint?.finalCues) ? storedCheckpoint.finalCues : [];
+  const checkpointIds = new Set(checkpointCues.map((cue) => cue.cueId));
+  const finalCues = [...checkpointCues, ...tableCues.filter((cue) => !checkpointIds.has(cue.cueId))]
+    .sort((a, b) => a.sequence - b.sequence);
   const checkpoint = finalCues.length > 0
     ? { ...(storedCheckpoint || { durableChunks: [], pendingPartial: null }), finalCues }
     : storedCheckpoint;
@@ -188,6 +240,9 @@ function meetingFromRow(row) {
 }
 
 async function persistCues(client, entity, ownerUserId) {
+  // Revisioned checkpoint Cues are committed by apply_meeting_checkpoint_operation.
+  // Replaying them through a later generic segment update could regress Cue rows.
+  if (Number.isInteger(entity.checkpoint?.revision) && entity.checkpoint.revision > 0) return;
   const cues = entity.checkpoint?.finalCues || [];
   if (!cues.length) return;
   await client.request('subtitle_cues', {

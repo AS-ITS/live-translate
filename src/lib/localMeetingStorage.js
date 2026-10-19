@@ -1,3 +1,6 @@
+import { mergeCheckpoint } from '../application/meetingCheckpointService.js';
+import { checkCheckpointOperation, checkpointConflict, recordCheckpointOperation } from './checkpointOperation.js';
+
 export const LOCAL_MEETING_SCHEMA_VERSION = 5;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
@@ -184,8 +187,10 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     async saveCheckpoint(input) {
       const checkpoint = projectLocalCheckpoint(input);
-      checkpoints.set(checkpoint.key, checkpoint);
-      return checkpoint;
+      const existing = checkpoints.get(checkpoint.key);
+      const saved = mergeLocalCheckpoint(existing, checkpoint);
+      checkpoints.set(checkpoint.key, saved);
+      return saved;
     },
     async getCheckpoint(meetingId, segmentId) {
       const value = checkpoints.get(localCheckpointKey(meetingId, segmentId));
@@ -394,8 +399,12 @@ export function createIndexedDbLocalMeetingManifestStore({
       const checkpoint = projectLocalCheckpoint(input);
       const database = await openDatabase();
       return runNamedTransaction(database, 'checkpoints', 'readwrite', async (transaction) => {
-        await request(transaction.objectStore('checkpoints').put(checkpoint));
-        return checkpoint;
+        const store = transaction.objectStore('checkpoints');
+        const existing = await request(store.get(checkpoint.key));
+        const projected = existing ? projectLocalCheckpoint(existing) : null;
+        const saved = mergeLocalCheckpoint(projected, checkpoint);
+        if (saved !== projected) await request(store.put(saved));
+        return saved;
       });
     },
     async getCheckpoint(meetingId, segmentId) {
@@ -679,6 +688,32 @@ function projectLocalCue(value = {}) {
     cue: sanitizeLocalValue(rawCue),
     producedAt: normalizeOptionalTimestamp(value.producedAt ?? rawCue.finalizedAt, 'producedAt'),
     updatedAt: normalizeOptionalTimestamp(value.updatedAt, 'updatedAt') ?? Date.now()
+  });
+}
+
+function mergeLocalCheckpoint(existing, incoming) {
+  const payload = incoming.checkpoint;
+  if (typeof payload.idempotencyKey !== 'string' || !payload.idempotencyKey) {
+    if (existing) throw checkpointConflict('legacy checkpoint update has no operation key');
+    return incoming;
+  }
+  const operation = checkCheckpointOperation(existing?.checkpoint, payload);
+  if (operation.duplicate) return existing;
+  const delta = {
+    ...payload,
+    durableChunks: Array.isArray(payload.durableChunks) ? payload.durableChunks : [],
+    finalCues: Array.isArray(payload.finalCues) ? payload.finalCues : []
+  };
+  const merged = mergeCheckpoint({
+    existing: existing?.checkpoint,
+    incoming: delta,
+    meetingId: incoming.meetingId,
+    segmentId: incoming.segmentId,
+    updatedAt: incoming.updatedAt
+  });
+  return projectLocalCheckpoint({
+    ...incoming,
+    checkpoint: recordCheckpointOperation(existing?.checkpoint, payload, merged, operation.canonical)
   });
 }
 

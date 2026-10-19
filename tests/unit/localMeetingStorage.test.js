@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { chromium } from '@playwright/test';
+import { rolldown } from 'rolldown';
 import {
   buildLocalChunkPath,
   createIndexedDbLocalMeetingManifestStore,
@@ -11,6 +13,20 @@ import {
   reserveLocalChunk,
   sealLocalChunk
 } from '../../src/lib/localMeetingStorage.js';
+
+let storageBundle;
+function bundledLocalStorageSource() {
+  storageBundle ||= (async () => {
+    const bundle = await rolldown({ input: fileURLToPath(new URL('../../src/lib/localMeetingStorage.js', import.meta.url)) });
+    try {
+      const { output } = await bundle.generate({ format: 'es' });
+      return output[0].code;
+    } finally {
+      await bundle.close();
+    }
+  })();
+  return storageBundle;
+}
 
 test('recording and operation persistence project secrets from writes and reads', async () => {
   const store = createInMemoryLocalMeetingManifestStore();
@@ -186,7 +202,7 @@ test('browser IndexedDB hydration projects and cleans credential-shaped pollutio
   const page = await browser.newPage();
   await page.route('https://local-recording.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
   await page.goto('https://local-recording.test/');
-  const source = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const source = await bundledLocalStorageSource();
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const result = await page.evaluate(async ({ moduleUrl, dbName }) => {
     const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
@@ -212,7 +228,7 @@ test('browser IndexedDB restores local cues and checkpoints after reload', async
   const page = await browser.newPage();
   await page.route('https://local-state-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
   await page.goto('https://local-state-reload.test/');
-  const source = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const source = await bundledLocalStorageSource();
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const dbName = `local-state-${Date.now()}`;
 
@@ -251,7 +267,7 @@ test('browser IndexedDB reload replays lifecycle operations and OPFS refuses ove
   const page = await browser.newPage();
   await page.route('https://local-recording-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
   await page.goto('https://local-recording-reload.test/');
-  const storageSource = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const storageSource = await bundledLocalStorageSource();
   const storageModuleUrl = `data:text/javascript;base64,${Buffer.from(storageSource).toString('base64')}`;
   const recorderSource = await readFile(new URL('../../src/lib/localMeetingRecorder.js', import.meta.url), 'utf8');
   const recorderModuleUrl = `data:text/javascript;base64,${Buffer.from(
@@ -351,7 +367,7 @@ test('existing IndexedDB operations store persists one pending legacy Continue a
   const page = await browser.newPage();
   await page.route('https://legacy-continue-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
   await page.goto('https://legacy-continue-reload.test/');
-  const source = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const source = await bundledLocalStorageSource();
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const dbName = `legacy-continue-${Date.now()}`;
   const operation = {
@@ -388,7 +404,7 @@ test('browser public append seals an existing OPFS write after reload and reject
   const page = await browser.newPage();
   await page.route('https://local-append-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
   await page.goto('https://local-append-reload.test/');
-  const storageSource = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const storageSource = await bundledLocalStorageSource();
   const storageModuleUrl = `data:text/javascript;base64,${Buffer.from(storageSource).toString('base64')}`;
   const recorderSource = await readFile(new URL('../../src/lib/localMeetingRecorder.js', import.meta.url), 'utf8');
   const recorderModuleUrl = `data:text/javascript;base64,${Buffer.from(

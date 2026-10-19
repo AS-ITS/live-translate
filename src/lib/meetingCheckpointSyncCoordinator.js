@@ -1,54 +1,9 @@
 import { normalizeCueCheckpoint, validateFinalCue } from '../domain/subtitleCue/index.js';
+import { checkpointOperationKey, checkpointConflict } from './checkpointOperation.js';
 
 const DEFAULT_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_CHECKPOINT_RETRY_DELAY_MS = 5000;
 const MAX_CONFLICT_RETRIES = 3;
-
-function refinementVersion(cue) {
-  return Number.isInteger(cue?.refinement?.version) ? cue.refinement.version : 0;
-}
-
-function refinementStatusRank(cue) {
-  return { pending: 0, queued: 1, running: 2, failed: 3, completed: 4 }[cue?.refinement?.status] ?? 0;
-}
-
-function preferCue(incoming, existing) {
-  const combined = combineCompatibleCues(incoming, existing);
-  if (combined) return combined;
-  const versionDelta = refinementVersion(incoming) - refinementVersion(existing);
-  if (versionDelta !== 0) return versionDelta > 0 ? incoming : existing;
-  const statusDelta = refinementStatusRank(incoming) - refinementStatusRank(existing);
-  if (statusDelta !== 0) return statusDelta > 0 ? incoming : existing;
-  return (incoming?.refinedSource || incoming?.refinedTranslation) && !(existing?.refinedSource || existing?.refinedTranslation)
-    ? incoming
-    : existing;
-}
-
-function combineCompatibleCues(incoming, existing) {
-  let next;
-  let prior;
-  try {
-    next = validateFinalCue(incoming);
-    prior = validateFinalCue(existing);
-  } catch {
-    return null;
-  }
-  const sameSnapshot = ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs',
-    'endTimeMs', 'sourceLanguageCode', 'targetLanguageCode', 'mode', 'status',
-    'finalizedReason', 'sourceText', 'translatedText', 'sourceStatus',
-    'translationStatus', 'initialTranslation'].every((field) => next[field] === prior[field]);
-  if (!sameSnapshot || (next.refinement && prior.refinement &&
-      next.refinement.inputHash !== prior.refinement.inputHash)) return null;
-
-  const preferred = refinementVersion(next) > refinementVersion(prior) ||
-    (refinementVersion(next) === refinementVersion(prior) &&
-      refinementStatusRank(next) > refinementStatusRank(prior)) ? next : prior;
-  return {
-    ...preferred,
-    sourceVersion: Math.max(next.sourceVersion, prior.sourceVersion),
-    translationVersion: Math.max(next.translationVersion, prior.translationVersion)
-  };
-}
 
 export function createMeetingCheckpointSyncCoordinator({
   updateCheckpoint,
@@ -67,6 +22,7 @@ export function createMeetingCheckpointSyncCoordinator({
 
   const pendingChunks = new Map();
   const pendingCues = new Map();
+  const pendingCueVariants = new Map();
   const pendingCueCheckpoints = new Map();
   let context = null;
   let contextGeneration = 0;
@@ -103,7 +59,13 @@ export function createMeetingCheckpointSyncCoordinator({
         if (cue?.status !== 'final' || !cue.cueId) continue;
         const key = cueKey(context, cue);
         const existing = pendingCues.get(key);
-        pendingCues.set(key, existing ? preferCue(cue, existing) : { ...cue });
+        const candidates = [...(existing ? [existing] : []), ...(pendingCueVariants.get(key) || []), { ...cue }];
+        const maximal = candidates.filter((candidate, index) => !candidates.some((other, otherIndex) =>
+          otherIndex !== index && cueCovers(other, candidate) &&
+          (!cueCovers(candidate, other) || otherIndex > index)));
+        pendingCues.set(key, maximal[0]);
+        if (maximal.length > 1) pendingCueVariants.set(key, maximal.slice(1));
+        else pendingCueVariants.delete(key);
       }
       if (checkpoint) pendingCueCheckpoints.set(scopeKey(context), checkpoint);
       if (hasPendingFor(context) && !timer && !retryTimers.has(scopeKey(context))) {
@@ -149,10 +111,9 @@ export function createMeetingCheckpointSyncCoordinator({
     onStatusChange?.('syncing');
 
     try {
-      await updateCheckpoint({
+      const payload = {
         meetingId: flushContext.meetingId,
         segmentId: flushContext.segmentId,
-        idempotencyKey: checkpointIdempotencyKey(flushContext.segmentId, chunks),
         durableChunks: chunks,
         finalCues: cues,
         cueCheckpoint: payloadCheckpoint,
@@ -160,7 +121,12 @@ export function createMeetingCheckpointSyncCoordinator({
         refinedSubtitleRevision: payloadCheckpoint?.refinedSubtitleRevision,
         refinedSubtitleInputHash: payloadCheckpoint?.refinedSubtitleInputHash,
         refinedSubtitleStatus: payloadCheckpoint?.refinedSubtitleStatus
-      });
+      };
+      payload.idempotencyKey = checkpointOperationKey(flushContext.segmentId, payload);
+      const committed = await updateCheckpoint(payload);
+      if (committed?.checkpoint && !checkpointCoversFlush(committed, flushContext, chunks, cues, payloadCheckpoint)) {
+        throw checkpointConflict('committed checkpoint does not cover the requested flush');
+      }
 
       for (const chunk of chunks) {
         const key = chunkKey(chunk);
@@ -170,7 +136,7 @@ export function createMeetingCheckpointSyncCoordinator({
       for (const cue of cues) {
         const key = cueKey(flushContext, cue);
         const pending = pendingCues.get(key);
-        if (pending && cueCovers(cue, pending)) pendingCues.delete(key);
+        if (pending && cueCovers(cue, pending)) promotePendingCue(key);
       }
       if (pendingCueCheckpoints.has(flushScope) &&
           sameCueCheckpoint(pendingCueCheckpoints.get(flushScope), payloadCheckpoint)) {
@@ -269,8 +235,8 @@ export function createMeetingCheckpointSyncCoordinator({
       const persisted = persistedCues.get(key);
       const sameOwner = persisted?.cueId === pending.cueId &&
         persisted?.sessionId === pending.sessionId && persisted?.segmentId === pending.segmentId;
-      if (sameOwner && cueCovers(persisted, pending)) {
-        pendingCues.delete(key);
+    if (sameOwner && sameCueSnapshot(persisted, pending)) {
+      promotePendingCue(key);
       }
     }
 
@@ -291,6 +257,18 @@ export function createMeetingCheckpointSyncCoordinator({
     return [...pendingChunks.values()].some((chunk) => chunk.meetingId === candidate.meetingId && chunk.segmentId === candidate.segmentId)
       || [...pendingCues.keys()].some((key) => key.startsWith(`${scope}:`))
       || pendingCueCheckpoints.has(scope);
+  }
+
+  function promotePendingCue(key) {
+    const variants = pendingCueVariants.get(key) || [];
+    if (variants.length === 0) {
+      pendingCues.delete(key);
+      pendingCueVariants.delete(key);
+      return;
+    }
+    pendingCues.set(key, variants[0]);
+    if (variants.length === 1) pendingCueVariants.delete(key);
+    else pendingCueVariants.set(key, variants.slice(1));
   }
 }
 
@@ -325,13 +303,18 @@ function normalizeContext(contextInput = {}) {
   return { meetingId, segmentId };
 }
 
-function checkpointIdempotencyKey(segmentId, chunks) {
-  const lastChunk = chunks.at(-1);
-  return `checkpoint:${segmentId}:${lastChunk?.stream || 'empty'}:${lastChunk?.sequence ?? 0}`;
+function checkpointCoversFlush(result, scope, chunks, cues, cueCheckpoint) {
+  if (result.meetingId !== scope.meetingId || result.segmentId !== scope.segmentId) return false;
+  const checkpoint = result.checkpoint;
+  const storedChunks = new Map((checkpoint.durableChunks || []).map((chunk) => [chunk.idempotencyKey, chunk]));
+  const storedCues = new Map((checkpoint.finalCues || []).map((cue) => [cueKey(scope, cue), cue]));
+  return chunks.every((chunk) => sameChunk(storedChunks.get(chunk.idempotencyKey), chunk)) &&
+    cues.every((cue) => cueCovers(storedCues.get(cueKey(scope, cue)), cue)) &&
+    (!cueCheckpoint || sameCueCheckpoint(checkpoint.cueCheckpoint, cueCheckpoint));
 }
 
 function scopeKey(value) {
-  return `${value.meetingId}:${value.segmentId}`;
+  return JSON.stringify([value.meetingId, value.segmentId]);
 }
 
 function chunkKey(chunk) {
@@ -339,7 +322,7 @@ function chunkKey(chunk) {
 }
 
 function cueKey(context, cue) {
-  return `${scopeKey(context)}:${cue.sessionId}:${cue.cueId}`;
+  return `${scopeKey(context)}:${JSON.stringify([cue.sessionId, cue.cueId])}`;
 }
 
 function sortedChunks(chunks) {
@@ -434,6 +417,14 @@ function sideCovers(remote, local, side) {
   if (!remote[content].startsWith(local[content])) return false;
   return remote[status] === local[status] ||
     (local[status] === 'pending' && ['finalized', 'unavailable'].includes(remote[status]));
+}
+
+function sameCueSnapshot(left, right) {
+  try {
+    return sameValue(validateFinalCue(left), validateFinalCue(right));
+  } catch {
+    return sameValue(left, right);
+  }
 }
 
 function sameCueCheckpoint(left, right) {

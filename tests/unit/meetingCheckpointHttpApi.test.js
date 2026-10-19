@@ -849,6 +849,7 @@ test('checkpoint accepts a monotonic merged Cue update', async () => {
     body: JSON.stringify(checkpoint({
       meetingId: meeting.id,
       segmentId: segment.id,
+      idempotencyKey: 'checkpoint-merged-2',
       finalCues: [{ ...cue, sourceText: '你好世界', translatedText: 'hello world', endTimeMs: 200, finalizedReason: 'merged' }]
     }))
   });
@@ -1192,9 +1193,9 @@ function sessionReadController() {
   };
 }
 
-function checkpoint({ meetingId, segmentId, durableChunks = [], finalCues = [] }) {
+function checkpoint({ meetingId, segmentId, idempotencyKey = 'checkpoint-1', durableChunks = [], finalCues = [] }) {
   return {
-    idempotencyKey: 'checkpoint-1',
+    idempotencyKey,
     durableChunks,
     ...(finalCues.length > 0 ? { finalCues } : {}),
     pendingPartial: null,

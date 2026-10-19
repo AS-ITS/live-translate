@@ -43,7 +43,7 @@ test('checkpoint treats persisted cue metadata normalization as idempotent', asy
     meetingId: meeting.id,
     segmentId: segment.id,
     checkpoint: {
-      idempotencyKey: 'checkpoint-1',
+      idempotencyKey: 'checkpoint-2',
       durableChunks: [],
       finalCues: [{ ...cue, finalizedReason: 'generationComplete' }],
       pendingPartial: null

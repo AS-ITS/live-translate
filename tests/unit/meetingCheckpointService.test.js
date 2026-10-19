@@ -95,6 +95,7 @@ test('meeting settings snapshots normalize legacy glossary aliases for recovered
   const baseRepository = createMemoryMeetingRepository();
   const repository = {
     ...baseRepository,
+    mutateMeetingSegment: baseRepository.mutateMeetingSegment,
     getMeeting(meetingId) {
       const meeting = baseRepository.getMeeting(meetingId);
       return meeting
@@ -186,7 +187,7 @@ test('checkpoint updates an existing cue when a later merged payload only extend
   const mergedCue = { ...baseCue, sourceText: '你好世界', translatedText: 'hello world', endTimeMs: 200, finalizedReason: 'merged' };
 
   await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: checkpoint({ finalCues: [baseCue] }) });
-  await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: checkpoint({ finalCues: [mergedCue] }) });
+  await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: checkpoint({ idempotencyKey: 'checkpoint-2', finalCues: [mergedCue] }) });
 
   const result = await service.getCheckpoint({ meetingId: meeting.id, segmentId: segment.id });
   assert.deepEqual(result.checkpoint.finalCues, [{
@@ -213,7 +214,7 @@ test('checkpoint rejects conflicting idempotency keys and duplicate stream seque
     service.updateCheckpoint({
       meetingId: meeting.id,
       segmentId: segment.id,
-      checkpoint: checkpoint({ durableChunks: [chunk({ sequence: 1, text: 'changed' })] })
+      checkpoint: checkpoint({ idempotencyKey: 'checkpoint-2', durableChunks: [chunk({ sequence: 1, text: 'changed' })] })
     }),
     /checkpoint chunk conflict/
   );
@@ -222,7 +223,7 @@ test('checkpoint rejects conflicting idempotency keys and duplicate stream seque
     service.updateCheckpoint({
       meetingId: meeting.id,
       segmentId: segment.id,
-      checkpoint: checkpoint({ durableChunks: [chunk({ idempotencyKey: 'chunk-source-1b', sequence: 1, text: 'changed' })] })
+      checkpoint: checkpoint({ idempotencyKey: 'checkpoint-3', durableChunks: [chunk({ idempotencyKey: 'chunk-source-1b', sequence: 1, text: 'changed' })] })
     }),
     /checkpoint sequence conflict/
   );

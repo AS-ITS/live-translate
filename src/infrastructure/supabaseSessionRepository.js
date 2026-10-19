@@ -1,10 +1,11 @@
 import { createSessionRecord as createSessionRecordModel, createTranscriptItemForSession, finalizeSessionRecord as finalizeSessionRecordModel, summarizeTranscriptItems, updateSessionRecord as updateSessionRecordModel } from '../lib/sessionRecords.js';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
-import { eq } from './supabaseRestClient.js';
+import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
 import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
 
 export function createSupabaseSessionRepository(options = {}) {
   const clientForRequest = createSupabaseRequestClient(options);
+  const privileged = createSupabaseServiceRoleClient(options);
   const client = { request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args) };
   const idFactory = options.idFactory;
   const owner = () => currentRequestOwnerId() || failOwner();
@@ -56,7 +57,13 @@ export function createSupabaseSessionRepository(options = {}) {
     },
     async deleteSessionRecord(id) {
       const existing = await this.getSessionRecord(id); if (!existing) return false;
-      await client.request('sessions', { method: 'DELETE', query: `?${eq('id', id)}&${eq('owner_user_id', owner())}` });
+      if (!privileged) {
+        const error = new Error('Controlled session deletion is unavailable.');
+        error.code = 'cloud_capability_unavailable';
+        error.status = 503;
+        throw error;
+      }
+      await privileged.request('sessions', { method: 'DELETE', query: `?${eq('id', id)}&${eq('owner_user_id', owner())}` });
       return true;
     }
   };

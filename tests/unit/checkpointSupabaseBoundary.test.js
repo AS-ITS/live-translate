@@ -27,12 +27,12 @@ test('Supabase checkpoint adapter sends one transactional RPC and returns its co
     });
     assert.equal(result.checkpoint.revision, 1);
     assert.equal(calls.length, 1);
-    assert.match(calls[0].url, /\/rpc\/apply_meeting_checkpoint_operation$/u);
+    assert.match(calls[0].url, /\/rpc\/apply_meeting_checkpoint_operation_v2$/u);
     const body = JSON.parse(calls[0].init.body);
     assert.equal(body.p_expected_revision, 0);
     assert.equal(body.p_operation_key, 'op-a');
     assert.equal(body.p_canonical_payload, 'payload-a');
-    assert.equal(body.p_owner_user_id, 'owner-1');
+    assert.equal(Object.hasOwn(body, 'p_owner_user_id'), false);
   } finally {
     setRequestUser(null);
   }

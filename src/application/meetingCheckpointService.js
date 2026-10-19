@@ -1,7 +1,7 @@
 import { Meeting, MeetingSegment, isTerminalMeetingSegmentStatus } from '../domain/meeting/index.js';
 import { mergeFinalCue, normalizeCueCheckpoint, validateFinalCue } from '../domain/subtitleCue/index.js';
 import { normalizeMeetingGlossaryAliases } from '../lib/meetingGlossary.js';
-import { checkCheckpointOperation, checkpointConflict, recordCheckpointOperation } from '../lib/checkpointOperation.js';
+import { checkCheckpointOperation, checkpointConflict, checkpointOperationKey, recordCheckpointOperation } from '../lib/checkpointOperation.js';
 
 const STREAM_ORDER = Object.freeze({ source: 0, translation: 1 });
 const MEETING_RETENTION_MS = 30 * 60 * 1000;
@@ -230,10 +230,15 @@ export function createMeetingCheckpointService({
       };
     },
 
-    async updateCheckpoint({ meetingId, segmentId, checkpoint } = {}) {
+    async updateCheckpoint({ meetingId, segmentId, checkpoint, protocol = 'v2' } = {}) {
       const segment = await requireSegment({ meetingRepository, meetingId, segmentId });
       const now = clock();
       const incoming = validateCheckpointInput(checkpoint, segment.meetingId, segment.id);
+      if (protocol === 'legacy') {
+        incoming.idempotencyKey = checkpointOperationKey(segment.id, incoming);
+      } else if (protocol !== 'v2') {
+        throw codedError('invalid_request', 'Unsupported checkpoint protocol.');
+      }
       await validateCueIntegrity(incoming.finalCues, meetingRepository, sessionRepository, segment.meetingId);
       const apply = (current) => {
         if (current.meetingId !== segment.meetingId) throw checkpointConflict('checkpoint owner changed');

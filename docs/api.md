@@ -796,6 +796,14 @@ return `404`; non-active current Segments return `409`.
 
 Persists confirmed transcript or translation chunks for one Segment.
 
+Current clients send `X-Checkpoint-Protocol: 2`. Reusing an `idempotencyKey`
+with different content returns `409`. The server accepts older chunk cursor
+keys from existing browser sessions and derives an internal operation key from
+the validated payload; identical retries remain idempotent. A successful
+response means the cumulative checkpoint and every referenced final Cue
+committed in one database transaction. Direct browser writes to checkpoint
+JSON and `subtitle_cues` are denied.
+
 ```json
 {
   "idempotencyKey": "checkpoint:segment-1:12",
@@ -833,6 +841,9 @@ new effect, while reuse with changed content returns `checkpoint_conflict`
 (`409`). Concurrent or stale revisions also return `409`; callers must read
 back and retain any unproven pending content before retrying. Per-Cue saves
 have a separate durability acknowledgment.
+
+Recording lifecycle commands do not accept a `checkpoint` payload; clients
+flush pending Cues and checkpoint content before a terminal transition.
 
 ## `GET /api/meetings/:meetingId/segments/:segmentId/checkpoint`
 

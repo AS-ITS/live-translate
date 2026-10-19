@@ -42,10 +42,11 @@ test('meeting cue persistence uses the already validated session record', async 
       }
     });
 
-    assert.deepEqual(result, { id: 'cue-1' });
+    assert.equal(result.id, 'cue-1');
     assert.equal(requests.length, 1);
-    assert.match(requests[0].url, /\/rest\/v1\/subtitle_cues/u);
-    const row = JSON.parse(requests[0].options.body)[0];
+    assert.match(requests[0].url, /\/rest\/v1\/rpc\/publish_meeting_cue_v2$/u);
+    assert.equal(requests[0].options.headers.Authorization, 'Bearer service-key');
+    const row = JSON.parse(requests[0].options.body).p_cue;
     assert.equal(row.source_status, 'finalized');
     assert.equal(row.translation_status, 'finalized');
     assert.equal(row.source_version, 1);

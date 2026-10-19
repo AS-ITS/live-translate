@@ -1923,8 +1923,19 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         legacyResumeDiagnostic.rpcName = 'resume_legacy_meeting_segment';
         legacyResumeDiagnostic.rpcAttempted = true;
         legacyResumeDiagnostic.commitStatus = 'unknown';
+        const committedCheckpoint = await meetingCheckpointService.updateCheckpoint({
+          meetingId,
+          segmentId: sourceSegmentId,
+          checkpoint: {
+            ...payload.checkpoint,
+            idempotencyKey: `checkpoint:${sourceSegmentId}:legacy-resume:${body.operationId}`,
+            pendingPartial: null
+          },
+          protocol: 'legacy'
+        });
         result = await legacyResumeService.execute({
           ...payload,
+          checkpoint: committedCheckpoint.checkpoint,
           ownerUserId: principal.ownerUserId,
           operationId: body.operationId,
           payloadHash,
@@ -2010,6 +2021,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
 
       const payload = { ...(body || {}) };
       for (const field of ['operationId', 'expectedLifecycleVersion', 'leaseId', 'fenceToken']) delete payload[field];
+      if (payload.checkpoint !== undefined) throw createHttpError('checkpoint_conflict');
       const result = await meetingLifecycleService.execute({
         ...principal,
         meetingId: route.meetingId,
@@ -2310,13 +2322,6 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const body = await readJson(req, { maxBytes: 100_000 });
       const sessionId = body?.sessionId || req.headers?.['x-recorder-session-id'];
       cueRequestContext.sessionId = sessionId || null;
-      const existing = await validateMeetingSessionSegmentBinding({
-        meetingId,
-        segmentId,
-        sessionId,
-        sessionRepository,
-        meetingRepository
-      });
       if (hasRecorderHeaders(req)) {
         await authorizeRecorderMeetingWrite({
           req,
@@ -2329,6 +2334,13 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
           recorderLeaseService
         });
       }
+        const existing = await validateMeetingSessionSegmentBinding({
+          meetingId,
+          segmentId,
+          sessionId,
+          sessionRepository,
+          meetingRepository
+        });
       const cue = normalizePublishedCue(body?.cue, { meetingId, segmentId, sessionId });
       cueRequestContext.cueId = cue.cueId;
       cueRequestContext.sequence = cue.sequence;
@@ -2581,13 +2593,20 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       if (req.method === 'PUT') {
         await authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, meetingRepository, sessionShareService, recorderGrantService, recorderLeaseService });
       }
-      const result = req.method === 'GET'
-        ? await meetingCheckpointService.getCheckpoint({ meetingId, segmentId })
-        : await meetingCheckpointService.updateCheckpoint({
-            meetingId,
-            segmentId,
-            checkpoint: await readJson(req, { maxBytes: meetingCheckpointMaxBytes })
-          });
+        const checkpoint = req.method === 'PUT'
+          ? await readJson(req, { maxBytes: meetingCheckpointMaxBytes }) : null;
+        const protocolHeader = req.headers?.['x-checkpoint-protocol'];
+        const legacyKey = `checkpoint:${segmentId}:`;
+        const protocol = protocolHeader === '2' ? 'v2'
+          : protocolHeader === undefined
+            && typeof checkpoint?.idempotencyKey === 'string'
+            && checkpoint.idempotencyKey.startsWith(legacyKey)
+            && /^(source|translation|empty):\d+$/u.test(checkpoint.idempotencyKey.slice(legacyKey.length))
+            ? 'legacy' : protocolHeader === undefined ? 'v2' : null;
+        if (req.method === 'PUT' && !protocol) throw createHttpError('invalid_request');
+        const result = req.method === 'GET'
+          ? await meetingCheckpointService.getCheckpoint({ meetingId, segmentId })
+          : await meetingCheckpointService.updateCheckpoint({ meetingId, segmentId, checkpoint, protocol });
       statusCode = 200;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
@@ -3605,6 +3624,9 @@ async function validateMeetingSessionSegmentBinding({ meetingId, segmentId, sess
 async function authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, meetingRepository, sessionShareService, recorderGrantService, recorderLeaseService }) {
   if (!hasRecorderHeaders(req)) return null;
   const sessionId = req.headers?.['x-recorder-session-id'];
+  const authorization = await authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
+  if (!authorization?.share?._ownerUserId) throw createHttpError('recorder_forbidden');
+  setRequestUser({ id: authorization.share._ownerUserId });
   await validateMeetingSessionSegmentBinding({
     meetingId,
     segmentId,
@@ -3612,7 +3634,7 @@ async function authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessio
     sessionRepository,
     meetingRepository
   });
-  return authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
+  return authorization;
 }
 
 function validateRecorderSnapshot(existingSession, body) {

@@ -228,6 +228,7 @@ export function createMeetingCheckpointApiClient({
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
+          'X-Checkpoint-Protocol': '2',
           ...authorizationHeadersFor(authorizationHeaders),
           ...meetingLifecycleWriteHeaders(meetingId, segmentId)
         },

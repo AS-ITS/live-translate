@@ -163,8 +163,8 @@ export async function completeMeetingAfterRecordingFinalize({
   if (alreadyCompleted) return true;
   await flushAudio?.();
   await flushCues?.();
-  await flushCheckpoint?.();
-  await flushCuePublishes?.();
+  if (await flushCheckpoint?.() === false) throw new Error('Checkpoint flush failed before completion.');
+  if ((await flushCuePublishes?.())?.cloudSynced === false) throw new Error('Cue publication failed before completion.');
   await completeMeeting?.();
   return true;
 }
@@ -180,15 +180,10 @@ export async function stopLifecycleV2AfterFailure({
   preventFurtherWrites
 } = {}) {
   if (!lifecycle?.meetingId || !lifecycle?.segmentId) return false;
-  await flushCheckpoint();
+  if (await flushCheckpoint() === false) throw new Error('Checkpoint flush failed before stop.');
   await executeRecordingCommand('stop', {
     failureReason: failureReason || 'unknown_error',
-    failureCategory: failureCategory || 'unknown',
-    checkpoint: {
-      idempotencyKey: `checkpoint:${lifecycle.segmentId}:failed:${failureReason || 'unknown_error'}`,
-      durableChunks: [],
-      pendingPartial: null
-    }
+    failureCategory: failureCategory || 'unknown'
   });
   stopHeartbeats();
   clearWriteFence(lifecycle.meetingId);
@@ -1138,7 +1133,9 @@ export function useLiveRecordingController({
 
       return recoverySingleFlight.run(`${recoveryKey}:recover`, async () => {
         try {
-          await checkpointController.flushMeetingCheckpointSync();
+          if (await checkpointController.flushMeetingCheckpointSync() === false) {
+            throw new Error('Checkpoint flush failed before interruption.');
+          }
           if (meetingLifecycleRef.current) {
             return await executeMeetingLifecycleCommand('recover', {
               failureReason: failureReason || 'unknown_error',
@@ -1266,11 +1263,16 @@ export function useLiveRecordingController({
       recovery.setLiveCueUpdatesAllowed(false);
       await recovery.finalizePendingTranscriptItemsForStop();
       cueController.flushSubtitleCues('stop');
-      await checkpointController.flushMeetingCheckpointSync();
+      const checkpointFlushed = await checkpointController.flushMeetingCheckpointSync();
       const cueSyncResult = await recovery.flushMeetingCuePublishes?.(
         recovery.activeSessionRecordIdRef.current,
         { forceCloud: true }
       );
+      if (completeMeeting && (!checkpointFlushed || cueSyncResult?.cloudSynced === false)) {
+        recovery.setMeetingCheckpointStatus?.('error');
+        recovery.setMeetingCheckpointErrorMessage?.('雲端字幕同步尚未完成，未同步資料已保留，請重試結束會議。');
+        throw new Error('Unable to complete meeting before checkpoint and Cue writes are durable.');
+      }
       if (meetingLifecycleRef.current) {
         await executeMeetingLifecycleCommand('stop');
         stopMeetingLifecycleHeartbeats();
@@ -1537,7 +1539,12 @@ export function useLiveRecordingController({
         recovery.activeSessionRecordIdRef.current,
         { forceCloud: true }
       );
-      await checkpointController.flushMeetingCheckpointSync();
+      const checkpointFlushed = await checkpointController.flushMeetingCheckpointSync();
+      if (!checkpointFlushed) {
+        recovery.setMeetingCheckpointStatus?.('error');
+        recovery.setMeetingCheckpointErrorMessage?.('長會議同步尚未完成，未同步字幕已保留，請重試暫停。');
+        return;
+      }
       if (recovery.sessionStopRequestedRef.current) return;
       if (meetingLifecycleRef.current) {
         await executeMeetingLifecycleCommand('pause');
@@ -2084,6 +2091,7 @@ export function useLiveRecordingController({
         if (!flushed) {
           recovery.setMeetingCheckpointStatus?.('error');
           recovery.setMeetingCheckpointErrorMessage?.('長會議同步暫時失敗，錄音與本機字幕仍會繼續，未同步資料會保留重試。');
+          throw new Error('Unable to flush meeting checkpoint before rollover.');
         }
     if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
 

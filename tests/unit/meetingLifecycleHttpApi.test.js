@@ -411,6 +411,9 @@ test('legacy resume reports unavailable server capability before any RPC', async
 function createHandler(meetingLifecycleService, { meetingAudioService, ...extra } = {}) {
   return createRequestHandler({
     meetingLifecycleService,
+    meetingCheckpointService: {
+      async updateCheckpoint({ checkpoint }) { return { checkpoint }; }
+    },
     ...extra,
     ...(meetingAudioService ? { meetingAudioService } : {}),
     accessControl: {

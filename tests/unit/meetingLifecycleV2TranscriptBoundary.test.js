@@ -192,12 +192,7 @@ test('lifecycle v2 unrecoverable failure stops instead of recovering', async () 
       command: 'stop',
       payload: {
         failureReason: 'provider_unavailable',
-        failureCategory: 'provider',
-        checkpoint: {
-          idempotencyKey: 'checkpoint:segment-v2:failed:provider_unavailable',
-          durableChunks: [],
-          pendingPartial: null
-        }
+        failureCategory: 'provider'
       }
     },
     'stop-heartbeats',
@@ -205,6 +200,16 @@ test('lifecycle v2 unrecoverable failure stops instead of recovering', async () 
     'prevent-further-writes'
   ]);
   assert.equal(calls.some((call) => call?.command === 'recover'), false);
+});
+
+test('lifecycle v2 cannot ACK stop after a failed checkpoint flush', async () => {
+  const calls = [];
+  await assert.rejects(stopLifecycleV2AfterFailure({
+    lifecycle: { meetingId: 'meeting-v2', segmentId: 'segment-v2' },
+    flushCheckpoint: async () => false,
+    executeRecordingCommand: async () => calls.push('stop')
+  }), /Checkpoint flush failed/);
+  assert.deepEqual(calls, []);
 });
 
 function response(body) {

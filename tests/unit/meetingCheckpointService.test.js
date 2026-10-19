@@ -179,6 +179,28 @@ test('duplicate checkpoint chunks are idempotent', async () => {
   assert.equal(result.checkpoint.durableChunks.length, 1);
 });
 
+test('legacy cursor key derives a scoped operation from content and replays safely', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting();
+  const legacyKey = `checkpoint:${segment.id}:source:1`;
+  const first = checkpoint({ idempotencyKey: legacyKey, durableChunks: [chunk({ sequence: 1, text: 'hello' })] });
+  const second = checkpoint({ idempotencyKey: legacyKey, durableChunks: [
+    chunk({ sequence: 1, text: 'hello' }),
+    chunk({ sequence: 2, text: 'world' })
+  ] });
+
+  const firstResult = await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: first, protocol: 'legacy' });
+  const secondResult = await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: second, protocol: 'legacy' });
+  const replay = await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: second, protocol: 'legacy' });
+
+  assert.equal(firstResult.checkpoint.revision, 1);
+  assert.equal(secondResult.checkpoint.revision, 2);
+  assert.equal(replay.checkpoint.revision, 2);
+  assert.equal(secondResult.checkpoint.durableChunks.length, 2);
+  assert.notEqual(firstResult.checkpoint.idempotencyKey, secondResult.checkpoint.idempotencyKey);
+});
+
 test('checkpoint updates an existing cue when a later merged payload only extends it', async () => {
   const repository = createMemoryMeetingRepository();
   const service = createService(repository);

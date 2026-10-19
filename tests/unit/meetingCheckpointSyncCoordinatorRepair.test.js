@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMeetingCheckpointSyncCoordinator } from '../../src/lib/meetingCheckpointSyncCoordinator.js';
+import { validateFinalCue, normalizeCueCheckpoint } from '../../src/domain/subtitleCue/index.js';
 
 const cue = (cueId, overrides = {}) => ({
   cueId,
@@ -133,4 +134,144 @@ test('same Cue ID in two sessions retains both session-owned versions', async ()
   coordinator.enqueueCues([cue('cue-1'), cue('cue-1', { sessionId: 'session-2' })]);
   assert.equal(await coordinator.flush(), true);
   assert.deepEqual(calls[0].finalCues.map((item) => item.sessionId), ['session-1', 'session-2']);
+});
+
+const completeCue = (overrides = {}) => ({
+  cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1',
+  sequence: 1, startTimeMs: 0, endTimeMs: 300,
+  sourceLanguageCode: 'en', targetLanguageCode: 'fr',
+  sourceText: 'hello', translatedText: 'bonjour',
+  status: 'final', finalizedReason: 'final', ...overrides
+});
+
+const readback = (finalCues = [], cueCheckpoint) => ({
+  meetingId: 'meeting-1', segmentId: 'segment-1',
+  checkpoint: { finalCues, cueCheckpoint }
+});
+
+test('409 acknowledges a Cue after domain status and version defaults', async () => {
+  const local = completeCue();
+  const { coordinator, calls } = coordinatorForConflicts(() => readback([validateFinalCue(local)]));
+  coordinator.enqueueCues([local]);
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls.length, 1);
+});
+
+test('409 treats optional initialTranslation undefined as the stored null', async () => {
+  const local = completeCue({
+    rawSource: 'hello', rawTranslation: 'bonjour',
+    initialTranslation: undefined, refinement: { version: 1 }
+  });
+  const { coordinator, calls } = coordinatorForConflicts(() => readback([validateFinalCue(local)]));
+  coordinator.enqueueCues([local]);
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls.length, 1);
+});
+
+test('409 ignores Cue property insertion order after normalization', async () => {
+  const local = completeCue();
+  const reordered = Object.fromEntries(Object.entries(validateFinalCue(local)).reverse());
+  const { coordinator, calls } = coordinatorForConflicts(() => readback([reordered]));
+  coordinator.enqueueCues([local]);
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls.length, 1);
+});
+
+for (const [name, localOverride, remoteOverride] of [
+  ['source', { sourceVersion: 2, refinement: { version: 1 } }, { sourceVersion: 1, refinement: { version: 2 } }],
+  ['translation', { translationVersion: 2, refinement: { version: 1 } }, { translationVersion: 1, refinement: { version: 2 } }],
+  ['both sides', { sourceVersion: 2, translationVersion: 2, refinement: { version: 1 } },
+    { sourceVersion: 1, translationVersion: 1, refinement: { version: 2 } }]
+]) {
+  test(`409 does not acknowledge newer local ${name} from a higher refinement version`, async () => {
+    const local = validateFinalCue(completeCue(localOverride));
+    const remote = validateFinalCue(completeCue(remoteOverride));
+    const { coordinator, calls } = coordinatorForConflicts(() => readback([remote]));
+    coordinator.enqueueCues([local]);
+    assert.equal(await coordinator.flush(), false);
+    assert.equal(await coordinator.flush(), true);
+    assert.deepEqual(calls[1].finalCues, [local]);
+  });
+}
+
+test('409 acknowledges a newer readback that covers both sides and refinement', async () => {
+  const local = validateFinalCue(completeCue({
+    sourceVersion: 2, translationVersion: 2, refinement: { version: 1 }
+  }));
+  const remote = validateFinalCue(completeCue({
+    sourceVersion: 3, translationVersion: 3,
+    refinement: { version: 2, status: 'completed' }, refinedTranslation: 'salut'
+  }));
+  const { coordinator, calls } = coordinatorForConflicts(() => readback([remote]));
+  coordinator.enqueueCues([local]);
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls.length, 1);
+});
+
+test('409 retains a Cue when remote Cue ID differs', async () => {
+  const local = validateFinalCue(completeCue());
+  const remote = validateFinalCue(completeCue({ cueId: 'cue-foreign' }));
+  const { coordinator, calls } = coordinatorForConflicts(() => readback([remote]));
+  coordinator.enqueueCues([local]);
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(await coordinator.flush(), true);
+  assert.deepEqual(calls[1].finalCues, [local]);
+});
+
+test('409 acknowledges a normalized cueCheckpoint and clears only its scope', async () => {
+  const local = { nextSequence: 2 };
+  const { coordinator, calls } = coordinatorForConflicts(() => readback([], normalizeCueCheckpoint(local)));
+  coordinator.enqueueCues([], local);
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls.length, 1);
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-2' });
+  coordinator.enqueueCues([], { nextSequence: 3 });
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].segmentId, 'segment-2');
+});
+
+test('409 cannot clear a cueCheckpoint using another segment readback', async () => {
+  const local = { nextSequence: 2 };
+  const { coordinator, calls } = coordinatorForConflicts(() => ({
+    meetingId: 'meeting-1', segmentId: 'segment-foreign',
+    checkpoint: { finalCues: [], cueCheckpoint: normalizeCueCheckpoint(local) }
+  }));
+  coordinator.enqueueCues([], local);
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls[1].segmentId, 'segment-1');
+  assert.deepEqual(calls[1].cueCheckpoint, local);
+});
+
+test('409 replay stops submitting after readback proves the Cue durable', async () => {
+  const local = validateFinalCue(completeCue());
+  let reads = 0;
+  const { coordinator, calls } = coordinatorForConflicts(() => readback(++reads === 1 ? [] : [local]), 3);
+  coordinator.enqueueCues([local]);
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls.length, 2);
+});
+
+test('enqueue preserves independent side and refinement versions for compatible Cue snapshots', async () => {
+  const sideNewer = validateFinalCue(completeCue({ sourceVersion: 2, refinement: { version: 1 } }));
+  const refinementNewer = validateFinalCue(completeCue({ sourceVersion: 1, refinement: { version: 2 } }));
+  const calls = [];
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => calls.push(payload),
+    setTimeoutFn: () => ({}), clearTimeoutFn: () => {}
+  });
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueueCues([sideNewer]);
+  coordinator.enqueueCues([refinementNewer]);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls[0].finalCues[0].sourceVersion, 2);
+  assert.equal(calls[0].finalCues[0].refinement.version, 2);
 });

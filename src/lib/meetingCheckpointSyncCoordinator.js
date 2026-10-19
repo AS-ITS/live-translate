@@ -1,3 +1,5 @@
+import { normalizeCueCheckpoint, validateFinalCue } from '../domain/subtitleCue/index.js';
+
 const DEFAULT_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_CHECKPOINT_RETRY_DELAY_MS = 5000;
 const MAX_CONFLICT_RETRIES = 3;
@@ -11,6 +13,8 @@ function refinementStatusRank(cue) {
 }
 
 function preferCue(incoming, existing) {
+  const combined = combineCompatibleCues(incoming, existing);
+  if (combined) return combined;
   const versionDelta = refinementVersion(incoming) - refinementVersion(existing);
   if (versionDelta !== 0) return versionDelta > 0 ? incoming : existing;
   const statusDelta = refinementStatusRank(incoming) - refinementStatusRank(existing);
@@ -18,6 +22,32 @@ function preferCue(incoming, existing) {
   return (incoming?.refinedSource || incoming?.refinedTranslation) && !(existing?.refinedSource || existing?.refinedTranslation)
     ? incoming
     : existing;
+}
+
+function combineCompatibleCues(incoming, existing) {
+  let next;
+  let prior;
+  try {
+    next = validateFinalCue(incoming);
+    prior = validateFinalCue(existing);
+  } catch {
+    return null;
+  }
+  const sameSnapshot = ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs',
+    'endTimeMs', 'sourceLanguageCode', 'targetLanguageCode', 'mode', 'status',
+    'finalizedReason', 'sourceText', 'translatedText', 'sourceStatus',
+    'translationStatus', 'initialTranslation'].every((field) => next[field] === prior[field]);
+  if (!sameSnapshot || (next.refinement && prior.refinement &&
+      next.refinement.inputHash !== prior.refinement.inputHash)) return null;
+
+  const preferred = refinementVersion(next) > refinementVersion(prior) ||
+    (refinementVersion(next) === refinementVersion(prior) &&
+      refinementStatusRank(next) > refinementStatusRank(prior)) ? next : prior;
+  return {
+    ...preferred,
+    sourceVersion: Math.max(next.sourceVersion, prior.sourceVersion),
+    translationVersion: Math.max(next.translationVersion, prior.translationVersion)
+  };
 }
 
 export function createMeetingCheckpointSyncCoordinator({
@@ -140,9 +170,10 @@ export function createMeetingCheckpointSyncCoordinator({
       for (const cue of cues) {
         const key = cueKey(flushContext, cue);
         const pending = pendingCues.get(key);
-        if (pending && JSON.stringify(pending) === JSON.stringify(cue)) pendingCues.delete(key);
+        if (pending && cueCovers(cue, pending)) pendingCues.delete(key);
       }
-      if (JSON.stringify(pendingCueCheckpoints.get(flushScope)) === JSON.stringify(payloadCheckpoint)) {
+      if (pendingCueCheckpoints.has(flushScope) &&
+          sameCueCheckpoint(pendingCueCheckpoints.get(flushScope), payloadCheckpoint)) {
         pendingCueCheckpoints.delete(flushScope);
       }
       clearRetryTimer(flushContext);
@@ -238,18 +269,15 @@ export function createMeetingCheckpointSyncCoordinator({
       const persisted = persistedCues.get(key);
       const sameOwner = persisted?.cueId === pending.cueId &&
         persisted?.sessionId === pending.sessionId && persisted?.segmentId === pending.segmentId;
-      const sameContent = JSON.stringify(pending) === JSON.stringify(persisted);
-      const confirmedNewerVersion = refinementVersion(persisted) > refinementVersion(pending) &&
-        persisted.sequence === pending.sequence && persisted.sourceText === pending.sourceText &&
-        persisted.translatedText === pending.translatedText &&
-        persisted.startTimeMs === pending.startTimeMs && persisted.endTimeMs === pending.endTimeMs;
-      if (sameOwner && (sameContent || confirmedNewerVersion)) {
+      if (sameOwner && cueCovers(persisted, pending)) {
         pendingCues.delete(key);
       }
     }
 
-    if (pendingCueCheckpoints.has(scopeKey(checkpointContext)) &&
-        JSON.stringify(pendingCueCheckpoints.get(scopeKey(checkpointContext))) === JSON.stringify(checkpoint?.cueCheckpoint)) {
+    if (latest?.meetingId === checkpointContext.meetingId &&
+        latest?.segmentId === checkpointContext.segmentId &&
+        pendingCueCheckpoints.has(scopeKey(checkpointContext)) &&
+        sameCueCheckpoint(pendingCueCheckpoints.get(scopeKey(checkpointContext)), checkpoint?.cueCheckpoint)) {
       pendingCueCheckpoints.delete(scopeKey(checkpointContext));
     }
   }
@@ -346,4 +374,83 @@ function sameChunk(left, right) {
     left.sequence === right.sequence &&
     left.text === right.text &&
     left.timestamp === right.timestamp;
+}
+
+function cueCovers(persisted, pending) {
+  if (!persisted || !pending ||
+      persisted.cueId !== pending.cueId ||
+      persisted.sessionId !== pending.sessionId ||
+      persisted.segmentId !== pending.segmentId) return false;
+
+  let remote;
+  let local;
+  try {
+    remote = validateFinalCue(persisted);
+    local = validateFinalCue(pending);
+  } catch {
+    // Invalid legacy shapes cannot establish a newer-version durability proof.
+    return sameValue(persisted, pending);
+  }
+
+  const identity = ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs',
+    'sourceLanguageCode', 'targetLanguageCode', 'mode', 'status', 'finalizedReason'];
+  if (!identity.every((field) => remote[field] === local[field])) return false;
+  if (remote.endTimeMs < local.endTimeMs) return false;
+  if (!sideCovers(remote, local, 'source') || !sideCovers(remote, local, 'translation')) return false;
+  if (remote.endTimeMs > local.endTimeMs &&
+      remote.sourceVersion === local.sourceVersion &&
+      remote.translationVersion === local.translationVersion) return false;
+
+  if (!Object.hasOwn(local, 'refinement')) return true;
+  if (!Object.hasOwn(remote, 'refinement')) return false;
+  if (local.initialTranslation !== null &&
+      remote.initialTranslation !== local.initialTranslation) return false;
+  if (local.initialTranslation === null && remote.initialTranslation !== null &&
+      remote.translationVersion <= local.translationVersion) return false;
+
+  const localRefinement = local.refinement;
+  const remoteRefinement = remote.refinement;
+  if (remoteRefinement.version < localRefinement.version) return false;
+  if (remoteRefinement.version === localRefinement.version) {
+    return sameValue(remoteRefinement, localRefinement) &&
+      remote.refinedSource === local.refinedSource &&
+      remote.refinedTranslation === local.refinedTranslation;
+  }
+  if (remoteRefinement.inputHash !== localRefinement.inputHash) return false;
+  if (localRefinement.status === 'completed' && remoteRefinement.status !== 'completed') return false;
+  if (local.refinedSource !== null && remote.refinedSource === null) return false;
+  if (local.refinedTranslation !== null && remote.refinedTranslation === null) return false;
+  return true;
+}
+
+function sideCovers(remote, local, side) {
+  const version = side === 'source' ? 'sourceVersion' : 'translationVersion';
+  const content = side === 'source' ? 'sourceText' : 'translatedText';
+  const status = side === 'source' ? 'sourceStatus' : 'translationStatus';
+  if (remote[version] < local[version]) return false;
+  if (remote[version] === local[version]) {
+    return remote[content] === local[content] && remote[status] === local[status];
+  }
+  if (!remote[content].startsWith(local[content])) return false;
+  return remote[status] === local[status] ||
+    (local[status] === 'pending' && ['finalized', 'unavailable'].includes(remote[status]));
+}
+
+function sameCueCheckpoint(left, right) {
+  const local = normalizeCueCheckpoint(left);
+  const remote = normalizeCueCheckpoint(right);
+  return local !== null && remote !== null && sameValue(local, remote);
+}
+
+function sameValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) &&
+      left.length === right.length && left.every((value, index) => sameValue(value, right[index]));
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key) => Object.hasOwn(right, key) && sameValue(left[key], right[key]));
 }

@@ -53,8 +53,9 @@ WEBRTC_RELAY_REDIS_URL=rediss://:<password>@<redis-host>:<port>
 ```text
 正式錄音端：https://<preview-host>/#live?meetingId=<meeting-id>
 正式 Viewer：https://<preview-host>/#viewer?code=<share-code>
-工程 POC：https://<preview-host>/webrtc-poc.html
 ```
+
+工程 POC 僅供本地 Vite 開發伺服器驗證；Preview 與 Production build 均不包含 `/webrtc-poc.html` 或 `/webrtc-poc.js`。
 
 合法分享 code/token 只在瀏覽器操作，不貼入 issue、公開日誌、截圖標題或報告。
 

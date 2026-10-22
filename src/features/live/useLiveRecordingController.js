@@ -4,11 +4,22 @@ import { cloudMeetingAudioEnabled, uploadMeetingSegmentAudio } from '../../lib/m
 import { createLiveAudioBindings } from './liveAudioBindings.js';
 import {
   applySubtitleCueEvent,
+  commitSubtitleCueState,
   finalizePendingSubtitleCue,
   markNumericCorrectionRequested,
   prepareSubtitleCueStateForNewSegment
 } from '../../lib/subtitleCues.js';
 import { missingNumericIntegrity } from '../../lib/numericIntegrity.js';
+function commitCueTransition(cue, previous, proposed) {
+  if (typeof cue.commit === 'function') return cue.commit(previous, proposed);
+  const result = commitSubtitleCueState(cue.stateRef.current, proposed, { baseState: previous });
+  if (!result.accepted) return result.state;
+  cue.stateRef.current = result.state;
+  cue.setState?.(result.state);
+  cue.persist?.(previous, result.state);
+  return result.state;
+}
+
 import { enqueueLiveCueEvent } from '../../lib/liveCueEventQueue.js';
 import { applyGlossaryCorrectionsToCueState } from '../../lib/glossaryReplacement.js';
 import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
@@ -477,10 +488,7 @@ export function useLiveRecordingController({
         : describeCueTransition(current, next, event, { wasProcessed });
       recordCueTrace({ cue, event, previous: current, next, ...transition });
       if (next === current) return;
-      cue.stateRef.current = next;
-      cue.setState?.(next);
-      cue.persist?.(current, next);
-      this.requestNumericCorrection(next);
+      this.requestNumericCorrection(commitCueTransition(cue, current, next));
     },
     queueLiveSubtitleCueEvent(event) {
       if (event?.connectionEpoch !== undefined && event.connectionEpoch !== cue.callbackGenerationRef.current.generation) {
@@ -530,9 +538,7 @@ export function useLiveRecordingController({
       const target = [...(currentState.finalCues || [])].reverse().find((candidate) => candidate.status === 'final' && candidate.sourceText && candidate.translatedText && !candidate.numericCorrectionRequested && missingNumericIntegrity(candidate.sourceText, candidate.translatedText));
       if (!target) return;
       const next = markNumericCorrectionRequested(currentState, target.cueId);
-      cue.stateRef.current = next;
-      cue.setState?.(next);
-      cue.persist?.(currentState, next);
+      commitCueTransition(cue, currentState, next);
       cue.retranslate?.(target.sourceText, target.cueId);
     },
     flushSubtitleCues(reason) {
@@ -547,9 +553,7 @@ export function useLiveRecordingController({
         next,
         cueAction: 'transition'
       });
-      cue.stateRef.current = next;
-      cue.setState?.(next);
-      cue.persist?.(current, next);
+      commitCueTransition(cue, current, next);
       if (!transcriptionOnly && (reason === 'stop' || reason === 'complete')) cue.schedulePolishing?.(next.finalCues);
       return next;
     }
@@ -1325,9 +1329,9 @@ export function useLiveRecordingController({
       recovery.setStatusLabelOverride('');
       recovery.setError('');
       recovery.pendingMicrophoneStreamRef.current = null;
-      const preparedCueState = prepareSubtitleCueStateForNewSegment(cue.stateRef.current, { sessionTimeMs: recovery.getSessionTime(), reason: 'continue' });
-      cue.stateRef.current = preparedCueState;
-      cue.setState?.(preparedCueState);
+      const previousCueState = cue.stateRef.current;
+      const preparedCueState = prepareSubtitleCueStateForNewSegment(previousCueState, { sessionTimeMs: recovery.getSessionTime(), reason: 'continue' });
+      commitCueTransition(cue, previousCueState, preparedCueState);
       let session;
       let legacyContinue = null;
       let legacyPersistence = null;
@@ -1907,12 +1911,12 @@ export function useLiveRecordingController({
         const nextLiveSessionId = recovery.generateLiveSessionId();
         resumedLiveSessionId = nextLiveSessionId;
         recovery.setStatus('reconnecting');
-        const preparedCueState = prepareSubtitleCueStateForNewSegment(cue.stateRef.current, {
+        const previousCueState = cue.stateRef.current;
+        const preparedCueState = prepareSubtitleCueStateForNewSegment(previousCueState, {
           sessionTimeMs: recovery.getSessionTime(),
           reason: 'resume'
         });
-        cue.stateRef.current = preparedCueState;
-        cue.setState?.(preparedCueState);
+        commitCueTransition(cue, previousCueState, preparedCueState);
         const lifecycleMeeting = selectedMeetingDetail?.meeting?.id === draft.meetingId
           ? selectedMeetingDetail.meeting
           : null;

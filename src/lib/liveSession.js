@@ -113,6 +113,9 @@ export class LiveTranslateSession {
     this.liveSessionId = liveSessionId;
     this.sessionId = sessionId;
     this.segmentId = segmentId;
+    // Provider callbacks keep the Segment from their source lifecycle, even
+    // while reconnectProvider is switching the mutable session context.
+    this.providerSource = Object.freeze({ segmentId: segmentId || null, liveSessionId: liveSessionId || null });
     this.sessionClock = sessionClock;
     this.onCueEvent = onCueEvent;
     this.authorizationHeaders = { ...authorizationHeaders };
@@ -248,8 +251,8 @@ export class LiveTranslateSession {
     return this.correctionGlossaryRegistry.bindTurn({
       ...value,
       meetingId: this.meetingId,
-      segmentId: this.segmentId,
-      providerEpoch: this.providerEpoch
+      segmentId: value.segmentId === undefined ? this.providerSource?.segmentId ?? null : value.segmentId,
+      providerEpoch: value.providerEpoch ?? this.providerEpoch
     }, this.connectionEpoch);
   }
 
@@ -461,6 +464,8 @@ export class LiveTranslateSession {
     const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: 'v1alpha' } });
     const connectionEpoch = this.connectionEpoch;
     const providerEpoch = ++this.providerEpoch;
+    const providerSource = Object.freeze({ segmentId: this.segmentId || null, liveSessionId: this.liveSessionId || null });
+    this.providerSource = providerSource;
     this.tracePipeline('PROVIDER_CONFIGURED', {
       segmentId: this.segmentId,
       providerEpoch,
@@ -478,7 +483,7 @@ export class LiveTranslateSession {
       model: liveConnectModel || 'gemini-3.5-live-translate-preview',
       config,
       callbacks: {
-        onmessage: (message) => this.handleMessage(message, providerEpoch),
+        onmessage: (message) => this.handleMessage(message, providerEpoch, providerSource),
         onerror: (event) => {
           this.logLiveEvent('socket:error', { connectionEpoch: this.connectionEpoch, message: event?.message || event?.error?.message || 'Live API error' });
           void this.handleSessionError(event, providerEpoch);
@@ -592,24 +597,6 @@ export class LiveTranslateSession {
     if (segmentId !== this.segmentId) {
       this.tracePipeline('SEGMENT_ROLLOVER', { segmentId, reason: 'segment_replaced' });
     }
-    this.segmentId = segmentId;
-    this.liveSessionId = liveSessionId || this.liveSessionId;
-    if (startsNewSegment) {
-      this.previousAudioTurnId = this.audioTurnId;
-      this.audioTurnId = `audio-turn-${this.connectionEpoch}-${++nextAudioTurnSequence}`;
-      this.activeTranscriptAudioTurnId = this.audioTurnId;
-      this.activeInputTranscriptAudioTurnId = this.audioTurnId;
-      this.activeOutputTranscriptAudioTurnId = this.audioTurnId;
-      this.awaitingInputTranscriptAfterTurnComplete = false;
-      this.awaitingOutputTranscriptAfterTurnComplete = false;
-      this.awaitingInputTranscriptAudioTurnId = null;
-      this.awaitingOutputTranscriptAudioTurnId = null;
-      this.awaitingInputTranscriptReason = null;
-      this.awaitingOutputTranscriptReason = null;
-      this.lastInputTranscriptText = '';
-      this.lastOutputTranscriptText = '';
-      this.turnBoundaryOpen = false;
-    }
     this.providerReconnectInProgress = Promise.resolve().then(async () => {
       if (this.closed) return false;
       this.providerReady = false;
@@ -617,6 +604,24 @@ export class LiveTranslateSession {
       const previousSession = this.session;
       this.session = null;
       this.providerEpoch += 1;
+      this.segmentId = segmentId;
+      this.liveSessionId = liveSessionId || this.liveSessionId;
+      if (startsNewSegment) {
+        this.previousAudioTurnId = this.audioTurnId;
+        this.audioTurnId = `audio-turn-${this.connectionEpoch}-${++nextAudioTurnSequence}`;
+        this.activeTranscriptAudioTurnId = this.audioTurnId;
+        this.activeInputTranscriptAudioTurnId = this.audioTurnId;
+        this.activeOutputTranscriptAudioTurnId = this.audioTurnId;
+        this.awaitingInputTranscriptAfterTurnComplete = false;
+        this.awaitingOutputTranscriptAfterTurnComplete = false;
+        this.awaitingInputTranscriptAudioTurnId = null;
+        this.awaitingOutputTranscriptAudioTurnId = null;
+        this.awaitingInputTranscriptReason = null;
+        this.awaitingOutputTranscriptReason = null;
+        this.lastInputTranscriptText = '';
+        this.lastOutputTranscriptText = '';
+        this.turnBoundaryOpen = false;
+      }
       this.tracePipeline('PROVIDER_SESSION_CLOSING', {
         geminiSessionId: previousLiveSessionId,
         oldSessionId: previousLiveSessionId,
@@ -1337,7 +1342,7 @@ export class LiveTranslateSession {
     }
   }
 
-  handleMessage(message, epoch = this.connectionEpoch) {
+  handleMessage(message, epoch = this.providerEpoch, providerSource = this.providerSource) {
     if (epoch !== this.providerEpoch || this.closed) {
       this.tracePipeline('PROVIDER_EVENT', {
         eventId: providerMessageId(message),
@@ -1350,6 +1355,8 @@ export class LiveTranslateSession {
       this.logLiveEvent('stale.callback.ignored', { kind: 'message', connectionEpoch: epoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
       return;
     }
+    const sourceSegmentId = providerSource?.segmentId || null;
+    const sourceLiveSessionId = providerSource?.liveSessionId || null;
     this.lastProviderEventAt = Date.now();
     this.tracePipeline('PROVIDER_EVENT', {
       eventId: providerMessageId(message),
@@ -1398,7 +1405,7 @@ export class LiveTranslateSession {
     const hasOutputTranscript = Boolean(content?.outputTranscription?.text);
     this.eventSequence += 1;
     const transcriptEventId = message?.eventId || message?.event_id || message?.id
-      || `${this.liveSessionId || this.sessionId || 'live'}:message:${this.eventSequence}`;
+      || `${sourceLiveSessionId || this.sessionId || 'live'}:message:${this.eventSequence}`;
     const cumulativeInputContinuation = isCumulativeExtension(
       this.lastInputTranscriptText,
       content?.inputTranscription?.text || content?.interimInputTranscription?.text
@@ -1438,7 +1445,7 @@ export class LiveTranslateSession {
     const outputTextMergeMode = transcriptMergeMode(this.lastOutputTranscriptText, content?.outputTranscription?.text);
     const providerTurnId = providerTurnIndex === undefined || providerTurnIndex === null
       ? null
-      : `provider-turn-${this.connectionEpoch}-${this.providerEpoch}-${providerTurnIndex}`;
+      : `provider-turn-${this.connectionEpoch}-${epoch}-${providerTurnIndex}`;
     const sourceAudioTurnId = providerTurnId || (sourceContinuesPreviousTurn
       ? (inputTranscriptArrivedAfterBoundary
           ? (awaitedInputAudioTurnId || this.previousAudioTurnId || this.activeInputTranscriptAudioTurnId || this.audioTurnId)
@@ -1475,12 +1482,12 @@ export class LiveTranslateSession {
     });
     const normalizedEvents = this.mode === 'transcription'
       ? normalizeTranscriptionCueEvents(message, {
-        liveSessionId: this.liveSessionId,
+        liveSessionId: sourceLiveSessionId,
         sessionId: this.sessionId,
-        segmentId: this.segmentId,
+        segmentId: sourceSegmentId,
         sourceLanguageCode: this.sourceLanguageCode,
         connectionEpoch: this.connectionEpoch,
-        providerEpoch: this.providerEpoch,
+        providerEpoch: epoch,
         eventSequence: this.eventSequence,
         audioTurnId: sourceAudioTurnId,
         sourceAudioTurnId,
@@ -1495,15 +1502,15 @@ export class LiveTranslateSession {
         inputTextMergeMode
       })
       : normalizeGeminiLiveCueEvents(message, {
-      liveSessionId: this.liveSessionId,
-      sessionId: this.sessionId,
-      segmentId: this.segmentId,
-      sourceLanguageCode: this.sourceLanguageCode,
-      targetLanguageCode: this.targetLanguageCode,
-      connectionEpoch: this.connectionEpoch,
-      providerEpoch: this.providerEpoch,
-      eventSequence: this.eventSequence,
-      audioTurnId: sourceAudioTurnId,
+        liveSessionId: sourceLiveSessionId,
+        sessionId: this.sessionId,
+        segmentId: sourceSegmentId,
+        sourceLanguageCode: this.sourceLanguageCode,
+        targetLanguageCode: this.targetLanguageCode,
+        connectionEpoch: this.connectionEpoch,
+        providerEpoch: epoch,
+        eventSequence: this.eventSequence,
+        audioTurnId: sourceAudioTurnId,
       sourceAudioTurnId,
       translationAudioTurnId,
       boundaryAudioTurnId,
@@ -1671,9 +1678,9 @@ export class LiveTranslateSession {
       const transcript = withTranscriptEventId({
         text: content.inputTranscription.text,
         isFinal: isFinal || this.awaitingInputTranscriptAfterTurnComplete,
-        liveSessionId: this.liveSessionId,
+        liveSessionId: sourceLiveSessionId,
         sessionId: this.sessionId,
-        segmentId: this.segmentId,
+        segmentId: sourceSegmentId,
         sourceLanguageCode: this.sourceLanguageCode,
         connectionEpoch: this.connectionEpoch,
         audioTurnId: sourceAudioTurnId,
@@ -1698,9 +1705,9 @@ export class LiveTranslateSession {
       const transcript = withTranscriptEventId({
         text: content.interimInputTranscription.text,
         isFinal: false,
-        liveSessionId: this.liveSessionId,
+        liveSessionId: sourceLiveSessionId,
         sessionId: this.sessionId,
-        segmentId: this.segmentId,
+        segmentId: sourceSegmentId,
         sourceLanguageCode: this.sourceLanguageCode,
         connectionEpoch: this.connectionEpoch,
         audioTurnId: sourceAudioTurnId,
@@ -1734,7 +1741,9 @@ export class LiveTranslateSession {
     if (this.mode !== 'transcription' && content?.outputTranscription?.text) {
       const correctionSnapshot = this.correctionGlossarySnapshotFor({
         turnKey: `local:${this.activeOutputTranscriptAudioTurnId || boundaryAudioTurnId}`,
-        audioTurnId: this.activeOutputTranscriptAudioTurnId || boundaryAudioTurnId
+        audioTurnId: this.activeOutputTranscriptAudioTurnId || boundaryAudioTurnId,
+        segmentId: sourceSegmentId,
+        providerEpoch: epoch
       });
       const correction = glossaryCorrectionForSource({
         sourceText: content.inputTranscription?.text || content.interimInputTranscription?.text || this.lastInputTranscriptText,
@@ -1748,9 +1757,9 @@ export class LiveTranslateSession {
           ? { correctionGlossaryRevision: correctionSnapshot.revision }
           : {}),
         isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete,
-        liveSessionId: this.liveSessionId,
+        liveSessionId: sourceLiveSessionId,
         sessionId: this.sessionId,
-        segmentId: this.segmentId,
+        segmentId: sourceSegmentId,
         sourceLanguageCode: this.sourceLanguageCode,
         targetLanguageCode: this.targetLanguageCode,
         connectionEpoch: this.connectionEpoch,
@@ -2223,17 +2232,17 @@ export class LiveTranslateSession {
         providerEndMethod: this.lastInputEnd?.method || null,
         providerEndResult: this.lastInputEnd?.result || null,
         speechObservedSinceBoundary: this.speechObservedSinceBoundary,
-        audioTurnId: this.audioTurnId,
-        liveSessionId: this.liveSessionId,
+        audioTurnId: pending.audioTurnId || this.audioTurnId,
+        liveSessionId: pending.liveSessionId || null,
         sessionId: this.sessionId,
-        segmentId: this.segmentId
+        segmentId: pending.segmentId || null
       }, pending.eventId);
       this.trace('stopped_pending', { stream: kind, text: transcript.text });
       this.logLiveEvent(`${kind}Transcription.flushPending`, { transcript });
       callback?.(transcript);
       this.onCueEvent?.({
         ...transcript,
-        eventId: `${transcript.eventId || `${this.liveSessionId || this.sessionId || 'live'}:pending`}:terminal-final`,
+        eventId: `${transcript.eventId || `${transcript.liveSessionId || this.sessionId || 'live'}:pending`}:terminal-final`,
         originEventId: transcript.eventId || null,
         providerEventId: transcript.eventId || null,
         stream: isInput ? 'source' : 'translation',
@@ -2245,9 +2254,9 @@ export class LiveTranslateSession {
         finalizedReason: emitLocalFinalize ? 'localSilence' : undefined,
         turnComplete: false,
         generationComplete: false,
-        liveSessionId: this.liveSessionId,
+        liveSessionId: transcript.liveSessionId,
         sessionId: this.sessionId,
-        segmentId: this.segmentId,
+        segmentId: transcript.segmentId,
         sourceLanguageCode: this.sourceLanguageCode,
         targetLanguageCode: this.targetLanguageCode,
         connectionEpoch: this.connectionEpoch,

@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { E2E_SUPABASE_URL, E2E_SUPABASE_PUBLISHABLE_KEY } from './authBootstrap.js';
 
 export default defineConfig({
   testDir: '.',
@@ -17,7 +18,7 @@ export default defineConfig({
       timeout: 30_000
     },
     {
-      command: 'npm run dev -- --config tests/e2e/vite.e2e.config.js --port 5174',
+      command: `env VITE_SUPABASE_URL=${E2E_SUPABASE_URL} VITE_SUPABASE_PUBLISHABLE_KEY=${E2E_SUPABASE_PUBLISHABLE_KEY} npm run dev -- --config tests/e2e/vite.e2e.config.js --port 5174`,
       url: 'http://127.0.0.1:5174',
       reuseExistingServer: false,
       timeout: 30_000

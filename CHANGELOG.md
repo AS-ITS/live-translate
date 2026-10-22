@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Issue #41 B2-B: local Meeting export includes durable unassigned final Cues from IndexedDB, rejects conflicting Cue identities, and blocks incomplete export on local read failure. Meeting switches ignore stale detail loads.
+
 - Hardened Issue #41 checkpoint writes with a restricted SQL writer, service authorized Cue and checkpoint RPCs, an old browser cursor bridge, and a durability barrier before terminal recording transitions. Direct authenticated Cue mutation and checkpoint overwrite are denied.
 
 - 修正 Issue #41 checkpoint durability：Cue delta 以累積快照原子保存，重複 key 改變 payload 回傳 `409`，並防止舊版本、並行寫入與 recovery 覆蓋已確認的 Cue；Supabase 使用交易式 checkpoint RPC。

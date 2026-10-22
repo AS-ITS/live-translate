@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { cueRefinementInputHash } from '../../src/lib/cueContent.js';
 import { applyCueRefinementExecutionStates, applyPolishedItemsToCues, applyRefinementResultToCues, completedCueRefinementOutputs, markCuesCompletedByRefinedOutputs, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from '../../src/lib/cueRefinement.js';
 
 const cue = (overrides = {}) => ({
@@ -122,13 +123,14 @@ test('refinement success updates the addressed Cue in place after a later Cue ar
     cue({ cueId: 'cue-1', sequence: 1, sessionId: 'session-1', segmentId: 'segment-1', startTimeMs: 0, endTimeMs: 100 }),
     cue({ cueId: 'cue-2', sequence: 2, sessionId: 'session-1', segmentId: 'segment-1', startTimeMs: 100, endTimeMs: 200, refinement: { status: 'pending', version: 1, inputHash: 'hash-2' } })
   ];
+  cues[0].refinement.inputHash = cueRefinementInputHash(cues[0]);
   const result = applyRefinementResultToCues(cues, {
     targetCueId: 'cue-1',
     sessionId: 'session-1',
     segmentId: 'segment-1',
     refinementJobId: 'job-1',
     version: 1,
-    inputHash: 'hash-1',
+    inputHash: cueRefinementInputHash(cues[0]),
     fields: ['translation'],
     refinedTranslation: 'first revised'
   }, { sessionId: 'session-1' });

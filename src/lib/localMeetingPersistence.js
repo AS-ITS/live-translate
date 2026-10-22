@@ -182,6 +182,35 @@ export function createLocalMeetingPersistence({
       return manifestStore.saveCue({ meetingId, segmentId, sessionId, cue, producedAt });
     },
 
+    async saveUnassignedCue(input = {}) {
+      await retention.assertReadable(input.meetingId);
+      return manifestStore.saveUnassignedCue(input);
+    },
+
+    async reconcileUnassignedCues(input = {}) {
+      const meetingId = input.upserts?.[0]?.meetingId || input.removals?.[0]?.meetingId;
+      await retention.assertReadable(meetingId);
+      return manifestStore.reconcileUnassignedCues(input);
+    },
+
+    async getUnassignedCue(meetingId, sessionId, cueId) {
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
+      return manifestStore.getUnassignedCue(meetingId, sessionId, cueId);
+    },
+
+    async listUnassignedCues(meetingId) {
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
+      return manifestStore.listUnassignedCues(meetingId);
+    },
+
+    async countUnassignedCues(meetingId) {
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
+      return manifestStore.countUnassignedCues(meetingId);
+    },
+
     async listCues(meetingId, options) {
       await retention.check(meetingId);
       await retention.assertReadable(meetingId);
@@ -195,7 +224,11 @@ export function createLocalMeetingPersistence({
         segmentId: payload.segmentId,
         checkpoint: payload
       });
-      return { checkpoint: saved.checkpoint };
+      return {
+        meetingId: saved.meetingId,
+        segmentId: saved.segmentId,
+        checkpoint: saved.checkpoint
+      };
     },
 
     async getCheckpoint({ meetingId, segmentId } = {}) {

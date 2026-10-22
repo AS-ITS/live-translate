@@ -2,6 +2,8 @@ import { mergeCheckpoint } from '../application/meetingCheckpointService.js';
 import { checkCheckpointOperation, checkpointConflict, recordCheckpointOperation } from './checkpointOperation.js';
 
 export const LOCAL_MEETING_SCHEMA_VERSION = 5;
+export const LOCAL_MEETING_DATABASE_VERSION = 6;
+const UNASSIGNED_CUE_SCHEMA_VERSION = 1;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
   'writing',
@@ -125,6 +127,7 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
   const recordings = new Map();
   const operations = new Map();
   const cues = new Map();
+  const unassignedCues = new Map();
   const checkpoints = new Map();
   for (const rawRecord of initial) {
     const record = projectLocalChunk(rawRecord);
@@ -175,9 +178,45 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     async saveCue(input) {
       const cue = projectLocalCue(input);
       const existing = cues.get(cue.key);
-      if (existing && !sameCueIdentity(existing, cue)) throw conflict('local_cue_identity_conflict');
-      cues.set(cue.key, cue);
-      return cue;
+      const saved = mergeLocalCue(existing, cue);
+      if (saved !== existing) cues.set(cue.key, saved);
+      return saved;
+    },
+    async saveUnassignedCue(input) {
+      const cue = projectUnassignedCue(input);
+      const saved = mergeUnassignedCue(unassignedCues.get(cue.key), cue);
+      unassignedCues.set(cue.key, saved);
+      return saved;
+    },
+    async reconcileUnassignedCues({ upserts = [], removals = [] } = {}) {
+      const projected = upserts.map(projectUnassignedCue);
+      const staged = new Map(unassignedCues);
+      for (const cue of projected) staged.set(cue.key, mergeUnassignedCue(staged.get(cue.key), cue));
+      for (const input of removals) {
+        const removal = projectUnassignedRemoval(input, projected);
+        const existing = staged.get(removal.key);
+        assertUnassignedRemoval(existing, removal);
+        const survivor = staged.get(removal.survivorKey);
+        if (!survivor) throw conflict('local_unassigned_cue_survivor_missing');
+        staged.set(removal.survivorKey, Object.freeze({ ...survivor,
+          allocationFloor: Math.max(survivor.allocationFloor || 1, existing.sequence + 1) }));
+        staged.delete(removal.key);
+      }
+      unassignedCues.clear();
+      for (const [key, value] of staged) unassignedCues.set(key, value);
+      return projected;
+    },
+    async getUnassignedCue(meetingId, sessionId, cueId) {
+      return unassignedCues.get(unassignedCueKey(meetingId, sessionId, cueId)) || null;
+    },
+    async listUnassignedCues(meetingId) {
+      normalizeRequiredString(meetingId, 'meetingId');
+      return [...unassignedCues.values()]
+        .filter((cue) => cue.meetingId === meetingId)
+        .sort(compareLocalCues);
+    },
+    async countUnassignedCues(meetingId) {
+      return (await this.listUnassignedCues(meetingId)).length;
     },
     async listCues(meetingId, { segmentId } = {}) {
       return Object.freeze([...cues.values()]
@@ -276,8 +315,8 @@ export function createIndexedDbLocalMeetingManifestStore({
     },
     async listLocalMeetingIds() {
       const database = await openDatabase();
-      return runNamedTransaction(database, ['recordings', 'chunks', 'cues', 'checkpoints'], 'readonly', async (transaction) => {
-        const records = await Promise.all(['recordings', 'chunks', 'cues', 'checkpoints']
+      return runNamedTransaction(database, ['recordings', 'chunks', 'cues', 'checkpoints', 'unassignedCues'], 'readonly', async (transaction) => {
+        const records = await Promise.all(['recordings', 'chunks', 'cues', 'checkpoints', 'unassignedCues']
           .map((name) => request(transaction.objectStore(name).getAll())));
         return [...new Set(records.flat().map((row) => row.meetingId).filter(Boolean))];
       });
@@ -285,8 +324,10 @@ export function createIndexedDbLocalMeetingManifestStore({
     async clearMeetingContent(meetingId) {
       const database = await openDatabase();
       return runNamedTransaction(database,
-        ['recordings', 'chunks', 'operations', 'cues', 'checkpoints', 'retentions'], 'readwrite',
+        ['recordings', 'chunks', 'operations', 'cues', 'checkpoints', 'retentions', 'unassignedCues'], 'readwrite',
         async (transaction) => {
+          const pending = await request(transaction.objectStore('unassignedCues').index('meetingId').count(meetingId));
+          if (pending > 0) throw conflict('local_unassigned_cues_pending');
           for (const name of ['recordings', 'chunks', 'operations', 'cues', 'checkpoints']) {
             const store = transaction.objectStore(name);
             const records = await request(store.getAll());
@@ -375,10 +416,63 @@ export function createIndexedDbLocalMeetingManifestStore({
       return runNamedTransaction(database, 'cues', 'readwrite', async (transaction) => {
         const store = transaction.objectStore('cues');
         const existing = await request(store.get(cue.key));
-        if (existing && !sameCueIdentity(projectLocalCue(existing), cue)) throw conflict('local_cue_identity_conflict');
-        await request(store.put(cue));
-        return cue;
+        const projectedExisting = existing && projectLocalCue(existing);
+        const saved = mergeLocalCue(projectedExisting, cue);
+        if (saved !== projectedExisting) await request(store.put(saved));
+        return saved;
       });
+    },
+    async saveUnassignedCue(input) {
+      const cue = projectUnassignedCue(input);
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'unassignedCues', 'readwrite', async (transaction) => {
+        const store = transaction.objectStore('unassignedCues');
+        const existing = await request(store.get(cue.key));
+        const saved = mergeUnassignedCue(existing && projectUnassignedCue(existing), cue);
+        if (saved !== existing) await request(store.put(saved));
+        return saved;
+      });
+    },
+    async reconcileUnassignedCues({ upserts = [], removals = [] } = {}) {
+      const projected = upserts.map(projectUnassignedCue);
+      const projectedRemovals = removals.map((input) => projectUnassignedRemoval(input, projected));
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'unassignedCues', 'readwrite', async (transaction) => {
+        const store = transaction.objectStore('unassignedCues');
+        for (const cue of projected) {
+          const existing = await request(store.get(cue.key));
+          const saved = mergeUnassignedCue(existing && projectUnassignedCue(existing), cue);
+          if (saved !== existing) await request(store.put(saved));
+        }
+        for (const removal of projectedRemovals) {
+          const existing = await request(store.get(removal.key));
+          assertUnassignedRemoval(existing, removal);
+          const survivor = await request(store.get(removal.survivorKey));
+          if (!survivor) throw conflict('local_unassigned_cue_survivor_missing');
+          await request(store.put({ ...survivor,
+            allocationFloor: Math.max(survivor.allocationFloor || 1, existing.sequence + 1) }));
+          await request(store.delete(removal.key));
+        }
+        return projected;
+      });
+    },
+    async getUnassignedCue(meetingId, sessionId, cueId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'unassignedCues', 'readonly', async (transaction) =>
+        (await request(transaction.objectStore('unassignedCues').get(unassignedCueKey(meetingId, sessionId, cueId)))) || null);
+    },
+    async listUnassignedCues(meetingId) {
+      normalizeRequiredString(meetingId, 'meetingId');
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'unassignedCues', 'readonly', async (transaction) =>
+        (await request(transaction.objectStore('unassignedCues').index('meetingId').getAll(meetingId)))
+          .sort(compareLocalCues));
+    },
+    async countUnassignedCues(meetingId) {
+      normalizeRequiredString(meetingId, 'meetingId');
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'unassignedCues', 'readonly', async (transaction) =>
+        request(transaction.objectStore('unassignedCues').index('meetingId').count(meetingId)));
     },
     async listCues(meetingId, { segmentId } = {}) {
       normalizeRequiredString(meetingId, 'meetingId');
@@ -486,7 +580,8 @@ export function createIndexedDbLocalMeetingManifestStore({
   function openDatabase() {
     if (!databasePromise) {
       databasePromise = new Promise((resolve, reject) => {
-        const requestHandle = indexedDBImpl.open(dbName, LOCAL_MEETING_SCHEMA_VERSION);
+        const requestHandle = indexedDBImpl.open(dbName, LOCAL_MEETING_DATABASE_VERSION);
+        let blocked = false;
         requestHandle.onupgradeneeded = () => {
           const database = requestHandle.result;
           if (!database.objectStoreNames.contains('chunks')) {
@@ -503,6 +598,10 @@ export function createIndexedDbLocalMeetingManifestStore({
             const store = database.createObjectStore('cues', { keyPath: 'key' });
             store.createIndex('meeting-segment-sequence', ['meetingId', 'segmentId', 'sequence'], { unique: true });
           }
+          if (!database.objectStoreNames.contains('unassignedCues')) {
+            const store = database.createObjectStore('unassignedCues', { keyPath: 'key' });
+            store.createIndex('meetingId', 'meetingId');
+          }
           if (!database.objectStoreNames.contains('checkpoints')) {
             database.createObjectStore('checkpoints', { keyPath: 'key' });
           }
@@ -510,9 +609,15 @@ export function createIndexedDbLocalMeetingManifestStore({
             database.createObjectStore('retentions', { keyPath: 'meetingId' });
           }
         };
-        requestHandle.onsuccess = () => resolve(requestHandle.result);
+        requestHandle.onsuccess = () => {
+          if (blocked) requestHandle.result.close();
+          else resolve(requestHandle.result);
+        };
         requestHandle.onerror = () => reject(requestHandle.error || new Error('IndexedDB open failed.'));
-        requestHandle.onblocked = () => reject(new Error('IndexedDB upgrade is blocked.'));
+        requestHandle.onblocked = () => {
+          blocked = true;
+          reject(new Error('IndexedDB upgrade is blocked.'));
+        };
       });
     }
     return databasePromise;
@@ -685,10 +790,137 @@ function projectLocalCue(value = {}) {
     segmentId,
     cueId,
     sequence,
-    cue: sanitizeLocalValue(rawCue),
+    cue: sanitizeLocalValue(rawCue.revision == null
+      ? rawCue
+      : { ...rawCue, revision: normalizePositiveInteger(rawCue.revision, 'cue.revision') }),
     producedAt: normalizeOptionalTimestamp(value.producedAt ?? rawCue.finalizedAt, 'producedAt'),
     updatedAt: normalizeOptionalTimestamp(value.updatedAt, 'updatedAt') ?? Date.now()
   });
+}
+
+// A caller must supply a stable Cue identity and revision. This store never
+// infers ownership from the currently active Segment.
+function projectUnassignedCue(value = {}) {
+  const meetingId = normalizeRequiredString(value.meetingId, 'meetingId');
+  const sessionId = normalizeRequiredString(value.sessionId, 'sessionId');
+  const cueId = normalizeRequiredString(value.cueId, 'cueId');
+  const sequence = normalizePositiveInteger(value.sequence, 'sequence');
+  const revision = normalizePositiveInteger(value.revision, 'revision');
+  const reason = normalizeRequiredString(value.reason, 'reason');
+  const rawCue = value.cue;
+  if (!rawCue || typeof rawCue !== 'object' || Array.isArray(rawCue)) throw invalid('cue is required.');
+  if (value.segmentId != null || rawCue.segmentId != null) throw invalid('Unassigned Cue must have no segmentId.');
+  if (rawCue.revision != null && rawCue.revision !== revision) {
+    throw invalid('Unassigned Cue revision does not match its record.');
+  }
+  if (rawCue.cueId !== cueId || rawCue.sessionId !== sessionId || rawCue.sequence !== sequence) {
+    throw invalid('Unassigned Cue identity does not match its record.');
+  }
+  if (rawCue.status !== 'partial' && rawCue.status !== 'final') throw invalid('cue.status must be partial or final.');
+  const startTimeMs = normalizeTimestamp(rawCue.startTimeMs, 'cue.startTimeMs');
+  const endTimeMs = normalizeTimestamp(rawCue.endTimeMs, 'cue.endTimeMs');
+  if (endTimeMs < startTimeMs) throw invalid('cue.endTimeMs precedes cue.startTimeMs.');
+  return Object.freeze({
+    schemaVersion: UNASSIGNED_CUE_SCHEMA_VERSION,
+    key: unassignedCueKey(meetingId, sessionId, cueId),
+    meetingId, sessionId, cueId, segmentId: null, sequence, revision, reason,
+    allocationFloor: Math.max(sequence + 1,
+      Number.isSafeInteger(value.allocationFloor) ? value.allocationFloor : 1),
+    sourceIdentity: projectUnassignedSourceIdentity(value.sourceIdentity),
+    cue: sanitizeLocalValue({ ...rawCue, segmentId: null, revision }),
+    updatedAt: normalizeOptionalTimestamp(value.updatedAt, 'updatedAt') ?? Date.now()
+  });
+}
+
+function projectUnassignedSourceIdentity(input) {
+  if (input == null) return null;
+  if (typeof input !== 'object' || Array.isArray(input)) throw invalid('sourceIdentity must be an object.');
+  const stringFields = new Set(['liveSessionId', 'eventId', 'audioTurnId', 'turnKey']);
+  const integerFields = new Set(['connectionEpoch', 'providerEpoch', 'eventSequence', 'turnIndex']);
+  const result = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value == null) continue;
+    if (stringFields.has(key)) result[key] = normalizeRequiredString(value, `sourceIdentity.${key}`);
+    else if (integerFields.has(key)) result[key] = normalizeNonNegativeInteger(value, `sourceIdentity.${key}`);
+    else throw invalid(`Unsupported sourceIdentity field: ${key}.`);
+  }
+  return Object.keys(result).length ? Object.freeze(result) : null;
+}
+
+function mergeLocalCue(existing, incoming) {
+  if (!existing) return incoming;
+  if (!sameCueIdentity(existing, incoming)) throw conflict('local_cue_identity_conflict');
+  const storedRevision = existing.cue?.revision ?? 0;
+  const incomingRevision = incoming.cue?.revision ?? 0;
+  if (incomingRevision < storedRevision) throw conflict('local_cue_stale_revision');
+  if (incomingRevision === storedRevision) {
+    if (storedRevision === 0) return incoming; // Preserve legacy unversioned writes.
+    if (!sameCanonicalValue(existing.cue, incoming.cue)) throw conflict('local_cue_revision_conflict');
+    return existing;
+  }
+  return incoming;
+}
+
+function mergeUnassignedCue(existing, incoming) {
+  if (!existing) return incoming;
+  if (existing.meetingId !== incoming.meetingId || existing.sessionId !== incoming.sessionId ||
+      existing.cueId !== incoming.cueId || existing.sequence !== incoming.sequence ||
+      existing.reason !== incoming.reason) {
+    throw conflict('local_unassigned_cue_identity_conflict');
+  }
+  const sourceIdentity = { ...existing.sourceIdentity };
+  for (const [key, value] of Object.entries(incoming.sourceIdentity || {})) {
+    if (sourceIdentity[key] != null && sourceIdentity[key] !== value) {
+      throw conflict('local_unassigned_cue_identity_conflict');
+    }
+    sourceIdentity[key] = value;
+  }
+  if (incoming.revision < existing.revision) throw conflict('local_unassigned_cue_stale_revision');
+  if (incoming.revision === existing.revision) {
+    if (!sameCanonicalValue(existing.cue, incoming.cue) ||
+        !sameCanonicalValue(existing.sourceIdentity, Object.keys(sourceIdentity).length ? sourceIdentity : null)) {
+      throw conflict('local_unassigned_cue_revision_conflict');
+    }
+    return existing;
+  }
+  if (existing.cue.status === 'final' && incoming.cue.status !== 'final') {
+    throw conflict('local_unassigned_cue_revision_conflict');
+  }
+  return Object.freeze({ ...incoming,
+    allocationFloor: Math.max(existing.allocationFloor || existing.sequence + 1, incoming.allocationFloor),
+    sourceIdentity: Object.keys(sourceIdentity).length ? Object.freeze(sourceIdentity) : null,
+    updatedAt: Math.max(existing.updatedAt, incoming.updatedAt)
+  });
+}
+
+function projectUnassignedRemoval(input, upserts) {
+  const meetingId = normalizeRequiredString(input.meetingId, 'meetingId');
+  const sessionId = normalizeRequiredString(input.sessionId, 'sessionId');
+  const cueId = normalizeRequiredString(input.cueId, 'cueId');
+  const revision = normalizePositiveInteger(input.revision, 'revision');
+  const survivorCueId = normalizeRequiredString(input.survivorCueId, 'survivorCueId');
+  if (!upserts.some((cue) => cue.meetingId === meetingId &&
+      cue.sessionId === sessionId && cue.cueId === survivorCueId)) {
+    throw conflict('local_unassigned_cue_survivor_missing');
+  }
+  return { key: unassignedCueKey(meetingId, sessionId, cueId),
+    survivorKey: unassignedCueKey(meetingId, sessionId, survivorCueId), revision };
+}
+
+function assertUnassignedRemoval(existing, removal) {
+  if (!existing) throw conflict('local_unassigned_cue_missing');
+  if (existing.revision !== removal.revision) throw conflict('local_unassigned_cue_stale_revision');
+}
+
+function sameCanonicalValue(left, right) {
+  const canonical = (value) => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+    }
+    return value;
+  };
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
 function mergeLocalCheckpoint(existing, incoming) {
@@ -755,6 +987,14 @@ function isCredentialField(key) {
 
 function localCueKey(meetingId, segmentId, cueId) {
   return `${normalizeRequiredString(meetingId, 'meetingId')}\u0000${normalizeRequiredString(segmentId, 'segmentId')}\u0000${normalizeRequiredString(cueId, 'cueId')}`;
+}
+
+function unassignedCueKey(meetingId, sessionId, cueId) {
+  return JSON.stringify([
+    normalizeRequiredString(meetingId, 'meetingId'),
+    normalizeRequiredString(sessionId, 'sessionId'),
+    normalizeRequiredString(cueId, 'cueId')
+  ]);
 }
 
 function localCheckpointKey(meetingId, segmentId) {

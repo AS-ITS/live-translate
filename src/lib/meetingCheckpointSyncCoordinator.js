@@ -26,6 +26,7 @@ export function createMeetingCheckpointSyncCoordinator({
   const pendingCueCheckpoints = new Map();
   let context = null;
   let contextGeneration = 0;
+  let ownershipError = false;
   let timer = null;
   const retryTimers = new Map();
   const conflictRetries = new Map();
@@ -35,6 +36,7 @@ export function createMeetingCheckpointSyncCoordinator({
     start(nextContext = {}) {
       contextGeneration += 1;
       context = { ...normalizeContext(nextContext), generation: contextGeneration };
+      ownershipError = false;
       clearTimer();
       onStatusChange?.('ready');
     },
@@ -55,8 +57,19 @@ export function createMeetingCheckpointSyncCoordinator({
 
     enqueueCues(cues = [], checkpoint = null) {
       if (!context) return;
-      for (const cue of cues) {
-        if (cue?.status !== 'final' || !cue.cueId) continue;
+      const finalCues = cues.filter((cue) => cue?.status === 'final' && cue.cueId);
+      const rejectedCues = finalCues.filter((cue) => cue.segmentId !== context.segmentId);
+      const acceptedCues = finalCues.filter((cue) => cue.segmentId === context.segmentId);
+      if (rejectedCues.length > 0) {
+        const error = new Error('Cue Segment does not match the active Checkpoint.');
+        error.code = rejectedCues.some((cue) => !cue.segmentId) ? 'cue_segment_unassigned' : 'cue_segment_mismatch';
+        error.rejectedCueIds = rejectedCues.map((cue) => cue.cueId);
+        ownershipError = true;
+        onStatusChange?.('error');
+        onError?.(error);
+        if (acceptedCues.length === 0) throw error;
+      }
+      for (const cue of acceptedCues) {
         const key = cueKey(context, cue);
         const existing = pendingCues.get(key);
         const candidates = [...(existing ? [existing] : []), ...(pendingCueVariants.get(key) || []), { ...cue }];
@@ -72,6 +85,7 @@ export function createMeetingCheckpointSyncCoordinator({
         const scheduledContext = { ...context };
         timer = setTimeoutFn(() => { timer = null; void enqueueFlush(scheduledContext); }, Math.max(0, delayMs));
       }
+      return { acceptedCueIds: acceptedCues.map((cue) => cue.cueId), rejectedCueIds: rejectedCues.map((cue) => cue.cueId) };
     },
 
     flush() {
@@ -145,7 +159,7 @@ export function createMeetingCheckpointSyncCoordinator({
       clearRetryTimer(flushContext);
       conflictRetries.delete(flushScope);
       if (isActiveContext(flushContext)) {
-        onStatusChange?.(hasPendingFor(flushContext) ? 'ready' : 'synced');
+        onStatusChange?.(ownershipError ? 'error' : hasPendingFor(flushContext) ? 'ready' : 'synced');
       }
       return true;
     } catch (error) {

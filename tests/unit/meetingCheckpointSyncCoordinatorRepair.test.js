@@ -3,6 +3,18 @@ import test from 'node:test';
 import { createMeetingCheckpointSyncCoordinator } from '../../src/lib/meetingCheckpointSyncCoordinator.js';
 import { validateFinalCue, normalizeCueCheckpoint } from '../../src/domain/subtitleCue/index.js';
 
+function committed(payload) {
+  return {
+    meetingId: payload.meetingId,
+    segmentId: payload.segmentId,
+    checkpoint: {
+      durableChunks: payload.durableChunks,
+      finalCues: payload.finalCues,
+      cueCheckpoint: payload.cueCheckpoint
+    }
+  };
+}
+
 const cue = (cueId, overrides = {}) => ({
   cueId,
   sessionId: 'session-1',
@@ -23,6 +35,7 @@ function coordinatorForConflicts(remote, conflicts = 1) {
     updateCheckpoint: async (payload) => {
       calls.push(payload);
       if (calls.length <= conflicts) throw Object.assign(new Error('checkpoint conflict'), { status: 409 });
+      return committed(payload);
     },
     getCheckpoint: async () => remote(),
     onStatusChange: (status) => statuses.push(status),
@@ -126,7 +139,7 @@ test('persistent 409 stops automatic retries after three attempts and reports co
 test('same Cue ID in two sessions retains both session-owned versions', async () => {
   const calls = [];
   const coordinator = createMeetingCheckpointSyncCoordinator({
-    updateCheckpoint: async (payload) => calls.push(payload),
+    updateCheckpoint: async (payload) => { calls.push(payload); return committed(payload); },
     setTimeoutFn: () => ({}),
     clearTimeoutFn: () => {}
   });
@@ -266,7 +279,7 @@ test('enqueue does not synthesize independent side and refinement versions', asy
   const refinementNewer = validateFinalCue(completeCue({ sourceVersion: 1, refinement: { version: 2 } }));
   const calls = [];
   const coordinator = createMeetingCheckpointSyncCoordinator({
-    updateCheckpoint: async (payload) => calls.push(payload),
+    updateCheckpoint: async (payload) => { calls.push(payload); return committed(payload); },
     setTimeoutFn: () => ({}), clearTimeoutFn: () => {}
   });
   coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });

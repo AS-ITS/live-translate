@@ -47,6 +47,11 @@ test('checkpoint coordinator retains a pending chunk when conflict reconciliatio
         error.status = 409;
         throw error;
       }
+      return {
+        meetingId: payload.meetingId,
+        segmentId: payload.segmentId,
+        checkpoint: { durableChunks: payload.durableChunks, finalCues: payload.finalCues }
+      };
     },
     getCheckpoint: async () => ({ checkpoint: { durableChunks: [chunk({ text: '你' })], finalCues: [] } }),
     setTimeoutFn: () => {},

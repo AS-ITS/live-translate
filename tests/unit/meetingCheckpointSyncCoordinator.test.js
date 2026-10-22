@@ -5,12 +5,61 @@ import {
   createMeetingCheckpointSyncCoordinator
 } from '../../src/lib/meetingCheckpointSyncCoordinator.js';
 
+function committed(payload) {
+  return {
+    meetingId: payload.meetingId,
+    segmentId: payload.segmentId,
+    checkpoint: {
+      durableChunks: payload.durableChunks,
+      finalCues: payload.finalCues,
+      cueCheckpoint: payload.cueCheckpoint
+    }
+  };
+}
+
+test('checkpoint flush requires a durable ACK before clearing a pending Cue', async () => {
+  const calls = [];
+  const failures = [];
+  const responses = [
+    () => undefined,
+    (payload) => ({ checkpoint: committed(payload).checkpoint }),
+    (payload) => ({ ...committed(payload), segmentId: 'other-segment' }),
+    (payload) => ({ ...committed(payload), checkpoint: {
+      ...committed(payload).checkpoint,
+      cueCheckpoint: { nextSequence: 1 }
+    } })
+  ];
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => {
+      calls.push(payload);
+      return calls.length <= responses.length ? responses[calls.length - 1](payload) : committed(payload);
+    },
+    onError: (error) => failures.push(error),
+    setTimeoutFn: () => 1,
+    clearTimeoutFn: () => {}
+  });
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueueCues([{ cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1', status: 'final', sequence: 1 }], { nextSequence: 2 });
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    assert.equal(await coordinator.flush(), false);
+    assert.deepEqual(calls.at(-1).finalCues.map((cue) => cue.cueId), ['cue-1']);
+    assert.equal(calls.at(-1).cueCheckpoint.nextSequence, 2);
+  }
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls.length, 5);
+  assert.equal(new Set(calls.map((call) => call.idempotencyKey)).size, 1);
+  assert.equal(failures.length, 4);
+  assert.ok(failures.every((error) => error.code === 'checkpoint_conflict'));
+});
+
 test('meeting checkpoint sync coordinator batches scheduled chunks', async () => {
   const calls = [];
   const timers = [];
   const statuses = [];
   const coordinator = createMeetingCheckpointSyncCoordinator({
-    updateCheckpoint: async (payload) => calls.push(payload),
+    updateCheckpoint: async (payload) => { calls.push(payload); return committed(payload); },
     onStatusChange: (status) => statuses.push(status),
     setTimeoutFn: (callback) => {
       timers.push(callback);
@@ -47,6 +96,7 @@ test('meeting checkpoint sync coordinator retains chunks after failure and retri
     updateCheckpoint: async (payload) => {
       calls.push(payload);
       if (shouldFail) throw new Error('checkpoint failed');
+      return committed(payload);
     },
     onError: (error) => errors.push(error.message),
     setTimeoutFn: () => {},
@@ -79,6 +129,7 @@ test('meeting checkpoint sync coordinator reconciles a conflict with the latest 
         error.status = 409;
         throw error;
       }
+      return committed(payload);
     },
     getCheckpoint: async () => {
       latestCheckpointCalls += 1;
@@ -119,6 +170,7 @@ test('meeting checkpoint sync coordinator retries transient failures in the back
         error.status = 503;
         throw error;
       }
+      return committed(payload);
     },
     delayMs: 0,
     retryDelayMs: 10,
@@ -149,7 +201,7 @@ test('meeting checkpoint sync coordinator flushes immediately on stop', async ()
   const calls = [];
   const clearedTimers = [];
   const coordinator = createMeetingCheckpointSyncCoordinator({
-    updateCheckpoint: async (payload) => calls.push(payload),
+    updateCheckpoint: async (payload) => { calls.push(payload); return committed(payload); },
     delayMs: 5000,
     setTimeoutFn: (callback) => callback,
     clearTimeoutFn: (timer) => clearedTimers.push(timer)
@@ -171,6 +223,7 @@ test('queued flush keeps its original segment ownership after a new segment star
     updateCheckpoint: async (payload) => {
       calls.push(payload);
       if (calls.length === 1) await firstUpdate;
+      return committed(payload);
     },
     delayMs: 0,
     setTimeoutFn: (callback) => callback,
@@ -205,6 +258,7 @@ test('pending retry remains owned by segment A while new operations use segment 
         error.status = 503;
         throw error;
       }
+      return committed(payload);
     },
     delayMs: 0,
     retryDelayMs: 10,
@@ -241,7 +295,7 @@ test('pending retry remains owned by segment A while new operations use segment 
 test('four consecutive segment scopes never mix cue ownership', async () => {
   const calls = [];
   const coordinator = createMeetingCheckpointSyncCoordinator({
-    updateCheckpoint: async (payload) => calls.push(payload),
+    updateCheckpoint: async (payload) => { calls.push(payload); return committed(payload); },
     setTimeoutFn: () => {},
     clearTimeoutFn: () => {}
   });
@@ -268,7 +322,7 @@ test('four consecutive segment scopes never mix cue ownership', async () => {
 test('segment filtering keeps old chunks and cues out of the current payload', async () => {
   const calls = [];
   const coordinator = createMeetingCheckpointSyncCoordinator({
-    updateCheckpoint: async (payload) => calls.push(payload),
+    updateCheckpoint: async (payload) => { calls.push(payload); return committed(payload); },
     setTimeoutFn: () => {},
     clearTimeoutFn: () => {}
   });
@@ -291,7 +345,7 @@ test('segment filtering keeps old chunks and cues out of the current payload', a
 test('checkpoint queue keeps the newer refinement for the same cueId', async () => {
   const calls = [];
   const coordinator = createMeetingCheckpointSyncCoordinator({
-    updateCheckpoint: async (payload) => calls.push(payload),
+    updateCheckpoint: async (payload) => { calls.push(payload); return committed(payload); },
     setTimeoutFn: () => {},
     clearTimeoutFn: () => {}
   });

@@ -138,7 +138,7 @@ export function createMeetingCheckpointSyncCoordinator({
       };
       payload.idempotencyKey = checkpointOperationKey(flushContext.segmentId, payload);
       const committed = await updateCheckpoint(payload);
-      if (committed?.checkpoint && !checkpointCoversFlush(committed, flushContext, chunks, cues, payloadCheckpoint)) {
+      if (!committed?.checkpoint || !checkpointCoversFlush(committed, flushContext, chunks, cues, payloadCheckpoint)) {
         throw checkpointConflict('committed checkpoint does not cover the requested flush');
       }
 

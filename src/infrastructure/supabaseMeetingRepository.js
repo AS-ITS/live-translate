@@ -135,19 +135,7 @@ export function createSupabaseMeetingRepository(options = {}) {
     async commitCheckpoint({ current, next, incoming }) {
       owner();
       if (!privileged) throw capabilityUnavailable();
-      const cues = next.checkpoint.finalCues.map((cue) => ({
-        id: cue.cueId,
-        session_id: cue.sessionId,
-        sequence: cue.sequence,
-        source_text: cue.sourceText || '',
-        translated_text: cue.translatedText || null,
-        source_status: cue.sourceStatus,
-        translation_status: cue.translationStatus,
-        source_version: cue.sourceVersion,
-        translation_version: cue.translationVersion,
-        started_at: cue.startTimeMs,
-        ended_at: cue.endTimeMs
-      }));
+      const cues = checkpointCueRows(next.checkpoint);
       let checkpoint;
       try {
         checkpoint = await privileged.rpc('apply_meeting_checkpoint_operation_v2', {
@@ -174,6 +162,49 @@ export function createSupabaseMeetingRepository(options = {}) {
         throw error;
       }
       return new MeetingSegment({ ...next, checkpoint });
+    },
+    async atomicRolloverSegment({ current, completed, incoming, recorderSessionId, nextLiveSessionId, settingsSnapshot }) {
+      const ownerUserId = owner();
+      if (!privileged) throw capabilityUnavailable();
+      let payload;
+      try {
+        payload = await privileged.rpc('rollover_legacy_meeting_segment_v1', {
+          p_owner_user_id: ownerUserId,
+          p_meeting_id: current.meetingId,
+          p_source_segment_id: current.id,
+          p_expected_session_id: recorderSessionId || null,
+          p_operation_id: incoming.idempotencyKey,
+          p_canonical_payload: completed.checkpoint._operationPayloads[incoming.idempotencyKey],
+          p_expected_revision: current.checkpoint?.revision || 0,
+          p_next_checkpoint: completed.checkpoint,
+          p_cues: checkpointCueRows(completed.checkpoint),
+          p_ended_at: toSupabaseTimestamp(completed.endedAt),
+          p_next_live_session_id: nextLiveSessionId,
+          p_settings_snapshot: settingsSnapshot
+        });
+      } catch (error) {
+        if (error?.supabaseCode === 'P0041') {
+          error.code = 'checkpoint_revision_conflict';
+          error.status = 409;
+        } else if (error?.supabaseCode === 'P0042' || error?.supabaseCode === '23505') {
+          error.code = 'checkpoint_conflict';
+          error.status = 409;
+        } else if (error?.supabaseCode === 'P0043') {
+          error.code = 'recorder_session_mismatch';
+          error.status = 403;
+        } else if (error?.supabaseCode === 'P0044') {
+          error.code = 'meeting_lifecycle_conflict';
+          error.status = 409;
+        }
+        throw error;
+      }
+      const result = Array.isArray(payload) ? payload[0] : payload;
+      if (!result?.completedSegment || !result?.segment) throw capabilityUnavailable();
+      return {
+        completedSegment: await hydrateSegment(client, result.completedSegment, ownerUserId),
+        segment: await hydrateSegment(client, result.segment, ownerUserId),
+        replayed: result.replayed === true
+      };
     }
   };
   const exposed = Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method].bind(repository)]));
@@ -188,7 +219,26 @@ export function createSupabaseMeetingRepository(options = {}) {
   Object.defineProperty(exposed, 'commitCheckpoint', {
     value: repository.commitCheckpoint.bind(repository), enumerable: false
   });
+  Object.defineProperty(exposed, 'atomicRolloverSegment', {
+    value: repository.atomicRolloverSegment.bind(repository), enumerable: false
+  });
   return Object.freeze(exposed);
+}
+
+function checkpointCueRows(checkpoint) {
+  return (Array.isArray(checkpoint?.finalCues) ? checkpoint.finalCues : []).map((cue) => ({
+    id: cue.cueId,
+    session_id: cue.sessionId,
+    sequence: cue.sequence,
+    source_text: cue.sourceText || '',
+    translated_text: cue.translatedText || null,
+    source_status: cue.sourceStatus,
+    translation_status: cue.translationStatus,
+    source_version: cue.sourceVersion,
+    translation_version: cue.translationVersion,
+    started_at: cue.startTimeMs,
+    ended_at: cue.endTimeMs
+  }));
 }
 
 function meetingRow(entity, ownerUserId) {

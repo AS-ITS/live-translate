@@ -332,6 +332,117 @@ test('Meeting Cue publish accepts a successor Segment bound to the same Session'
   assert.deepEqual(published.json(), { eventId: 1, cueSequence: 1 });
 });
 
+test('legacy v1 rollover binds S0 and S1 for Cue writes and delayed replay', async () => {
+  const repository = createMemoryMeetingRepository();
+  let meetingId;
+  let sourceSegmentId;
+  let sessionSegmentId;
+  let ambiguous = false;
+  const sessionId = 'session-live';
+  const sessionRepository = {
+    async getSessionRecord(id) {
+      return id === sessionId
+        ? { sessionRecord: { id, meetingId, segmentId: sessionSegmentId, status: 'active', lifecycleContractVersion: 1 } }
+        : null;
+    },
+    async listSessionRecords() {
+      const records = [{ id: sessionId, meetingId, segmentId: sessionSegmentId, status: 'active', lifecycleContractVersion: 1 }];
+      if (ambiguous) records.push({ id: 'session-other', meetingId, segmentId: sessionSegmentId, status: 'active', lifecycleContractVersion: 1 });
+      return records;
+    }
+  };
+  const handler = createHandler({
+    meetingRepository: repository,
+    sessionRepository,
+    meetingEventBroadcaster: (await import('../../src/infrastructure/meetingEventBroadcaster.js')).createMeetingEventBroadcaster()
+  });
+  const created = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  meetingId = created.meeting.id;
+  sourceSegmentId = created.segment.id;
+  sessionSegmentId = sourceSegmentId;
+  const publish = (segmentId, sequence, requestedSessionId = sessionId) => request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meetingId}/segments/${segmentId}/cues`,
+    body: JSON.stringify({
+      sessionId: requestedSessionId,
+      cue: finalCue({
+        cueId: `cue:${requestedSessionId}:${segmentId}:${sequence}`,
+        sessionId: requestedSessionId,
+        segmentId,
+        sequence
+      })
+    })
+  });
+  assert.equal((await publish(sourceSegmentId, 1)).status, 202);
+  const rolloverBody = JSON.stringify({
+    idempotencyKey: 'legacy-rollover-1',
+    checkpoint: checkpoint({ meetingId, segmentId: sourceSegmentId }),
+    nextLiveSessionId: 'live-session-2'
+  });
+  const rollover = () => request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meetingId}/segments/${sourceSegmentId}/rollover`,
+    body: rolloverBody
+  });
+  ambiguous = true;
+  assert.equal((await rollover()).status, 403, 'ambiguous active Session must not claim S1');
+  assert.equal(repository.getMeetingSegment(sourceSegmentId).status, 'active');
+  ambiguous = false;
+  const first = await rollover();
+  assert.equal(first.status, 201, first.body);
+  const successorId = first.json().segment.id;
+  assert.equal((await publish(successorId, 2)).status, 202, 'first S1 Cue');
+  assert.equal((await publish(successorId, 3)).status, 202, 'later S1 Cue');
+  sessionSegmentId = successorId;
+  assert.equal((await publish(sourceSegmentId, 1)).status, 202, 'delayed S0 replay');
+  assert.equal((await publish(successorId, 4, 'session-other')).status, 403);
+  const otherMeeting = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const crossMeeting = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${otherMeeting.meeting.id}/segments/${otherMeeting.segment.id}/cues`,
+    body: JSON.stringify({
+      sessionId,
+      cue: finalCue({ sessionId, segmentId: otherMeeting.segment.id })
+    })
+  });
+  assert.equal(crossMeeting.status, 403);
+  const duplicate = await rollover();
+  assert.equal(duplicate.status, 201, duplicate.body);
+  assert.equal(duplicate.json().segment.id, successorId);
+  assert.equal(repository.listMeetingSegments(meetingId).length, 2);
+  assert.equal(repository.getMeetingSegment(sourceSegmentId).sessionId, sessionId);
+  assert.equal(repository.getMeetingSegment(successorId).sessionId, sessionId);
+});
+
+test('Cue publish rejects mismatched Recorder header and body Session IDs', async () => {
+  const repository = createMemoryMeetingRepository();
+  let meetingId;
+  const sessions = new Map([
+    ['session-a', { id: 'session-a', status: 'active' }],
+    ['session-b', { id: 'session-b', status: 'active' }]
+  ]);
+  const sessionRepository = {
+    async getSessionRecord(id) {
+      const session = sessions.get(id);
+      return session
+        ? { sessionRecord: { ...session, meetingId } }
+        : null;
+    }
+  };
+  const handler = createHandler({ meetingRepository: repository, sessionRepository });
+  const created = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  meetingId = created.meeting.id;
+  for (const session of sessions.values()) session.segmentId = created.segment.id;
+  const response = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meetingId}/segments/${created.segment.id}/cues`,
+    headers: { 'x-recorder-session-id': 'session-a', 'x-recorder-grant': 'fixture-grant' },
+    body: JSON.stringify({ sessionId: 'session-b', cue: finalCue({ sessionId: 'session-b', segmentId: created.segment.id }) })
+  });
+  assert.equal(response.status, 403);
+  assert.equal(response.json().error.code, 'recorder_session_mismatch');
+});
+
 test('Meeting Cue publish rejects a Segment bound to another Session', async () => {
   let meetingId = null;
   const repository = createMemoryMeetingRepository();
@@ -1144,6 +1255,7 @@ function createHandler({ meetingCheckpointMaxBytes, sessionShareService, session
   let segmentId = 0;
   const meetingCheckpointService = createMeetingCheckpointService({
     meetingRepository: repository,
+    sessionRepository,
     idGenerator(prefix) {
       if (prefix === 'meeting') return `meeting-${++meetingId}`;
       if (prefix === 'segment') return `segment-${++segmentId}`;

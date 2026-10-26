@@ -284,18 +284,82 @@ export function createMeetingCheckpointService({
       };
     },
 
-    async rolloverSegment({ meetingId, segmentId, rollover } = {}) {
+    async rolloverSegment({ meetingId, segmentId, rollover, recorderSessionId = null } = {}) {
       const currentSegment = await requireSegment({ meetingRepository, meetingId, segmentId });
       const input = validateRolloverInput(rollover);
+      if (typeof meetingRepository.atomicRolloverSegment === 'function') {
+        if (currentSegment.lifecycleContractVersion !== 1) {
+          throw codedError('meeting_lifecycle_conflict', 'Legacy rollover requires lifecycle contract v1.');
+        }
+        const incoming = validateCheckpointInput(input.checkpoint, currentSegment.meetingId, currentSegment.id);
+        await validateCueIntegrity(incoming.finalCues, meetingRepository, sessionRepository, currentSegment.meetingId);
+        const operationInput = {
+          ...incoming,
+          idempotencyKey: input.idempotencyKey,
+          lifecycle: { kind: 'rollover', nextLiveSessionId: input.nextLiveSessionId }
+        };
+        const operation = checkCheckpointOperation(currentSegment.checkpoint, operationInput);
+        const now = clock();
+        let completedSegment = currentSegment;
+        if (currentSegment.status === 'active' && !operation.duplicate) {
+          const merged = mergeCheckpoint({
+            existing: currentSegment.checkpoint,
+            incoming,
+            meetingId: currentSegment.meetingId,
+            segmentId: currentSegment.id,
+            sessionRepository,
+            updatedAt: now
+          });
+          const checkpoint = recordCheckpointOperation(currentSegment.checkpoint, operationInput,
+            { ...merged, idempotencyKey: input.idempotencyKey }, operation.canonical);
+          completedSegment = currentSegment.complete({ endedAt: now, checkpoint });
+        } else if (currentSegment.status !== 'completed' || !operation.duplicate) {
+          throw codedError('meeting_segment_invalid_state', 'Rollover requires an active Segment or an exact committed replay.');
+        }
+        const result = await meetingRepository.atomicRolloverSegment({
+          current: currentSegment,
+          completed: completedSegment,
+          incoming: operationInput,
+          recorderSessionId,
+          nextLiveSessionId: input.nextLiveSessionId,
+          settingsSnapshot: meetingSettingsSnapshot(await meetingRepository.getMeeting(currentSegment.meetingId))
+        });
+        if (!result.replayed) await notifySegmentFinalized(onSegmentFinalized, result.completedSegment);
+        return { completedSegment: result.completedSegment, segment: result.segment };
+      }
       const existingSegments = await meetingRepository.listMeetingSegments(currentSegment.meetingId);
       const existingNext = existingSegments.find((segment) => segment.sequence === currentSegment.sequence + 1);
       const storedCheckpoint = normalizeStoredCheckpoint(currentSegment.checkpoint, currentSegment.meetingId, currentSegment.id);
+      let boundSessionId = recorderSessionId || currentSegment.sessionId;
+      if (!boundSessionId && typeof sessionRepository?.listSessionRecords === 'function') {
+        const records = await sessionRepository.listSessionRecords();
+        const candidates = records.filter((record) => record.meetingId === currentSegment.meetingId
+          && record.segmentId === currentSegment.id && record.status === 'active'
+          && Number(record.lifecycleContractVersion ?? 1) === 1);
+        if (candidates.length > 1) {
+          throw codedError('recorder_session_mismatch', 'Rollover source Segment has ambiguous active Sessions.');
+        }
+        boundSessionId = candidates[0]?.id || null;
+      }
+      if (boundSessionId) {
+        const existingSession = await sessionRepository?.getSessionRecord?.(boundSessionId);
+        const record = existingSession?.sessionRecord;
+        if (!record || record.meetingId !== currentSegment.meetingId
+          || Number(record.lifecycleContractVersion ?? 1) !== 1
+          || (record.segmentId !== currentSegment.id && currentSegment.sessionId !== boundSessionId)
+          || (currentSegment.sessionId && currentSegment.sessionId !== boundSessionId)) {
+          throw codedError('recorder_session_mismatch', 'Recorder Session does not match rollover source Segment.');
+        }
+      }
       if (
         existingNext &&
         currentSegment.status === 'completed' &&
         storedCheckpoint.idempotencyKey === input.idempotencyKey &&
         existingNext.liveSessionId === input.nextLiveSessionId
       ) {
+        if (boundSessionId && existingNext.sessionId !== boundSessionId) {
+          throw codedError('recorder_session_mismatch', 'Rollover successor is not bound to this Recorder Session.');
+        }
         return { completedSegment: currentSegment, segment: existingNext };
       }
 
@@ -313,11 +377,14 @@ export function createMeetingCheckpointService({
       const completedSegment = await commitLifecycleCheckpoint({
         segment: currentSegment, incoming, operationKey: input.idempotencyKey,
         details: { kind: 'rollover', nextLiveSessionId: input.nextLiveSessionId }, now,
-        transition: (current, checkpoint) => current.complete({ endedAt: now, checkpoint })
+        transition: (current, checkpoint) => (boundSessionId
+          ? new MeetingSegment({ ...current, sessionId: boundSessionId })
+          : current).complete({ endedAt: now, checkpoint })
       });
       const nextSegment = await meetingRepository.createMeetingSegment({
         id: idGenerator('segment'),
         meetingId: currentSegment.meetingId,
+        sessionId: boundSessionId,
         sequence: currentSegment.sequence + 1,
         liveSessionId: input.nextLiveSessionId,
         settingsSnapshot: meetingSettingsSnapshot(await meetingRepository.getMeeting(currentSegment.meetingId)),

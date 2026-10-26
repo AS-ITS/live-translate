@@ -378,7 +378,9 @@ finalized Cue publication. Owner requests use the existing Access Token gate;
 Recorder requests use the existing Recorder grant, lease, fence, and session
 headers. The endpoint validates the Meeting／Segment／Session relationship,
 publishes without waiting for checkpoint persistence, and returns the Meeting
-event cursor.
+event cursor. When both a Recorder Session header and body `sessionId` are
+present, they must match. A completed legacy v1 Segment accepts a delayed Cue
+only from its persistently bound Session.
 
 Viewer SSE uses `GET /api/shared-meetings/:token/events` or the short-code
 variant. The client may send `after=<eventId>` or rely on `Last-Event-ID`.
@@ -721,6 +723,10 @@ Missing Meetings return `404`.
 
 Completes the current active Segment with a final checkpoint and creates the
 next active Segment in the same Meeting.
+For persisted legacy v1 recordings, one database transaction commits the
+checked checkpoint and final Cues, binds the Recorder Session to both Segments,
+and activates the successor. Repeating the same idempotency key and request
+returns the committed successor; changing the request is rejected.
 
 ```json
 {

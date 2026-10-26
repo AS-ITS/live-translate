@@ -38,6 +38,60 @@ test('Supabase checkpoint adapter sends one transactional RPC and returns its co
   }
 });
 
+test('legacy rollover adapter sends one authoritative RPC and no Segment writes', async () => {
+  const calls = [];
+  const completed = current.complete({ endedAt: 2, checkpoint });
+  const row = (segment) => ({
+    id: segment.id,
+    owner_user_id: 'owner-1',
+    meeting_id: segment.meetingId,
+    session_id: 'session-1',
+    lifecycle_contract_version: 1,
+    sequence: segment.sequence,
+    status: segment.status,
+    checkpoint: segment.checkpoint,
+    live_session_id: segment.liveSessionId,
+    settings_snapshot: segment.settingsSnapshot,
+    started_at: segment.startedAt ? new Date(segment.startedAt).toISOString() : null,
+    ended_at: segment.endedAt ? new Date(segment.endedAt).toISOString() : null,
+    created_at: new Date(segment.createdAt).toISOString(),
+    updated_at: new Date(segment.updatedAt).toISOString()
+  });
+  const successor = new MeetingSegment({
+    id: 'segment-2', meetingId: 'meeting-1', sessionId: 'session-1',
+    sequence: 1, status: 'active', startedAt: 2, createdAt: 2, updatedAt: 2,
+    liveSessionId: 'live-2'
+  });
+  const repository = createSupabaseMeetingRepository({ env, fetchImpl: async (url, init) => {
+    calls.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => url.includes('/rpc/rollover_legacy_meeting_segment_v1')
+        ? { completedSegment: row(completed), segment: row(successor), replayed: false }
+        : []
+    };
+  } });
+  setRequestUser({ id: 'owner-1' });
+  try {
+    const result = await repository.atomicRolloverSegment({
+      current, completed, incoming: { idempotencyKey: 'op-a' },
+      recorderSessionId: 'session-1', nextLiveSessionId: 'live-2', settingsSnapshot: {}
+    });
+    assert.equal(result.segment.id, 'segment-2');
+    assert.equal(result.completedSegment.sessionId, 'session-1');
+    const writes = calls.filter(({ init }) => init.method !== 'GET');
+    assert.equal(writes.length, 1);
+    assert.match(writes[0].url, /\/rpc\/rollover_legacy_meeting_segment_v1$/u);
+    const body = JSON.parse(writes[0].init.body);
+    assert.equal(body.p_expected_session_id, 'session-1');
+    assert.equal(body.p_expected_revision, 0);
+    assert.equal(body.p_canonical_payload, 'payload-a');
+  } finally {
+    setRequestUser(null);
+  }
+});
+
 test('Supabase SQLSTATE checkpoint conflict remains structured 409 at adapter boundary', async () => {
   const repository = createSupabaseMeetingRepository({ env, fetchImpl: async () => ({
     ok: false, status: 400, json: async () => ({ code: 'P0042', message: 'checkpoint_conflict' })

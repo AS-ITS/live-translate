@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMeetingCheckpointService, meetingSettingsSnapshot } from '../../src/application/meetingCheckpointService.js';
 import { createMemoryMeetingRepository } from '../../src/infrastructure/meetingRepositoryAdapter.js';
+import { MeetingSegment } from '../../src/domain/meeting/index.js';
 import { transcriptItemsFromSegments } from '../../src/readModels/meetingReadModels.js';
 import {
   assertNoMissingDuplicateOrOutOfOrderChunks,
@@ -314,6 +315,64 @@ test('rollover completes current segment and creates next active segment', async
   assert.equal(result.segment.sequence, 1);
   assert.equal(result.segment.status, 'active');
   assert.equal(result.segment.liveSessionId, 'live-session-2');
+});
+
+test('rollover delegates the complete revisioned transition to an atomic repository', async () => {
+  const memory = createMemoryMeetingRepository();
+  const calls = [];
+  const repository = {
+    ...memory,
+    async atomicRolloverSegment(input) {
+      calls.push(input);
+      return {
+        completedSegment: input.completed,
+        segment: new MeetingSegment({
+          id: 'segment-2', meetingId: input.current.meetingId,
+          sessionId: 'session-1', sequence: 1, status: 'active',
+          liveSessionId: input.nextLiveSessionId, startedAt: 1000,
+          createdAt: 1000, updatedAt: 1000
+        }),
+        replayed: false
+      };
+    }
+  };
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting();
+  const result = await service.rolloverSegment({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    recorderSessionId: 'session-1',
+    rollover: {
+      idempotencyKey: 'atomic-op',
+      checkpoint: checkpoint(),
+      nextLiveSessionId: 'live-2'
+    }
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].current.status, 'active');
+  assert.equal(calls[0].completed.status, 'completed');
+  assert.equal(calls[0].completed.checkpoint.revision, 1);
+  assert.equal(calls[0].recorderSessionId, 'session-1');
+  assert.equal(result.segment.id, 'segment-2');
+  assert.equal(memory.listMeetingSegments(meeting.id).length, 1, 'service must not write S1 outside the RPC');
+});
+
+test('legacy atomic rollover rejects a lifecycle v2 Segment before calling the RPC', async () => {
+  const memory = createMemoryMeetingRepository();
+  let called = false;
+  const repository = {
+    ...memory,
+    async atomicRolloverSegment() { called = true; }
+  };
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting();
+  await memory.updateMeetingSegment(new MeetingSegment({ ...segment, lifecycleContractVersion: 2 }));
+  await assert.rejects(service.rolloverSegment({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    rollover: { idempotencyKey: 'v2-forbidden', checkpoint: checkpoint(), nextLiveSessionId: 'live-2' }
+  }), (error) => error.code === 'meeting_lifecycle_conflict');
+  assert.equal(called, false);
 });
 
 test('rollover is idempotent for repeated request and rejects conflicting next segment', async () => {

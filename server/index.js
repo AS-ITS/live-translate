@@ -2320,7 +2320,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       cueRequestContext.meetingId = meetingId;
       cueRequestContext.segmentId = segmentId;
       const body = await readJson(req, { maxBytes: 100_000 });
-      const sessionId = body?.sessionId || req.headers?.['x-recorder-session-id'];
+      const headerSessionId = req.headers?.['x-recorder-session-id'];
+      if (body?.sessionId && headerSessionId && body.sessionId !== headerSessionId) {
+        throw createHttpError('recorder_session_mismatch');
+      }
+      const sessionId = body?.sessionId || headerSessionId;
       cueRequestContext.sessionId = sessionId || null;
       if (hasRecorderHeaders(req)) {
         await authorizeRecorderMeetingWrite({
@@ -2482,6 +2486,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const result = await meetingCheckpointService.rolloverSegment({
         meetingId,
         segmentId,
+        recorderSessionId: hasRecorderHeaders(req) ? req.headers['x-recorder-session-id'] : null,
         rollover: await readJson(req, { maxBytes: meetingCheckpointMaxBytes })
       });
       statusCode = 201;

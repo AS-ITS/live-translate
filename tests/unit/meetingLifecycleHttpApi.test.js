@@ -36,8 +36,10 @@ test('recording start forwards authenticated principal to lifecycle service', as
   });
 });
 
-test('legacy resume route binds latest repository glossary into successor snapshot', async () => {
+test('legacy resume route flushes checkpoint before RPC and binds latest glossary', async () => {
   const calls = [];
+  const order = [];
+  const persistedCheckpoint = { meetingId: 'meeting-1', segmentId: 'segment-1', revision: 1, finalCues: [] };
   const payload = {
     meetingId: 'meeting-1', sourceSegmentId: 'segment-1', nextLiveSessionId: 'live-2',
     expectedSessionId: 'session-1',
@@ -45,8 +47,16 @@ test('legacy resume route binds latest repository glossary into successor snapsh
   };
   const payloadHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
   const handler = createHandler(undefined, {
+    meetingCheckpointService: {
+      async updateCheckpoint({ protocol }) {
+        assert.equal(protocol, 'legacy');
+        order.push('flush');
+        return { checkpoint: persistedCheckpoint };
+      }
+    },
     legacyResumeService: {
       async execute(input) {
+        order.push('resume');
         calls.push(input);
         return {
           meeting: { id: 'meeting-1' },
@@ -82,6 +92,8 @@ test('legacy resume route binds latest repository glossary into successor snapsh
   ]);
   assert.equal(calls[0].payloadHash, payloadHash);
   assert.equal(calls[0].ownerUserId, 'owner-1');
+  assert.deepEqual(order, ['flush', 'resume']);
+  assert.strictEqual(calls[0].checkpoint, persistedCheckpoint);
 });
 
 test('legacy resume falls back to source Segment glossary when refresh fails before RPC', async () => {

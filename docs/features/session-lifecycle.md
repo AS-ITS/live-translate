@@ -187,6 +187,8 @@ Each provider callback binds the Segment and Live session identity from its conn
 
 OPFS remains the durable source for original MediaRecorder audio. It is not used to replay historical PCM to Gemini: the current provider protocol has no client idempotency key or acknowledged PCM watermark, so replay could duplicate transcript text or reorder turns across provider epochs. If the bounded PCM queue overflows, original audio remains available but transcript completeness is explicitly marked degraded. Existing IndexedDB, OPFS, Session, Cue, and recording records are retained without migration or deletion.
 
+The captured PCM Journal stores committed PCM and claim records under `pcm-journals/v1/<meetingId>/<recordingId>`. A capture callback offers each chunk once before any upload buffer decision; provider resends do not create new claims. Provider-only changes retain the capture epoch, while Pause seals it and Resume begins the next epoch. Segment rollover keeps the recording's PCM sample range continuous. The Journal Worker holds the existing meeting recorder lock while open; Meeting retention removes its directory through the existing OPFS deletion path before marking local content cleared. Journal failures are visible and do not imply durable PCM coverage. This Journal does not replay PCM to Gemini or assign Cues to Segments.
+
 Rollover, checkpoint, Cue persistence, and provider transition do not own the WebRTC DataChannel lifecycle. A healthy Viewer channel must remain open through Supabase or lifecycle failures.
 
 ## UI State Mapping

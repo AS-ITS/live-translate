@@ -1,5 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { createMicrophoneRecordingController } from '../../lib/microphoneRecording.js';
+import { createDurablePcmJournalClient } from '../../lib/durablePcmJournalClient.js';
 import { cloudMeetingAudioEnabled, uploadMeetingSegmentAudio } from '../../lib/meetingAudioStorage.js';
 import { createLiveAudioBindings } from './liveAudioBindings.js';
 import {
@@ -238,6 +239,9 @@ export function useLiveRecordingController({
   actions = {}
 } = {}) {
   const recordingControllerRef = useRef(null);
+  const pcmJournalRef = useRef(null);
+  const inputUploadOverflowRef = useRef(false);
+  const inputUploadBufferRef = useRef({ array: null, bytes: 0 });
   const startOperationRef = useRef(null);
   const endOperationRef = useRef(null);
   const audioUploadControllerRef = useRef(null);
@@ -269,6 +273,7 @@ export function useLiveRecordingController({
   }, [audio.upload]);
 
   const audioController = useMemo(() => ({
+    pcmJournal() { return pcmJournalRef.current?.client || null; },
     recordingController() {
       if (!recordingControllerRef.current) {
         recordingControllerRef.current = createMicrophoneRecordingController({
@@ -308,20 +313,89 @@ export function useLiveRecordingController({
     prepareInputAudioDownload(record) {
       audio.inputMetadataRef.current = { sessionId: record?.id || '', startedAt: record?.startedAt ?? Date.now() };
       audio.inputChunksRef.current = [];
+      inputUploadBufferRef.current = { array: audio.inputChunksRef.current, bytes: 0 };
+      inputUploadOverflowRef.current = false;
       audioUpload?.resetAudioUploadSegment?.('input');
+      if (!shouldRecordInputAudio) return;
+      const meetingId = record?.meetingId || checkpoint.activeMeetingCheckpointRef.current?.meetingId;
+      const recordingId = record?.recordingId;
+      if (!meetingId || !recordingId) {
+        actions.setDeviceMessage?.('PCM Journal 無法啟動：缺少會議或錄音識別碼。');
+        return;
+      }
+      if (pcmJournalRef.current && (pcmJournalRef.current.meetingId !== meetingId
+        || pcmJournalRef.current.recordingId !== recordingId)) {
+        void pcmJournalRef.current.client.close().catch((error) => {
+          actions.setDeviceMessage?.(`PCM Journal 關閉失敗（${error?.message || 'unknown'}）。`);
+        });
+        pcmJournalRef.current = null;
+      }
+      if (!pcmJournalRef.current) {
+        try {
+          const client = createDurablePcmJournalClient({ meetingId, recordingId, onStatus: ({ state, code }) => {
+            if (state === 'EVICTION_RISK') actions.setDeviceMessage?.('PCM Journal 儲存未取得持久權限；已提交音訊仍可能被瀏覽器清除。');
+            else if (state === 'LOW_STORAGE') actions.setDeviceMessage?.('PCM Journal 可用儲存空間偏低。');
+            else if (state === 'DEGRADED' || state === 'BACKPRESSURE_GAP') {
+              actions.setDeviceMessage?.(`PCM Journal 未能完整保存音訊（${code || state}）。`);
+            }
+          } });
+          pcmJournalRef.current = { client, meetingId, recordingId };
+          void client.open().catch(() => {}); // onStatus reports the failure
+        } catch (error) {
+          actions.setDeviceMessage?.(`PCM Journal 無法啟動（${error?.message || 'unknown'}）。`);
+        }
+      }
     },
     resetInputAudioDownload() {
       audio.inputChunksRef.current = [];
+      inputUploadBufferRef.current = { array: audio.inputChunksRef.current, bytes: 0 };
       audio.inputMetadataRef.current = { sessionId: '', startedAt: null };
       audioUpload?.resetAudioUploadSegment?.('input');
     },
-  handleInputAudioChunk(bytes) {
+    handleInputAudioChunk(bytes, metadata = {}) {
     if (!shouldRecordInputAudio || !bytes || !Number.isFinite(bytes.byteLength) || bytes.byteLength === 0) return;
+    try {
+      const result = pcmJournalRef.current?.client.offer(bytes, metadata);
+      if (!result) actions.setDeviceMessage?.('PCM Journal 未啟動；此音訊未進入持久儲存。');
+      else if (result.state === 'REJECTED') actions.setDeviceMessage?.(`PCM Journal 拒絕音訊（${result.code}）。`);
+    } catch (error) {
+      actions.setDeviceMessage?.(`PCM Journal 擷取失敗（${error?.message || 'unknown'}）。`);
+    }
     if (cloudMeetingAudioEnabled()) return;
-    audio.inputChunksRef.current.push(new Uint8Array(bytes));
+    const current = audio.inputChunksRef.current;
+    if (inputUploadBufferRef.current.array !== current) {
+      inputUploadBufferRef.current = { array: current, bytes: current.reduce((sum, chunk) => sum + chunk.byteLength, 0) };
+    }
+    if (inputUploadBufferRef.current.bytes + bytes.byteLength > 16 * 1024 * 1024) {
+      if (!inputUploadOverflowRef.current) {
+        inputUploadOverflowRef.current = true;
+        actions.setDeviceMessage?.('原始音訊上傳緩衝已達 16 MiB；PCM Journal 狀態須另行核對。');
+      }
+      return;
+    }
+    current.push(new Uint8Array(bytes));
+    inputUploadBufferRef.current.bytes += bytes.byteLength;
       void audioUpload?.flushAudioSegmentIfDue?.('input');
     },
-    async pauseRawAudioRecording() {
+    async sealPcmJournalEpoch() {
+      if (!pcmJournalRef.current) return;
+      try { await pcmJournalRef.current.client.flush({ endEpoch: true }); }
+      catch (error) {
+        actions.setDeviceMessage?.(`PCM Journal 封存失敗（${error?.message || 'unknown'}）。`);
+        throw error;
+      }
+    },
+    async closePcmJournal() {
+      if (!pcmJournalRef.current) return;
+      const active = pcmJournalRef.current;
+      try { await active.client.close(); }
+      catch (error) {
+        actions.setDeviceMessage?.(`PCM Journal 關閉失敗（${error?.message || 'unknown'}）。`);
+        throw error;
+      }
+      finally { if (pcmJournalRef.current === active) pcmJournalRef.current = null; }
+    },
+    async pauseRawAudioRecording({ sealJournal = true } = {}) {
       if (!shouldRecordInputAudio) {
         audio.setRecordingState?.(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
         return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
@@ -336,6 +410,7 @@ export function useLiveRecordingController({
           errorMessage: error?.message || '原始語音錄音無法暫停。'
         }));
       audio.setRecordingState?.(nextState);
+      if (nextState.status !== 'error' && sealJournal) await this.sealPcmJournalEpoch();
       return nextState;
     },
     async resumeRawAudioRecording() {
@@ -1205,7 +1280,11 @@ export function useLiveRecordingController({
       recovery.setMeetingCheckpointStatus?.('ending');
       try {
         await completeMeetingAfterRecordingFinalize({
-          flushAudio: () => audioController.finalizeRawAudioRecording(),
+          flushAudio: async () => {
+            const result = await audioController.finalizeRawAudioRecording();
+            await audioController.closePcmJournal();
+            return result;
+          },
           flushCues: () => cueController.flushSubtitleCues('complete'),
           flushCheckpoint: async () => {
             const checkpointFlushed = await checkpointController.flushMeetingCheckpointSync();
@@ -1262,6 +1341,7 @@ export function useLiveRecordingController({
       const inputAudioState = await audioController.finalizeRawAudioRecording();
       await stopSessionSafely(reconnectingSession);
       if (activeSession !== reconnectingSession) await stopSessionSafely(activeSession);
+      await audioController.closePcmJournal();
       cueController.flushQueuedLiveCueEvents();
       recovery.invalidateLiveSessionCallbacks();
       recovery.setLiveCueUpdatesAllowed(false);
@@ -1531,9 +1611,10 @@ export function useLiveRecordingController({
       recovery.setStatus('stopping');
       const reconnectingSession = recovery.reconnectSessionRef.current;
       recovery.reconnectSessionRef.current = null;
-      await audioController.pauseRawAudioRecording();
+      await audioController.pauseRawAudioRecording({ sealJournal: false });
       await stopSessionSafely(reconnectingSession);
       await stopSessionSafely(recovery.sessionRef.current);
+      await audioController.sealPcmJournalEpoch();
       recovery.sessionRef.current = null;
       recovery.invalidateLiveSessionCallbacks();
       recovery.setLiveCueUpdatesAllowed(false);

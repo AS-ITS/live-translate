@@ -50,3 +50,24 @@ test('audio upload controller restores chunks and schedules retry for transient 
   assert.equal(timers.length, 1);
   assert.equal(timers[0].delay, 5000);
 });
+
+test('failed input upload keeps a bounded retry backlog and reports discarded PCM', async () => {
+  const state = refs();
+  state.chunks.input.current = [new Uint8Array([1, 2, 3, 4])];
+  const errors = [];
+  const controller = createAudioUploadController({
+    ...state,
+    getActiveSessionId: () => 'session-1',
+    setError: (message) => errors.push(message),
+    fetchImpl: async () => {
+      state.chunks.input.current.push(new Uint8Array([5, 6, 7, 8]), new Uint8Array([9, 10, 11, 12]));
+      return { ok: false, status: 503 };
+    },
+    windowImpl: { setTimeout: () => 1, clearTimeout: () => {} },
+    maxInputBufferedBytes: 8,
+    now: () => 10_000
+  });
+  await assert.rejects(controller.flush('input', { force: true }), /HTTP 503/);
+  assert.equal(state.chunks.input.current.reduce((sum, chunk) => sum + chunk.byteLength, 0), 8);
+  assert.match(errors.at(-1), /已捨棄/);
+});

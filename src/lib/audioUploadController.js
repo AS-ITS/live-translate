@@ -9,6 +9,7 @@ import {
 const DEFAULT_SEGMENT_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_RETRY_DELAY_MS = 5000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 60000;
+const MAX_INPUT_UPLOAD_BUFFERED_BYTES = 16 * 1024 * 1024;
 
 export function createAudioUploadController({
   chunks,
@@ -23,7 +24,8 @@ export function createAudioUploadController({
   windowImpl = typeof window === 'undefined' ? globalThis : window,
   segmentIntervalMs = DEFAULT_SEGMENT_INTERVAL_MS,
   retryDelayMs = DEFAULT_RETRY_DELAY_MS,
-  maxRetryDelayMs = DEFAULT_MAX_RETRY_DELAY_MS
+  maxRetryDelayMs = DEFAULT_MAX_RETRY_DELAY_MS,
+  maxInputBufferedBytes = MAX_INPUT_UPLOAD_BUFFERED_BYTES
 }) {
   function clearRetry(kind) {
     const timer = retryTimers.current[kind];
@@ -108,7 +110,20 @@ export function createAudioUploadController({
     try {
       return await uploadPromise;
     } catch (error) {
-      chunksRef.current = uploadChunks.concat(chunksRef.current);
+      const restored = uploadChunks.concat(chunksRef.current);
+      if (kind === 'input') {
+        let byteCount = 0;
+        let keepCount = 0;
+        while (keepCount < restored.length
+          && byteCount + restored[keepCount].byteLength <= maxInputBufferedBytes) {
+          byteCount += restored[keepCount].byteLength;
+          keepCount += 1;
+        }
+        chunksRef.current = restored.slice(0, keepCount);
+        if (keepCount < restored.length) {
+          setError('原始音訊上傳緩衝超過 16 MiB，部分上傳資料已捨棄；請核對 PCM Journal。');
+        }
+      } else chunksRef.current = restored;
       if (isRetryableError(error)) scheduleRetry(kind, sessionId);
       throw error;
     } finally {

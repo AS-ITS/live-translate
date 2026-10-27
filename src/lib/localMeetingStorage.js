@@ -662,13 +662,28 @@ export function createOpfsChunkStore({ rootDirectory = null } = {}) {
       try {
         meetings = await root.getDirectoryHandle('meetings');
       } catch (error) {
-        if (error?.name === 'NotFoundError') return;
-        throw error;
+        if (error?.name !== 'NotFoundError') throw error;
       }
+      if (meetings) {
+        try {
+          await meetings.removeEntry(name, { recursive: true });
+        } catch (error) {
+          if (error?.name !== 'NotFoundError') throw error;
+        }
+      }
+      let journals;
       try {
-        await meetings.removeEntry(name, { recursive: true });
+        const base = await root.getDirectoryHandle('pcm-journals');
+        journals = await base.getDirectoryHandle('v1');
       } catch (error) {
         if (error?.name !== 'NotFoundError') throw error;
+      }
+      if (journals) {
+        try {
+          await journals.removeEntry(name, { recursive: true });
+        } catch (error) {
+          if (error?.name !== 'NotFoundError') throw error;
+        }
       }
     }
   });

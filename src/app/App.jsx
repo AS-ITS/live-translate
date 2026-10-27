@@ -1264,8 +1264,8 @@ const activeMeetingCheckpointRef = useRef(null);
         if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
         if (playbackState === 'error') setDeviceMessage('翻譯聲音播放失敗，字幕仍會繼續接收。');
       },
-      onInputAudioChunk: (chunk) => {
-        if (isCurrentLiveSessionInstance(callbackGeneration)) liveController.audio.handleInputAudioChunk(chunk);
+      onInputAudioChunk: (chunk, metadata) => {
+        if (isCurrentLiveSessionInstance(callbackGeneration)) liveController.audio.handleInputAudioChunk(chunk, metadata);
       },
       onInputTranscript: (update) => {
         if (isCurrentLiveSessionCallback(callbackGeneration) && isOwnedLiveSessionEvent(update, callbackGeneration)) {

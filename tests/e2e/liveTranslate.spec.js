@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { emitE2EAuthState, installE2EAuth } from './authBootstrap.js';
+import { emitE2EAuthState, installE2EAuth, localE2EAuthSession } from './authBootstrap.js';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { serializeEffectiveGlossary } from '../../src/lib/glossaryRevision.js';
@@ -8,7 +8,10 @@ const MOCK_MEETING_ID = '11111111-1111-4111-8111-111111111111';
 const MOCK_SEGMENT_ID = (sequence) => `22222222-2222-4${String(sequence).padStart(3, '0')}-8${String(sequence).padStart(3, '0')}-${String(sequence).padStart(12, '0')}`;
 
 test.beforeEach(async ({ page }) => {
-  const resetResponse = await page.request.delete('/api/test/sessions');
+  const accessToken = localE2EAuthSession()?.token;
+  const resetResponse = await page.request.delete('/api/test/sessions', {
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}
+  });
   expect(resetResponse.status()).toBe(204);
   page.liveTokenRequests = [];
   page.liveTokenDiagnostics = {
@@ -3377,15 +3380,54 @@ test('long meeting accelerated 130 minute schedule creates 13 segments without w
     window.__liveTranslateSegmentSwitchIntervalMs = 700;
   });
   const checkpointRequests = await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
 
   await gotoMockMeetingLive(page);
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
+  const audioCaptureDiagnostics = [];
+  const onAudioConsole = (message) => {
+    if (message.text().includes('audio.callback.stalled')) audioCaptureDiagnostics.push(message.text());
+  };
+  page.on('console', onAudioConsole);
+  await page.evaluate(() => {
+    window.__issue41FirstListeningAt = null;
+    const recordListening = () => {
+      if (window.__issue41FirstListeningAt) return;
+      if (document.querySelector('.status-pill')?.getAttribute('aria-label') === '即時字幕狀態：聆聽中') {
+        window.__issue41FirstListeningAt = Date.now();
+      }
+    };
+    window.__issue41ListeningObserver = new MutationObserver(recordListening);
+    window.__issue41ListeningObserver.observe(document.body, { subtree: true, attributes: true, childList: true });
+    recordListening();
+  });
+  const audioTimer = await page.evaluate(() => {
+    window.__issue41PcmCallbacks = [];
+    return window.setInterval(() => {
+      const track = window.__mockMicTracks.at(-1);
+      const context = window.__mockAudioContexts.at(-1);
+      const processor = window.__mockAudioProcessors.at(-1);
+      if (track?.readyState !== 'live' || context?.state !== 'running' || typeof processor?.onaudioprocess !== 'function') return;
+      processor.onaudioprocess({
+        inputBuffer: { getChannelData: () => new Float32Array(1600).fill(0.25) }
+      });
+      window.__issue41PcmCallbacks.push({
+        at: Date.now(),
+        processorIndex: window.__mockAudioProcessors.length - 1
+      });
+    }, 500);
+  });
+  try {
+    await page.getByRole('button', { name: '開始' }).click();
+    await expect.poll(() => page.evaluate(() => window.__issue41FirstListeningAt)).toBeGreaterThan(0);
+    await expect.poll(() => page.evaluate(() => window.__issue41PcmCallbacks.length)).toBeGreaterThan(0);
+    await expect.poll(() => page.evaluate(() => window.__liveTranslateDebug.getSnapshot().pcmGeneratedCount)).toBeGreaterThan(0);
 
   for (let index = 0; index < 12; index += 1) {
+    const callbacksBefore = await page.evaluate(() => window.__issue41PcmCallbacks.length);
     await emitFinalTranscript(page, `soak segment ${index + 1} source`, `soak segment ${index + 1} translation`, { waitMs: 250 });
     await expect.poll(() => checkpointRequests.rolloverRequests.length, { timeout: 7000 }).toBe(index + 1);
     await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(index + 2);
+    await expect.poll(() => page.evaluate(() => window.__issue41PcmCallbacks.length)).toBeGreaterThan(callbacksBefore);
   }
 
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(13);
@@ -3412,6 +3454,49 @@ test('long meeting accelerated 130 minute schedule creates 13 segments without w
       { segmentId: `segment-${index + 1}`, text: `soak segment ${index + 1} translation` }
     ]).flat()
   );
+    expect(audioCaptureDiagnostics).toEqual([]);
+    const failureStages = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace()
+      .filter((entry) => ['PROVIDER_RECOVERY_EXHAUSTED', 'ROLLOVER_FAILED'].includes(entry.stage))
+      .map((entry) => entry.stage));
+    expect(failureStages).toEqual([]);
+  } finally {
+    page.off('console', onAudioConsole);
+    if (!page.isClosed()) {
+      const evidence = await page.evaluate((timer) => {
+        window.clearInterval(timer);
+        window.__issue41ListeningObserver?.disconnect();
+        const callbacks = window.__issue41PcmCallbacks || [];
+        const trace = window.__liveTranslateDebug?.getPipelineTrace?.() || [];
+        return {
+          firstListeningAt: window.__issue41FirstListeningAt,
+          processorCount: window.__mockAudioProcessors.length,
+          callbackCount: callbacks.length,
+          callbacksByProcessor: Object.fromEntries([...new Set(callbacks.map((item) => item.processorIndex))]
+            .map((index) => [index, callbacks.filter((item) => item.processorIndex === index).length])),
+          firstCallbackAt: callbacks[0]?.at || null,
+          lastCallbackAt: callbacks.at(-1)?.at || null,
+          maxCallbackGapMs: callbacks.reduce((max, item, index) => Math.max(max, index ? item.at - callbacks[index - 1].at : 0), 0),
+          providerSessionCount: window.__mockGoogleGenAI?.liveSessions.length || 0,
+          rolloverCommitted: trace.filter((entry) => entry.stage === 'ROLLOVER_COMMITTED').length,
+          recoveryAttempts: trace.filter((entry) => entry.stage === 'PROVIDER_RECOVERY_ATTEMPT').length,
+          failureStages: trace.filter((entry) => ['PROVIDER_RECOVERY_EXHAUSTED', 'ROLLOVER_FAILED'].includes(entry.stage))
+            .map((entry) => ({ stage: entry.stage, reason: entry.reason, errorCode: entry.errorCode })),
+          failureReasonHints: window.__liveTranslateDebug?.getSnapshot?.().failureDiagnostics?.map((item) => item.reasonHint) || []
+        };
+      }, audioTimer);
+      console.log('ISSUE41_SOAK_EVIDENCE', JSON.stringify({
+        ...evidence,
+        rolloverCount: checkpointRequests.rolloverRequests.length,
+        cueOwnership: checkpointRequests.map((request) => ({
+          segmentId: request.segmentId,
+          cueCount: request.durableChunks.length,
+          cueSegmentIds: [...new Set(request.durableChunks.map((chunk) => chunk.segmentId))],
+          cueSequences: request.durableChunks.map((chunk) => chunk.cueSequence ?? chunk.sequence ?? null)
+        })),
+        audioCaptureDiagnostics
+      }));
+    }
+  }
 });
 
 test('checkpoint sync failure keeps the live session active and shows retryable status', async ({ page }) => {

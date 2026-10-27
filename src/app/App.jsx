@@ -2353,6 +2353,7 @@ const activeMeetingCheckpointRef = useRef(null);
         .filter((cue) => cue?.status === 'final' && !cue.dismissed);
       const unassignedPartialCues = unassignedRecords.map((record) => record.cue)
         .filter((cue) => cue?.status === 'partial' && !cue.dismissed);
+      if (meetingResumeDraftRequestIdRef.current !== requestId) return;
       const persistedCues = mergeDisplayedCues(
         mergeDisplayedCues(checkpointCues, localCues), unassignedCues
       );
@@ -2415,9 +2416,11 @@ const activeMeetingCheckpointRef = useRef(null);
       segmentId: resumableSegment.id,
       segmentSequence: resumableSegment.sequence
     };
+      const history = await sessionReadApiClientRef.current.listSessionHistory().catch(() => []);
+      if (meetingResumeDraftRequestIdRef.current !== requestId) return;
+      const sessionId = history.find((record) => record.meetingId === meetingId && ['active', 'paused'].includes(record.status))?.id || null;
       setResumeDraft({
-        sessionId: (await sessionReadApiClientRef.current.listSessionHistory().catch(() => []))
-          .find((record) => record.meetingId === meetingId && ['active', 'paused'].includes(record.status))?.id || null,
+        sessionId,
         meetingId,
         segmentId: resumableSegment.id,
         transcriptState: resumeTranscript,

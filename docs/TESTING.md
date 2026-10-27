@@ -1,5 +1,52 @@
 # Testing
 
+## Issue #41 SSH-independent local runner
+
+From this worktree, start a detached run with `node scripts/issue41-local-runner.mjs start`.
+For the real-time, database-backed Issue #41 case, use `start --real-time`.
+That option always starts an isolated local Supabase stack, creates a local
+Supabase Auth user, and runs `issue41RealtimeSoak.spec.js` once with the
+production 15-minute rollover interval. `start --real-time --short-validation`
+runs the same real API/DB/Viewer path but ends before rollover; its result is
+`short-validation-passed`, never a rollover pass. Neither mode calls Gemini:
+the E2E Vite alias provides the fake browser provider and only `/api/live-token`
+is intercepted to avoid token creation against Gemini. Meeting, Session,
+Segment, Cue, checkpoint, and Viewer APIs are real local services.
+
+Use `start --supabase` only when an isolated local Supabase stack is needed;
+`--supabase-port-base=55421` changes its reserved port range. The E2E cases
+use the existing fake Gemini browser provider and mocked Meeting endpoints;
+starting Supabase does not turn these cases into a database integration test.
+The runner rejects occupied API/Vite ports (3000/5174), never reuses their
+servers, and never calls a real Gemini API. Supabase gets a unique project ID,
+copied migrations, and its own ports under the run directory.
+
+```bash
+node scripts/issue41-local-runner.mjs start
+node scripts/issue41-local-runner.mjs start --real-time --short-validation
+node scripts/issue41-local-runner.mjs start --real-time
+node scripts/issue41-local-runner.mjs status
+node scripts/issue41-local-runner.mjs report
+node scripts/issue41-local-runner.mjs stop
+```
+
+Commands also accept a run ID after the verb. `start` prints the ID and report
+path. The runner first executes the existing three-segment rollover E2E Smoke.
+If it passes, the existing 13-segment accelerated E2E test repeats until at
+least 20 minutes of wall-clock soak have elapsed. A failed iteration stops the
+sequence. Each phase keeps its log, exit code, and Playwright trace/artifacts
+under `test-results/issue41-runner/<run-id>/`; `runner.log`, `state`, and
+`exit-code` record the overall outcome. The detached worker ignores terminal
+hangup and has no SSH stdin or stdout; verify SSH survival separately by
+disconnecting and reconnecting to the remote Mac, then checking `status` and
+the growing `runner.log`. `stop` signals only the recorded worker, which stops
+its own child process group and its own optional Supabase project.
+Real-time runs also save `git-sha`, `auth-user-id`, `supabase-url`,
+`evidence.json` (Meeting/Session/Segment IDs, DB Cue sequence and checkpoint
+revision, Viewer text and PCM counts), API/Playwright logs, trace, PID, and
+exit code. The runner redacts Auth tokens and Supabase keys from text reports
+and Playwright traces before finalizing a run.
+
 Live pipeline trace vocabulary: use `TRANSCRIPT_NORMALIZED`, `TURN_ASSIGNED`, `CUE_CREATED`, `CUE_UPDATED`, `CUE_FINALIZED`, `CUE_PUBLISHED`, `SPEECH_ACTIVITY_STARTED`, `SPEECH_ACTIVITY_CONTINUED`, `LOCAL_SILENCE_DETECTED`, and lifecycle reconnect/rollover stages. Legacy `NORMALIZED`, `CUE_STATE`, and `LOCAL_SILENCE_FINALIZE` names are not canonical. `audioTurnId` is authoritative at the audio boundary; `turnKey` belongs to normalized logical turns; `cueId` belongs to Cue state. Diagnostics never use one identity as another's fallback.
 
 ## WebRTC 正式流程

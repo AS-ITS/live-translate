@@ -121,6 +121,7 @@ const ERROR_RESPONSES = {
   meeting_checkpoint_unavailable: { status: 503, message: 'Meeting checkpoint persistence is not configured.' },
   meeting_terminal: { status: 409, message: 'Meeting has already ended.' },
   meeting_content_expired: { status: 410, message: 'Meeting content retention period has expired.' },
+  meeting_content_local_only: { status: 410, message: 'Meeting content is available only on the Host device.' },
   meeting_share_invalid: { status: 404, message: 'Meeting share is invalid or expired.' },
   meeting_not_found: { status: 404, message: 'Meeting not found.' },
   meeting_delete_not_allowed: { status: 409, message: 'Only meetings that have not started can be deleted.' },
@@ -1249,6 +1250,12 @@ if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
       }
     }
 
+    if (isLocalOnlyContentEndpoint(req.method, path)) {
+      statusCode = 410;
+      sendJson(res, statusCode, errorPayload('meeting_content_local_only', requestId), requestId);
+      return;
+    }
+
     if (authenticatedUser?.role === 'member' && !hasRecorderHeaders(req) && (isMemberMeetingRecordingPath(req.method, path) || isMemberSessionRecordingPath(req.method, path))) {
       try {
         const sessionContext = isMemberSessionRecordingPath(req.method, path)
@@ -1418,6 +1425,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     let sessionCreateError = null;
     try {
       const body = await readJson(req);
+        if (Object.keys(body || {}).some((key) => !new Set([
+          'id', 'name', 'meetingId', 'segmentId', 'targetLanguageCode', 'targetLanguageLabel',
+          'sourceLanguageCode', 'echoTargetLanguage', 'shouldRecordInputAudio',
+          'meetingGlossaryEntries', 'selectedInputDeviceId', 'inputDeviceLabelSnapshot'
+        ]).has(key))) throw createHttpError('meeting_content_local_only');
       if (authenticatedUser?.role === 'member' && !body?.meetingId) throw createHttpError('recorder_forbidden');
       if (body?.meetingId) {
         if (!await meetingMembershipService?.canRecord?.(body.meetingId, authenticatedUser.id)) throw createHttpError('recorder_forbidden');
@@ -1980,6 +1992,38 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     return;
   }
 
+  if ((req.method === 'GET' && isMeetingLifecycleOperationLookupPath(path))
+    || (req.method === 'POST' && isMeetingLeaseRecoveryPath(path))) {
+    try {
+      if (!meetingLifecycleService) throw createHttpError('cloud_capability_unavailable');
+      const meetingId = safeDecodePathComponent(path.split('/')[3]);
+      const principal = await resolveMeetingLifecyclePrincipal({
+        req, meetingId, authenticatedUser, meetingMembershipService, sessionShareService
+      });
+      if (req.method === 'GET') {
+        const operationId = safeDecodePathComponent(path.split('/')[6]);
+        sendJson(res, 200, await meetingLifecycleService.lookupOperation({
+          ...principal, meetingId, operationId
+        }), requestId);
+      } else {
+        const body = await readJson(req, { maxBytes: 4096 });
+        const fields = ['originalOperationId', 'recoveryOperationId', 'command',
+          'expectedLifecycleVersion', 'sessionId', 'segmentId', 'priorLeaseId', 'priorFenceToken'];
+        if (!body || Object.keys(body).some((field) => !fields.includes(field))) {
+          throw createHttpError('invalid_request');
+        }
+        sendJson(res, 200, await meetingLifecycleService.recoverLease({
+          ...principal, meetingId, ...body
+        }), requestId);
+      }
+    } catch (error) {
+      const code = errorCodeFor(error);
+      sendJson(res, ERROR_RESPONSES[code]?.status || error.status || 500,
+        errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
   if (req.method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path))) {
     const lifecycleDiagnostic = { meetingId: null, command: null, operationId: null, sessionId: null, segmentId: null };
     try {
@@ -2022,6 +2066,21 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const payload = { ...(body || {}) };
       for (const field of ['operationId', 'expectedLifecycleVersion', 'leaseId', 'fenceToken']) delete payload[field];
       if (payload.checkpoint !== undefined) throw createHttpError('checkpoint_conflict');
+      const allowedMetadata = {
+        start: ['sessionId', 'segmentId'],
+        pause: ['originalOperationId', 'recoveryOperationId'],
+        resume: ['originalOperationId', 'recoveryOperationId'],
+        rollover: ['nextLiveSessionId', 'originalOperationId', 'recoveryOperationId'],
+        recover: ['failureReason', 'failureCategory', 'originalOperationId', 'recoveryOperationId'],
+        stop: ['failureReason', 'failureCategory', 'originalOperationId', 'recoveryOperationId'],
+        takeover: ['confirmTakeover']
+      };
+      if (Object.entries(payload).some(([field, value]) =>
+        !allowedMetadata[route.action]?.includes(field)
+        || (field === 'confirmTakeover' ? typeof value !== 'boolean'
+          : typeof value !== 'string' || value.length > 128 || !/^[A-Za-z0-9_-]+$/u.test(value)))) {
+        throw createHttpError('invalid_request');
+      }
       const result = await meetingLifecycleService.execute({
         ...principal,
         meetingId: route.meetingId,
@@ -2078,6 +2137,10 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId } = parseMeetingCompletePath(path);
+      const targetMeeting = await meetingRepository?.getMeeting?.(meetingId);
+      if (targetMeeting && Number(targetMeeting.lifecycleContractVersion) !== 2) {
+        throw createHttpError('meeting_content_local_only');
+      }
       const result = await meetingCheckpointService.completeMeeting({ meetingId });
       statusCode = 200;
       sendJson(res, statusCode, result, requestId);
@@ -2249,7 +2312,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const input = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
       if (input?.targetLanguageCode && !isSupportedLanguage(input.targetLanguageCode)) throw createHttpError('unsupported_language');
       if (input?.sourceLanguageCode && !isSupportedLanguage(input.sourceLanguageCode)) throw createHttpError('unsupported_language');
-      const result = await meetingCheckpointService.createMeeting({ ...input, draft: input?.draft === true });
+      const result = await meetingCheckpointService.createMeeting({
+        ...input,
+        draft: true,
+        lifecycleContractVersion: 2
+      });
       meetingDiagnosticId = result?.meeting?.id || null;
       statusCode = 201;
       sendJson(res, statusCode, result, requestId);
@@ -2281,6 +2348,32 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         })
       });
     }
+    return;
+  }
+
+  if (req.method === 'GET' && isSharedMeetingMetadataPath(path)) {
+    const share = await resolveSharedMeeting(path, sessionShareService);
+    if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') {
+      sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
+      return;
+    }
+    if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
+    let metadata;
+    try {
+      metadata = await meetingReadController?.getMeetingViewerMetadata(share.meetingId);
+    } catch (error) {
+      if (error?.code !== 'meeting_content_expired') throw error;
+      sendJson(res, 410, errorPayload('meeting_content_expired', requestId), requestId);
+      return;
+    }
+    if (!metadata) {
+      sendJson(res, 404, errorPayload('meeting_not_found', requestId), requestId);
+      return;
+    }
+    sendJson(res, 200, {
+      ...metadata,
+      capability: { role: share.role, meetingId: share.meetingId, expiresAt: share.expiresAt }
+    }, requestId);
     return;
   }
 
@@ -2519,6 +2612,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingSegmentStartPath(path);
+      const targetMeeting = await meetingRepository?.getMeeting?.(meetingId);
+      if (targetMeeting) throw createHttpError(
+        Number(targetMeeting.lifecycleContractVersion) === 2
+          ? 'meeting_lifecycle_conflict'
+          : 'meeting_content_local_only'
+      );
       const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
       const result = await meetingCheckpointService.startMeeting({ meetingId, segmentId, liveSessionId: body?.liveSessionId });
       statusCode = 201;
@@ -2577,7 +2676,17 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const { meetingId } = parseMeetingSegmentsPath(path);
       const segments = await meetingCheckpointService.listMeetingSegments(meetingId);
       statusCode = 200;
-      sendJson(res, statusCode, { meetingId, segments }, requestId);
+      sendJson(res, statusCode, { meetingId, segments: segments.map((segment) => ({
+        id: segment.id,
+        meetingId: segment.meetingId,
+        sessionId: segment.sessionId ?? null,
+        sequence: segment.sequence,
+        status: segment.status,
+        liveSessionId: segment.liveSessionId ?? null,
+        startedAt: segment.startedAt ?? null,
+        endedAt: segment.endedAt ?? null,
+        lifecycleContractVersion: segment.lifecycleContractVersion ?? null
+      })) }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -2915,6 +3024,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       }
       const body = await readJson(req);
       const allowedKeys = new Set(['name', 'status', 'targetLanguageCode', 'targetLanguageLabel', 'sourceLanguageCode', 'meetingId', 'segmentId']);
+        if (Object.keys(body || {}).some((key) => !allowedKeys.has(key))) throw createHttpError('invalid_request');
+        if (Object.entries(body || {}).some(([key, value]) => {
+          if (key === 'targetLanguageLabel' && value === null) return false;
+          const maxLength = ['name', 'meetingId', 'segmentId'].includes(key) ? 256 : 128;
+          return typeof value !== 'string' || value.length === 0 || value.length > maxLength;
+        })) throw createHttpError('invalid_request');
       const patch = Object.fromEntries(Object.entries(body || {}).filter(([key]) => allowedKeys.has(key)));
       if (patch.meetingId !== undefined && (typeof patch.meetingId !== 'string' || patch.meetingId.trim() === '')) {
         throw createHttpError('invalid_request');
@@ -2931,7 +3046,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       statusCode = 200;
       sendJson(res, statusCode, { session }, requestId);
     } catch (error) {
-      const code = errorCodeFor(error);
+      const code = error?.supabaseCode === 'P0043' && error?.supabaseMessage === 'meeting_content_local_only'
+        ? 'meeting_content_local_only' : errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
@@ -3561,6 +3677,8 @@ async function resolveMeetingLifecyclePrincipal({
 
 function isRecorderAuthorizedPath(method, path, req) {
   if (!hasRecorderHeaders(req)) return false;
+  if (method === 'GET' && isMeetingLifecycleOperationLookupPath(path)) return true;
+  if (method === 'POST' && isMeetingLeaseRecoveryPath(path)) return true;
   if (method === 'PUT' && /^\/api\/sessions\/[^/]+$/.test(path)) return true;
   if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)$/.test(path)) return true;
   if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)\/segments\/\d+$/.test(path)) return true;
@@ -3572,6 +3690,8 @@ function isRecorderAuthorizedPath(method, path, req) {
 }
 
 function isMemberMeetingRecordingPath(method, path) {
+  if (method === 'GET' && isMeetingLifecycleOperationLookupPath(path)) return true;
+  if (method === 'POST' && isMeetingLeaseRecoveryPath(path)) return true;
   return (method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path) || isLegacyMeetingResumePath(path))) ||
     (method === 'POST' && isMeetingCuePublishPath(path)) ||
     (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) ||
@@ -3777,6 +3897,14 @@ function isMeetingRecordingCommandPath(path) {
   return /^\/api\/meetings\/[^/]+\/recording\/(?:start|pause|resume|rollover|recover|stop|takeover|lease\/heartbeat)$/u.test(path);
 }
 
+function isMeetingLifecycleOperationLookupPath(path) {
+  return /^\/api\/meetings\/[^/]+\/recording\/operations\/[^/]+$/u.test(path);
+}
+
+function isMeetingLeaseRecoveryPath(path) {
+  return /^\/api\/meetings\/[^/]+\/recording\/lease\/recover$/u.test(path);
+}
+
 function isLegacyMeetingResumePath(path) {
   return /^\/api\/meetings\/[^/]+\/recording\/legacy-resume$/u.test(path);
 }
@@ -3889,6 +4017,21 @@ function isMeetingShareCollectionPath(path) {
 
 function isMeetingSharePath(path) {
   return /^\/api\/meetings\/[^/]+\/shares\/[^/]+$/.test(path);
+}
+
+function isLocalOnlyContentEndpoint(method, path) {
+  if (/^\/api\/saved-transcripts\/[^/]+\/translations$/u.test(path)) return true;
+  if (/^\/api\/shared-sessions\//u.test(path)) return method !== 'DELETE';
+  if (/^\/api\/translation-(?:requests|executions|outputs|dead-letter-queue)(?:\/|$)/u.test(path)) return method !== 'DELETE';
+  if (/^\/api\/meetings\/[^/]+\/exports(?:\/|$)/u.test(path)) return method !== 'DELETE';
+  if (/^\/api\/meetings\/[^/]+\/(?:audio\/|audio-artifacts(?:\/|$))/u.test(path)) return method !== 'DELETE';
+  if (/^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(?:cues|checkpoint|audio-uploads)(?:\/|$)/u.test(path)) return true;
+  if (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(?:rollover|recover)(?:\/|$)/u.test(path)) return true;
+  if (method === 'POST' && /^\/api\/meetings\/[^/]+\/recording\/legacy-resume$/u.test(path)) return true;
+  if (/^\/api\/sessions\/[^/]+\/(?:audio|translations|retranslations)(?:\/|$)/u.test(path)) return method !== 'DELETE';
+  if (/^\/api\/sessions\/[^/]+$/u.test(path) && (method === 'GET' || method === 'PUT')) return true;
+  if (method === 'GET' && isSharedMeetingEventsPath(path)) return true;
+  return false;
 }
 
 function isMeetingCuePublishPath(path) {
@@ -4633,6 +4776,11 @@ function isSharedMeetingDetailPath(path) {
     (path.split('/').length === 4 || path.split('/').length === 5);
 }
 
+function isSharedMeetingMetadataPath(path) {
+  return path.startsWith('/api/shared-meetings/') && path.endsWith('/metadata') &&
+    (path.split('/').length === 5 || path.split('/').length === 6);
+}
+
 function isSharedMeetingEventsPath(path) {
   return path.startsWith('/api/shared-meetings/') && path.endsWith('/events') &&
     (path.split('/').length === 5 || path.split('/').length === 6);
@@ -4671,7 +4819,7 @@ async function assertMeetingShareRevocable(meetingId, shareId, meetingRepository
 }
 
 async function resolveSharedMeeting(path, sessionShareService) {
-  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events|realtime-token|events\/telemetry)$/, '');
+  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events|realtime-token|events\/telemetry|metadata)$/, '');
   if (raw.startsWith('code/')) return sessionShareService.resolveCode(decodeURIComponent(raw.slice('code/'.length)));
   return sessionShareService.resolveShare(decodeURIComponent(raw));
 }

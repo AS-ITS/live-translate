@@ -3,6 +3,7 @@ import { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore } from '
 import { composeLocalMeetingAudioArtifact } from './localMeetingAudioExport.js';
 import { createLocalMeetingRetention } from './localMeetingRetention.js';
 import { recordLivePipelineTrace } from './livePipelineTrace.js';
+import { pcm16ChunksToWavBlob } from './audio.js';
 
 export function createLocalMeetingPersistence({
   manifestStore = createIndexedDbLocalMeetingManifestStore(),
@@ -19,13 +20,28 @@ export function createLocalMeetingPersistence({
   let recorder = createRecorder();
   const retention = typeof manifestStore.getRetention === 'function'
     ? createLocalMeetingRetention({ manifestStore, chunkStore, now })
-    : { check: async () => {}, assertReadable: async () => {}, withRead: async (_meetingId, work) => work() };
+    : { check: async () => {}, assertReadable: async () => {},
+      withRead: async (_meetingId, work) => work(), withWrite: async (_meetingId, work) => work() };
   let activeMeetingId = null;
   let recordingEnabled = recordAudio === true;
   let nextAudioSequence = 1;
   let appendQueue = Promise.resolve();
+  let inputAudioError = null;
+  let segmentOwnershipError = null;
+  let translatedAudioQueue = Promise.resolve();
+  let translatedAudioError = null;
+  let nextTranslatedAudioSequence = null;
 
   return Object.freeze({
+    saveLifecycleIntent(input) {
+      return manifestStore.saveLifecycleIntent(input);
+    },
+    getLifecycleIntent(ownerUserId, meetingId, originalOperationId) {
+      return manifestStore.getLifecycleIntent(ownerUserId, meetingId, originalOperationId);
+    },
+    listPendingLifecycleIntents(ownerUserId, meetingId) {
+      return manifestStore.listPendingLifecycleIntents(ownerUserId, meetingId);
+    },
     saveContinueOperation(input) {
       return manifestStore.saveContinueOperation(input);
     },
@@ -39,6 +55,11 @@ export function createLocalMeetingPersistence({
       if (activeMeetingId && activeMeetingId !== meetingId) {
         recorder = createRecorder();
         appendQueue = Promise.resolve();
+      inputAudioError = null;
+      segmentOwnershipError = null;
+      translatedAudioQueue = Promise.resolve();
+      translatedAudioError = null;
+      nextTranslatedAudioSequence = null;
       }
       if (!recordingEnabled) {
         activeMeetingId = meetingId || null;
@@ -82,31 +103,85 @@ export function createLocalMeetingPersistence({
     },
 
     rolloverLocalSegment({ operationId, nextSegmentId } = {}) {
-      if (!recordingEnabled) return Promise.resolve({ state: 'disabled', meetingId: activeMeetingId });
+    if (!recordingEnabled) {
+      segmentOwnershipError = new Error('Local audio Segment rollover is disabled.');
+      segmentOwnershipError.code = 'local_segment_ownership_mismatch';
+      return Promise.resolve({ state: 'disabled', meetingId: activeMeetingId });
+    }
       const task = appendQueue.then(async () => {
         await retention.assertReadable(activeMeetingId);
-        return recorder.rolloverLocalSegment({
+      const result = await recorder.rolloverLocalSegment({
           operationId: operationId || createOperationId('local-segment-rollover'),
           nextSegmentId
         });
+      if (result?.segmentId !== nextSegmentId) {
+        const error = new Error('Local audio Segment ownership does not match the lifecycle Segment.');
+        error.code = 'local_segment_ownership_mismatch';
+        throw error;
+      }
+      return result;
       });
-      appendQueue = task.catch(() => {});
-      return task;
+    appendQueue = task.catch((error) => {
+      segmentOwnershipError = error;
+    });
+    return task;
     },
 
     appendAudioChunk(chunk = {}) {
       if (!recordingEnabled) return Promise.resolve(null);
+    if (segmentOwnershipError) return Promise.reject(segmentOwnershipError);
       const task = appendQueue.then(async () => {
-        await retention.assertReadable(activeMeetingId);
-        return appendAudioChunkLocked(chunk);
+        return retention.withWrite(activeMeetingId, () => appendAudioChunkLocked(chunk));
+      }).then((result) => {
+        if (chunk.descriptor?.chunkId && chunk.descriptor.chunkId === inputAudioError?.localChunkDescriptor?.chunkId) {
+          inputAudioError = null;
+        }
+        return result;
       });
-      appendQueue = task.catch(() => {});
+      appendQueue = task.catch((error) => { inputAudioError = error; });
       return task;
+    },
+    async sealSegmentWrites(meetingId = activeMeetingId) {
+      await appendQueue;
+      await translatedAudioQueue;
+      if (meetingId !== activeMeetingId) throw new Error('Local Segment Meeting changed.');
+      await retention.assertReadable(meetingId);
+      if (inputAudioError) throw inputAudioError;
+    if (segmentOwnershipError) throw segmentOwnershipError;
+      if (translatedAudioError) throw translatedAudioError;
+      return true;
+    },
+    appendTranslatedAudioChunk({ meetingId = activeMeetingId, sessionId, bytes } = {}) {
+      const data = bytes instanceof Uint8Array ? new Uint8Array(bytes) : new Uint8Array(bytes || []);
+      if (!meetingId || !sessionId || data.byteLength === 0) throw new TypeError('Translated audio identity and PCM bytes are required.');
+      const task = translatedAudioQueue.catch(() => {}).then(() => retention.withWrite(meetingId, async () => {
+        if (activeMeetingId !== meetingId) throw new Error('Translated audio Meeting changed.');
+        if (nextTranslatedAudioSequence === null) {
+          const existing = await manifestStore.listTranslatedAudioChunks(meetingId);
+          nextTranslatedAudioSequence = existing.reduce((next, chunk) => Math.max(next, chunk.sequence + 1), 1);
+        }
+        const sequence = nextTranslatedAudioSequence++;
+        const path = `meetings/${meetingId}/translated-audio/${sessionId}/${String(sequence).padStart(8, '0')}.pcm`;
+        await chunkStore.write(path, data);
+        return manifestStore.saveTranslatedAudioChunk({
+          meetingId, sessionId, sequence, path, byteSize: data.byteLength,
+          checksum: await sha256(data, cryptoImpl)
+        });
+      }));
+      translatedAudioQueue = task.catch((error) => { translatedAudioError = error; });
+      return task;
+    },
+    async finalizeTranslatedAudio(meetingId = activeMeetingId) {
+      await translatedAudioQueue;
+      if (translatedAudioError) throw translatedAudioError;
+      const artifacts = await retention.withRead(meetingId, () => readTranslatedAudioArtifact(meetingId));
+      return artifacts || Object.freeze({ status: 'idle', kind: 'translation', blob: null });
     },
 
     async finalizeAudio({ fileName = '' } = {}) {
       if (!recordingEnabled) return { status: 'skipped', blob: null, fileName: '', mimeType: '', errorMessage: '' };
       await appendQueue;
+      if (inputAudioError) throw inputAudioError;
       const chunks = await manifestStore.list(activeMeetingId);
       const sealed = chunks.filter((chunk) => chunk.state === 'sealed').sort((left, right) => left.sequence - right.sequence);
       await recorder.finalize({
@@ -130,15 +205,16 @@ export function createLocalMeetingPersistence({
     async listFinalizedAudioArtifacts(meetingId = activeMeetingId) {
       if (!meetingId) return [];
       return retention.withRead(meetingId, async () => {
+        const translated = await readTranslatedAudioArtifact(meetingId);
       const targetRecorder = activeMeetingId === meetingId ? recorder : createRecorder();
       const recording = await targetRecorder.restore(meetingId);
-      if (recording.state !== 'stopped_local') return [];
+        if (recording.state !== 'stopped_local') return translated ? [translated] : [];
       const chunks = (await manifestStore.list(meetingId))
         .filter((chunk) => chunk.state === 'sealed')
         .sort((left, right) => left.sequence - right.sequence);
-      if (chunks.length === 0) return [];
+        if (chunks.length === 0) return translated ? [translated] : [];
       const artifact = await composeAudioArtifact({ chunks, readChunk: (path) => chunkStore.read(path) });
-      return [{
+        return [{
         kind: 'input',
         recordingId: recording.recordingId,
         captureEpoch: recording.captureEpoch,
@@ -156,7 +232,7 @@ export function createLocalMeetingPersistence({
           byteSize: chunk.byteSize,
           checksum: chunk.checksum
         }))
-      }];
+        }, ...(translated ? [translated] : [])];
       });
     },
 
@@ -216,6 +292,25 @@ export function createLocalMeetingPersistence({
       await retention.assertReadable(meetingId);
       return manifestStore.listCues(meetingId, options);
     },
+    async saveTranscriptItem(input) {
+      await retention.assertReadable(input.meetingId);
+      return manifestStore.saveTranscriptItem(input);
+    },
+    async listTranscriptItems(meetingId) {
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
+      return manifestStore.listTranscriptItems(meetingId);
+    },
+    async contentSnapshot(meetingId) {
+      await retention.check(meetingId);
+      return retention.withRead(meetingId, async () => {
+        const [recording, cues, transcripts, checkpoints] = await Promise.all([
+          manifestStore.getRecording(meetingId), manifestStore.listCues(meetingId),
+          manifestStore.listTranscriptItems(meetingId), manifestStore.listCheckpoints(meetingId)
+        ]);
+        return Object.freeze({ meetingId, recording, cues, transcripts, checkpoints });
+      });
+    },
 
     async updateCheckpoint(payload = {}) {
       await retention.assertReadable(payload.meetingId);
@@ -244,19 +339,42 @@ export function createLocalMeetingPersistence({
       if (activeMeetingId && activeMeetingId !== meetingId) {
         recorder = createRecorder();
         appendQueue = Promise.resolve();
+      inputAudioError = null;
+      translatedAudioQueue = Promise.resolve();
+      translatedAudioError = null;
+      nextTranslatedAudioSequence = null;
       }
-      const [recording, cues, chunks] = await Promise.all([
+      const [recording, cues, chunks, transcripts] = await Promise.all([
         recorder.restore(meetingId),
         manifestStore.listCues(meetingId),
-        manifestStore.list(meetingId)
+        manifestStore.list(meetingId),
+        manifestStore.listTranscriptItems(meetingId)
       ]);
       activeMeetingId = meetingId;
       nextAudioSequence = chunks.reduce((next, chunk) => Math.max(next, chunk.sequence + 1), 1);
-      return Object.freeze({ recording, cues, chunks });
+      return Object.freeze({ recording, cues, chunks, transcripts });
     },
 
     snapshot: () => recorder.snapshot()
   });
+
+  async function readTranslatedAudioArtifact(meetingId) {
+    const chunks = await manifestStore.listTranslatedAudioChunks(meetingId);
+    if (chunks.length === 0) return null;
+    const parts = [];
+    for (const chunk of chunks.sort((left, right) => left.sequence - right.sequence)) {
+      const bytes = new Uint8Array(await (await chunkStore.read(chunk.path)).arrayBuffer());
+      if (bytes.byteLength !== chunk.byteSize || await sha256(bytes, cryptoImpl) !== chunk.checksum) {
+        throw new Error('Local translated audio chunk is missing or corrupt.');
+      }
+      parts.push(bytes);
+    }
+    return Object.freeze({
+      status: 'ready', kind: 'translation',
+      fileName: `${meetingId}-translation.wav`, mimeType: 'audio/wav',
+      blob: pcm16ChunksToWavBlob(parts), captureSegmentCount: chunks.length
+    });
+  }
 
   async function appendAudioChunkLocked({ data, mimeType = 'audio/webm', receivedAt = now(), descriptor: retryDescriptor = null } = {}) {
     if (!data || typeof data.arrayBuffer !== 'function') throw new TypeError('audio chunk data must be a Blob.');

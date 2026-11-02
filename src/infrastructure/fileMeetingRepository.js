@@ -93,6 +93,11 @@ export function createFileMeetingRepository({ filePath, fileSystem } = {}) {
       requireMeeting(storage, meetingId);
       return (storage.segments[meetingId] || []).map((segment) => new MeetingSegment(segment)).sort(compareSegments);
     },
+    async listMeetingSegmentMetadata(meetingId) {
+      const storage = await readCachedStorage();
+      requireMeeting(storage, meetingId);
+      return (storage.segments[meetingId] || []).map(segmentMetadata).sort(compareSegments);
+    },
 
     async updateMeetingSegment(segment) {
       return mutate(async (storage) => {
@@ -142,6 +147,7 @@ export function createFileMeetingRepository({ filePath, fileSystem } = {}) {
 
   const exposed = Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method]]));
   Object.defineProperty(exposed, 'mutateMeetingSegment', { value: repository.mutateMeetingSegment });
+  Object.defineProperty(exposed, 'listMeetingSegmentMetadata', { value: repository.listMeetingSegmentMetadata });
   return Object.freeze(exposed);
 
   function mutate(operation) {
@@ -267,6 +273,11 @@ function findSegmentById(storage, segmentId) {
 
 function compareSegments(left, right) {
   return left.sequence - right.sequence || compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id);
+}
+
+function segmentMetadata(segment) {
+  const { id, meetingId, sessionId, sequence, status, startedAt, endedAt, createdAt } = segment;
+  return { id, meetingId, sessionId, sequence, status, startedAt, endedAt, createdAt };
 }
 
 function compareTimestamps(left, right) {

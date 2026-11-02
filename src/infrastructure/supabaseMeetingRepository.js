@@ -5,6 +5,9 @@ import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
 import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
 import { compareViewerCues, encodeViewerCursor } from '../lib/meetingViewerPagination.js';
 
+const MEETING_METADATA_COLUMNS = 'id,owner_user_id,name,source_language_code,target_language_code,status,created_at,started_at,ended_at,updated_at,settings,lifecycle_contract_version,lifecycle_version,purge_at,retention_policy_version,purge_status';
+const SEGMENT_METADATA_COLUMNS = 'id,owner_user_id,meeting_id,session_id,sequence,status,started_at,ended_at,live_session_id,created_at,updated_at,lifecycle_contract_version';
+
 export function createSupabaseMeetingRepository(options = {}) {
   const clientForRequest = createSupabaseRequestClient(options);
   const privileged = createSupabaseServiceRoleClient(options);
@@ -21,19 +24,22 @@ export function createSupabaseMeetingRepository(options = {}) {
   const repository = {
     async createMeeting(input) {
       const entity = new Meeting(input);
-      const rows = await client.request('meetings', { method: 'POST', body: [meetingRow(entity, owner())] });
+      const rows = await client.request('meetings', { method: 'POST', query: `?select=${MEETING_METADATA_COLUMNS}`, body: [meetingRow(entity, owner())] });
       return meetingFromRow(rows[0]);
     },
     async createMeetingWithInitialSegment({ meeting, segment }) {
       const ownerUserId = owner();
       const meetingEntity = new Meeting({ ...meeting, ownerUserId });
-      const segmentEntity = new MeetingSegment({ ...segment, meetingId: meetingEntity.id, ownerUserId });
+      const isLifecycleV2Creation = meetingEntity.lifecycleContractVersion === 2 && segment === null;
+      const segmentEntity = isLifecycleV2Creation
+        ? null
+        : new MeetingSegment({ ...segment, meetingId: meetingEntity.id, ownerUserId });
       const result = await client.rpc('create_meeting_with_initial_segment', {
         p_meeting: meetingRow(meetingEntity, ownerUserId),
-        p_segment: segmentRow(segmentEntity, ownerUserId)
+        p_segment: segmentEntity ? segmentRow(segmentEntity, ownerUserId) : null
       });
       const payload = Array.isArray(result) ? result[0] : result;
-      if (!payload?.meeting || !payload?.segment) {
+      if (!payload?.meeting || (isLifecycleV2Creation ? payload.segment !== null : !payload.segment)) {
         const error = new Error('Supabase meeting creation RPC returned an invalid result.');
         error.code = 'supabase_request_failed';
         error.status = 503;
@@ -41,16 +47,22 @@ export function createSupabaseMeetingRepository(options = {}) {
       }
       return {
         meeting: meetingFromRow(payload.meeting),
-        segment: await hydrateSegment(client, payload.segment, ownerUserId)
+        segment: payload.segment ? await hydrateSegment(client, payload.segment, ownerUserId) : null
       };
     },
     async getMeeting(id) {
-      const rows = await client.request('meetings', { query: `?select=*&${eq('id', id)}&${eq('owner_user_id', owner())}` });
+      const rows = await client.request('meetings', { query: `?select=${MEETING_METADATA_COLUMNS}&${eq('id', id)}&${eq('owner_user_id', owner())}` });
+      return rows[0] ? meetingFromRow(rows[0]) : null;
+    },
+    async getMeetingMetadata(id) {
+      const rows = await client.request('meetings', {
+        query: `?select=id,owner_user_id,name,status,source_language_code,target_language_code,lifecycle_contract_version,lifecycle_version,started_at,ended_at,purge_at,retention_policy_version,created_at,updated_at&${eq('id', id)}&${eq('owner_user_id', owner())}`
+      });
       return rows[0] ? meetingFromRow(rows[0]) : null;
     },
     async updateMeeting(input) {
       const entity = new Meeting(input);
-      const rows = await client.request('meetings', { method: 'PATCH', query: `?${eq('id', entity.id)}&${eq('owner_user_id', owner())}`, body: meetingRow(entity, owner()) });
+      const rows = await client.request('meetings', { method: 'PATCH', query: `?select=${MEETING_METADATA_COLUMNS}&${eq('id', entity.id)}&${eq('owner_user_id', owner())}`, body: meetingRow(entity, owner()) });
       return rows[0] ? meetingFromRow(rows[0]) : null;
     },
     async deleteMeeting(id) {
@@ -64,7 +76,7 @@ export function createSupabaseMeetingRepository(options = {}) {
       const ownerUserId = owner();
       const actorUserId = currentRequestUserId() || ownerUserId;
       if (includeAll) {
-        const rows = await client.request('meetings', { query: '?select=*&order=created_at.desc' });
+      const rows = await client.request('meetings', { query: `?select=${MEETING_METADATA_COLUMNS}&order=created_at.desc` });
         return rows.map(meetingFromRow);
       }
       const memberships = await client.request('meeting_members', {
@@ -72,31 +84,47 @@ export function createSupabaseMeetingRepository(options = {}) {
       });
       const meetingIds = memberships.map((item) => item.meeting_id).filter(Boolean);
       const query = meetingIds.length > 0
-        ? `?select=*&or=(owner_user_id.eq.${encodeURIComponent(ownerUserId)},id.in.(${meetingIds.map(encodeURIComponent).join(',')}))&order=created_at.desc`
-        : `?select=*&${eq('owner_user_id', ownerUserId)}&order=created_at.desc`;
+        ? `?select=${MEETING_METADATA_COLUMNS}&or=(owner_user_id.eq.${encodeURIComponent(ownerUserId)},id.in.(${meetingIds.map(encodeURIComponent).join(',')}))&order=created_at.desc`
+        : `?select=${MEETING_METADATA_COLUMNS}&${eq('owner_user_id', ownerUserId)}&order=created_at.desc`;
       const rows = await client.request('meetings', { query });
       return rows.map(meetingFromRow);
     },
     async createMeetingSegment(input) {
       const entity = new MeetingSegment(input);
-      const rows = await client.request('meeting_segments', { method: 'POST', body: [segmentRow(entity, owner())] });
+      const rows = await client.request('meeting_segments', { method: 'POST', query: `?select=${SEGMENT_METADATA_COLUMNS}`, body: [segmentRow(entity, owner())] });
       return hydrateSegment(client, rows[0], owner());
     },
     async getMeetingSegment(id) {
-      const rows = await client.request('meeting_segments', { query: `?select=*&${eq('id', id)}&${eq('owner_user_id', owner())}` });
+      const rows = await client.request('meeting_segments', { query: `?select=${SEGMENT_METADATA_COLUMNS}&${eq('id', id)}&${eq('owner_user_id', owner())}` });
       if (!rows[0]) return null;
       const userId = owner();
       return hydrateSegment(client, rows[0], userId);
     },
     async listMeetingSegments(meetingId, explicitOwnerUserId = null) {
       const userId = explicitOwnerUserId || owner();
-      const rows = await client.request('meeting_segments', { query: `?select=*&${eq('meeting_id', meetingId)}&${eq('owner_user_id', userId)}&order=sequence.asc` });
+      const rows = await client.request('meeting_segments', { query: `?select=${SEGMENT_METADATA_COLUMNS}&${eq('meeting_id', meetingId)}&${eq('owner_user_id', userId)}&order=sequence.asc` });
       return Promise.all(rows.map((row) => hydrateSegment(client, row, userId)));
+    },
+    async listMeetingSegmentMetadata(meetingId, explicitOwnerUserId = null) {
+      const userId = explicitOwnerUserId || owner();
+      const rows = await client.request('meeting_segments', {
+        query: `?select=id,meeting_id,session_id,sequence,status,started_at,ended_at,created_at&${eq('meeting_id', meetingId)}&${eq('owner_user_id', userId)}&order=sequence.asc,created_at.asc,id.asc`
+      });
+      return rows.map((row) => ({
+        id: row.id,
+        meetingId: row.meeting_id,
+        sessionId: row.session_id,
+        sequence: row.sequence,
+        status: row.status,
+        startedAt: row.started_at,
+        endedAt: row.ended_at,
+        createdAt: row.created_at
+      }));
     },
     async getMeetingViewerPage(meetingId, { before = null, limit = 100 } = {}) {
       const userId = owner();
       const meetingRows = await client.request('meetings', {
-        query: `?select=*&${eq('id', meetingId)}&${eq('owner_user_id', userId)}`
+        query: `?select=${MEETING_METADATA_COLUMNS}&${eq('id', meetingId)}&${eq('owner_user_id', userId)}`
       });
       if (!meetingRows[0]) return null;
 
@@ -129,7 +157,7 @@ export function createSupabaseMeetingRepository(options = {}) {
     async updateMeetingSegment(input) {
       const entity = new MeetingSegment(input);
       const userId = owner();
-      const rows = await client.request('meeting_segments', { method: 'PATCH', query: `?${eq('id', entity.id)}&${eq('owner_user_id', userId)}`, body: segmentMetadataRow(entity) });
+      const rows = await client.request('meeting_segments', { method: 'PATCH', query: `?select=${SEGMENT_METADATA_COLUMNS}&${eq('id', entity.id)}&${eq('owner_user_id', userId)}`, body: segmentMetadataRow(entity) });
       return rows[0] ? hydrateSegment(client, rows[0], userId) : null;
     },
     async commitCheckpoint({ current, next, incoming }) {
@@ -216,6 +244,14 @@ export function createSupabaseMeetingRepository(options = {}) {
     value: repository.getMeetingViewerPage.bind(repository),
     enumerable: false
   });
+  Object.defineProperty(exposed, 'listMeetingSegmentMetadata', {
+    value: repository.listMeetingSegmentMetadata.bind(repository),
+    enumerable: false
+  });
+  Object.defineProperty(exposed, 'getMeetingMetadata', {
+    value: repository.getMeetingMetadata.bind(repository),
+    enumerable: false
+  });
   Object.defineProperty(exposed, 'commitCheckpoint', {
     value: repository.commitCheckpoint.bind(repository), enumerable: false
   });
@@ -285,25 +321,13 @@ function capabilityUnavailable() {
 }
 
 async function hydrateSegment(client, row, ownerUserId) {
-  const cueRows = await client.request('subtitle_cues', { query: `?select=*&${eq('owner_user_id', ownerUserId)}&${eq('segment_id', row.id)}&order=sequence.asc` });
-  const storedCheckpoint = isPersistedCheckpoint(row.checkpoint) ? { ...row.checkpoint } : null;
-  const settingsSnapshot = row.settings_snapshot || {};
-  const tableCues = cueRows
-    .filter((cue) => cue.segment_id === row.id)
-    .map((cue) => cueFromRow(cue, { settingsSnapshot, mode: storedCheckpoint?.mode }));
-  const checkpointCues = Array.isArray(storedCheckpoint?.finalCues) ? storedCheckpoint.finalCues : [];
-  const checkpointIds = new Set(checkpointCues.map((cue) => cue.cueId));
-  const finalCues = [...checkpointCues, ...tableCues.filter((cue) => !checkpointIds.has(cue.cueId))]
-    .sort((a, b) => a.sequence - b.sequence);
-  const checkpoint = finalCues.length > 0
-    ? { ...(storedCheckpoint || { durableChunks: [], pendingPartial: null }), finalCues }
-    : storedCheckpoint;
-  return new MeetingSegment({ ...row, checkpoint, meetingId: row.meeting_id, sessionId: row.session_id, lifecycleContractVersion: row.lifecycle_contract_version, startedAt: row.started_at, endedAt: row.ended_at, liveSessionId: row.live_session_id, settingsSnapshot, errorInfo: row.error_info, createdAt: row.created_at, updatedAt: row.updated_at });
+  const settingsSnapshot = {};
+  return new MeetingSegment({ ...row, checkpoint: null, meetingId: row.meeting_id, sessionId: row.session_id, lifecycleContractVersion: row.lifecycle_contract_version, startedAt: row.started_at, endedAt: row.ended_at, liveSessionId: row.live_session_id, settingsSnapshot, errorInfo: row.status === 'failed' ? { reason: 'recording_failed', category: 'lifecycle' } : null, createdAt: row.created_at, updatedAt: row.updated_at });
 }
 
 function meetingFromRow(row) {
   const settings = row.settings || {};
-  return new Meeting({ ...row, ownerUserId: row.owner_user_id, lifecycleContractVersion: row.lifecycle_contract_version, lifecycleVersion: row.lifecycle_version, sourceLanguageCode: row.source_language_code, targetLanguageCode: row.target_language_code, startedAt: row.started_at, endedAt: row.ended_at, createdAt: row.created_at, updatedAt: row.updated_at, failureInfo: row.failure_info, ...settings });
+  return new Meeting({ ...row, ownerUserId: row.owner_user_id, lifecycleContractVersion: row.lifecycle_contract_version, lifecycleVersion: row.lifecycle_version, sourceLanguageCode: row.source_language_code, targetLanguageCode: row.target_language_code, startedAt: row.started_at, endedAt: row.ended_at, createdAt: row.created_at, updatedAt: row.updated_at, failureInfo: row.status === 'failed' ? { reason: 'recording_failed', category: 'lifecycle' } : null, ...settings });
 }
 
 function toSupabaseTimestamp(value) {

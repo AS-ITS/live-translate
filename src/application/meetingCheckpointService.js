@@ -63,10 +63,33 @@ export function createMeetingCheckpointService({
       echoTargetLanguage = true,
       shouldRecordInputAudio = false,
       privateGlossaryEntries = [],
-      draft = false
+      draft = false,
+      lifecycleContractVersion = 1
     } = {}) {
       const now = clock();
       const meetingId = idGenerator('meeting');
+      if (lifecycleContractVersion === 2) {
+        const meeting = new Meeting({
+          id: meetingId,
+          createdAt: now,
+          updatedAt: now,
+          status: 'created',
+          startedAt: null,
+          lifecycleContractVersion: 2,
+          lifecycleVersion: 0,
+          glossaryEntries,
+          name,
+          sourceLanguageCode,
+          targetLanguageCode,
+          echoTargetLanguage,
+          shouldRecordInputAudio,
+          privateGlossaryEntries
+        });
+        if (typeof meetingRepository.createMeetingWithInitialSegment === 'function') {
+          return meetingRepository.createMeetingWithInitialSegment({ meeting, segment: null });
+        }
+        return { meeting: await meetingRepository.createMeeting(meeting), segment: null };
+      }
       const segmentId = idGenerator('segment');
       if (typeof meetingRepository.createMeetingWithInitialSegment === 'function') {
         const initialMeeting = new Meeting({

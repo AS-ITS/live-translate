@@ -2,11 +2,15 @@ import { createSessionRecord as createSessionRecordModel, createTranscriptItemFo
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
 import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
 import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
+const SESSION_METADATA_COLUMNS = 'id,owner_user_id,meeting_id,segment_id,current_segment_id,recording_id,status,source_language_code,target_language_code,started_at,ended_at,created_at,lifecycle_contract_version';
 
 export function createSupabaseSessionRepository(options = {}) {
   const clientForRequest = createSupabaseRequestClient(options);
   const privileged = createSupabaseServiceRoleClient(options);
-  const client = { request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args) };
+  const client = {
+    request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args),
+    rpc: (...args) => requireSupabaseRequestClient(clientForRequest).rpc(...args)
+  };
   const idFactory = options.idFactory;
   const owner = () => currentRequestOwnerId() || failOwner();
   const repository = {
@@ -16,14 +20,19 @@ export function createSupabaseSessionRepository(options = {}) {
     async createSessionRecord(input = {}) {
       const record = createSessionRecordModel({ ...input, ownerUserId: owner() }, { ...input, idFactory });
       if (Number(input.lifecycleContractVersion ?? input.lifecycle_contract_version) === 2) record.lifecycleContractVersion = 2;
-      const rows = await client.request('sessions', { method: 'POST', body: [sessionRow(record, owner())] });
+      const rows = await client.request('sessions', { method: 'POST', query: `?select=${SESSION_METADATA_COLUMNS}`, body: [sessionRow(record, owner())] });
       return { ...clone(record), recordingId: rows[0]?.recording_id || null };
     },
     async updateSessionRecord(id, patch = {}) {
       const detail = await this.getSessionRecord(id); if (!detail) throw notFound(id);
       const record = updateSessionRecordModel(detail.sessionRecord, patch);
-      await client.request('sessions', { method: 'PATCH', query: `?${eq('id', id)}&${eq('owner_user_id', owner())}`, body: sessionRow(record, owner(), detail.transcriptItems) });
-      return clone(record);
+      const row = await client.rpc('patch_session_metadata', {
+        p_owner_user_id: owner(),
+        p_meeting_id: detail.sessionRecord.meetingId,
+        p_session_id: id,
+        p_patch: patch
+      });
+      return clone({ ...record, ...sessionRecordFromRow(row) });
     },
     async appendTranscriptItem(sessionId, item = {}) {
       const detail = await this.getSessionRecord(sessionId); if (!detail) throw notFound(sessionId);
@@ -42,16 +51,16 @@ export function createSupabaseSessionRepository(options = {}) {
       return clone(record);
     },
     async listSessionRecords() {
-      const rows = await client.request('sessions', { query: `?select=*&${eq('owner_user_id', owner())}&order=created_at.desc` });
+      const rows = await client.request('sessions', { query: `?select=${SESSION_METADATA_COLUMNS}&${eq('owner_user_id', owner())}&order=created_at.desc` });
       return rows.map(sessionRecordFromRow);
     },
     async getSessionOwner(id) {
-      const rows = await client.request('sessions', { query: `?select=meeting_id,owner_user_id&id=${encodeURIComponent(id)}` });
+      const rows = await client.request('sessions', { query: `?select=meeting_id,owner_user_id&${eq('id', id)}` });
       if (!rows[0]) return null;
       return { meetingId: rows[0].meeting_id, ownerUserId: rows[0].owner_user_id };
     },
     async getSessionRecord(id) {
-      const rows = await client.request('sessions', { query: `?select=*&${eq('id', id)}&${eq('owner_user_id', owner())}` });
+      const rows = await client.request('sessions', { query: `?select=${SESSION_METADATA_COLUMNS}&${eq('id', id)}&${eq('owner_user_id', owner())}` });
       if (!rows[0]) return null;
       return { sessionRecord: sessionRecordFromRow(rows[0]), transcriptItems: clone(rows[0].transcript_items || []) };
     },
@@ -82,7 +91,13 @@ function sessionRecordFromRow(row) {
     // rollover, so it must never override the relational ownership columns.
     segmentId: databaseSegmentId || payload.segmentId || null,
     recordingId: row.recording_id || payload.recordingId || null,
-    ownerUserId: row.owner_user_id || payload.ownerUserId
+    ownerUserId: row.owner_user_id || payload.ownerUserId,
+    status: row.status,
+    sourceLanguageCode: row.source_language_code,
+    targetLanguageCode: row.target_language_code,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    createdAt: row.created_at
   };
 
   return Number(row.lifecycle_contract_version) === 2
@@ -94,7 +109,15 @@ function isLifecycleV2Session(record) {
   return Number(record?.lifecycleContractVersion) === 2;
 }
 
-function sessionRow(record, ownerUserId, transcriptItems = []) {
+function sessionRow(record, ownerUserId) {
+  const metadata = Object.fromEntries([
+    'id', 'meetingId', 'segmentId', 'recordingId', 'name', 'status',
+    'sourceLanguageCode', 'targetLanguageCode', 'targetLanguageLabel',
+    'startedAt', 'endedAt', 'createdAt', 'lifecycleContractVersion',
+    'echoTargetLanguage', 'shouldRecordInputAudio', 'selectedInputDeviceId',
+    'inputDeviceLabelSnapshot', 'meetingGlossaryEntries'
+  ].filter((key) => record[key] !== undefined && record[key] !== null)
+    .map((key) => [key, key.endsWith('At') ? toSupabaseTimestamp(record[key]) : record[key]]));
   return {
     id: record.id,
     owner_user_id: ownerUserId,
@@ -109,8 +132,8 @@ function sessionRow(record, ownerUserId, transcriptItems = []) {
     started_at: toSupabaseTimestamp(record.startedAt),
     ended_at: toSupabaseTimestamp(record.endedAt),
     created_at: toSupabaseTimestamp(record.createdAt),
-    payload: record,
-    transcript_items: isLifecycleV2Session(record) ? [] : transcriptItems
+    payload: metadata,
+    transcript_items: []
   };
 }
 function toSupabaseTimestamp(value) {

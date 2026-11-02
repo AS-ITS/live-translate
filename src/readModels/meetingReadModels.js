@@ -92,6 +92,30 @@ export function mapMeetingToViewerDTO({ meeting, recordingState = 'waiting', cue
   };
 }
 
+export function mapMeetingToViewerMetadataDTO({ meeting, segments = [], recordingState = 'waiting' } = {}) {
+  const orderedSegments = [...segments].sort((left, right) =>
+    left.sequence - right.sequence || String(left.createdAt ?? '').localeCompare(String(right.createdAt ?? '')) || left.id.localeCompare(right.id));
+  return {
+    meeting: {
+      id: meeting.id,
+      name: meeting.name ?? null,
+      status: meeting.status,
+      sourceLanguageCode: meeting.sourceLanguageCode ?? null,
+      targetLanguageCode: meeting.targetLanguageCode ?? null,
+      lifecycleContractVersion: meeting.lifecycleContractVersion ?? 1,
+      lifecycleVersion: meeting.lifecycleVersion ?? 0,
+      startedAt: meeting.startedAt ?? null,
+      endedAt: meeting.endedAt ?? null,
+      expiresAt: Number(meeting.retentionPolicyVersion) === 2 ? meeting.purgeAt ?? null : null
+    },
+    recordingState,
+    segments: orderedSegments.map(({ id, sessionId, sequence, status }) => ({ id, sessionId, sequence, status })),
+    recordKind: 'meetingViewerMetadata'
+  };
+}
+
+export { newerViewerMetadata } from '../lib/viewerMetadataVersion.js';
+
 function sanitizeCloudAudioArtifacts(artifacts) {
   if (!Array.isArray(artifacts)) return [];
   return artifacts

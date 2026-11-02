@@ -2,6 +2,7 @@ import {
   mapMeetingToDetailDTO,
   mapMeetingToHistoryListItem,
   mapMeetingToViewerDTO,
+  mapMeetingToViewerMetadataDTO,
   finalCuesFromSegments
 } from '../readModels/meetingReadModels.js';
 import { audioArtifactDownloadByteLength } from '../infrastructure/sessionAudioArtifacts.js';
@@ -17,6 +18,17 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
   assertMeetingRepository(meetingRepository);
 
   return Object.freeze({
+    async getMeetingViewerMetadata(meetingId) {
+      const normalizedMeetingId = validateRequiredString(meetingId, 'meetingId');
+      const meeting = await (meetingRepository.getMeetingMetadata || meetingRepository.getMeeting).call(meetingRepository, normalizedMeetingId);
+      if (!meeting) return null;
+      if (isMeetingContentExpired(meeting)) throw meetingContentExpiredError();
+      if (typeof meetingRepository.listMeetingSegmentMetadata !== 'function') {
+        throw new TypeError('Meeting repository must provide listMeetingSegmentMetadata.');
+      }
+      const segments = await meetingRepository.listMeetingSegmentMetadata(normalizedMeetingId, meeting.ownerUserId);
+      return mapMeetingToViewerMetadataDTO({ meeting, segments, recordingState: viewerRecordingState(meeting, segments) });
+    },
     async listMeetingHistory({ actorUserId = null, isSystemAdmin = false, now = Date.now() } = {}) {
       const meetings = await meetingRepository.listMeetings({ includeAll: isSystemAdmin });
       const visibleMeetings = isSystemAdmin
@@ -30,6 +42,7 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
               meeting,
               segments: expired ? [] : await meetingRepository.listMeetingSegments(meeting.id, meeting.ownerUserId)
             }),
+            ownerUserId: meeting.ownerUserId || null,
             isPendingDelete: Boolean(isSystemAdmin && expired),
             canDelete: Boolean(isSystemAdmin || !meeting.ownerUserId || (actorUserId && meeting.ownerUserId === actorUserId))
           };
@@ -52,6 +65,7 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
           ...detail,
           meeting: {
             ...detail.meeting,
+            ownerUserId: meeting.ownerUserId || null,
             isPendingDelete: true,
             canDelete: true
           }
@@ -59,20 +73,19 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
       }
 
       const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId, meeting.ownerUserId);
-      const cloudAudioArtifacts = meetingAudioService
-        ? await listCloudAudioArtifacts(meetingAudioService, normalizedMeetingId)
-        : [];
-
       const detail = mapMeetingToDetailDTO({
         meeting,
-        segments,
-        audioArtifacts: await audioArtifactsForMeeting(sessionRepository, normalizedMeetingId, segments),
-        cloudAudioArtifacts: attachSegmentSequence(cloudAudioArtifacts, segments)
+        segments: segments.map(({ id, meetingId: segmentMeetingId, sessionId, sequence, status, startedAt, endedAt, liveSessionId }) => ({
+          id, meetingId: segmentMeetingId, sessionId, sequence, status, startedAt, endedAt, liveSessionId
+        })),
+        audioArtifacts: {},
+        cloudAudioArtifacts: []
       });
       return {
         ...detail,
         meeting: {
           ...detail.meeting,
+          ownerUserId: meeting.ownerUserId || null,
           isPendingDelete: false,
           canDelete: Boolean(isSystemAdmin || !meeting.ownerUserId || (actorUserId && meeting.ownerUserId === actorUserId))
         }
@@ -88,6 +101,7 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
       if (isMeetingContentExpired(meeting)) throw meetingContentExpiredError();
       const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId, meeting.ownerUserId);
       const recordingState = viewerRecordingState(meeting, segments);
+      return mapMeetingToViewerDTO({ meeting, recordingState, cues: [], hasMore: false, limit, nextCursor: null });
 
       if (typeof meetingRepository.getMeetingViewerPage === 'function') {
         const page = await meetingRepository.getMeetingViewerPage(normalizedMeetingId, { before, limit });

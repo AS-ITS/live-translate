@@ -15,6 +15,10 @@ export function createMeetingReadController({ meetingReadQueryService } = {}) {
         return meetingReadQueryService.getMeetingViewerPage(meetingId, options);
       }
       return meetingReadQueryService.getMeetingDetail(meetingId);
+    },
+
+    getMeetingViewerMetadata(meetingId) {
+      return meetingReadQueryService.getMeetingViewerMetadata(meetingId);
     }
   };
 }

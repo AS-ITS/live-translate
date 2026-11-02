@@ -640,6 +640,7 @@ export class LiveTranslateSession {
       const result = await this.connectProvider({ forceRefresh });
       if (result) {
         this.providerReconnectAttempts = 0;
+        this.inputTransportFailureSignaled = false;
         this.tracePipeline('PROVIDER_SESSION_READY', {
           geminiSessionId: this.liveSessionId,
           oldSessionId: previousLiveSessionId,
@@ -1905,6 +1906,12 @@ export class LiveTranslateSession {
       rawError: error,
       rawEvent: event
     });
+    if (this.captureEnabled) {
+      this.providerReady = false;
+      this.inputSendingEnabled = false;
+      this.onCaptureStateChange?.({ state: 'provider-unavailable', diagnostic });
+      return;
+    }
     this.finalizeInputTurn();
     this.flushPendingTranscripts();
     await this.cleanup({ closeSession: true });
@@ -1945,6 +1952,12 @@ export class LiveTranslateSession {
       rawError: error,
       rawEvent: event
     });
+    if (this.captureEnabled) {
+      this.providerReady = false;
+      this.inputSendingEnabled = false;
+      this.onCaptureStateChange?.({ state: 'provider-unavailable', diagnostic });
+      return;
+    }
     this.finalizeInputTurn();
     this.flushPendingTranscripts();
     await this.cleanup({ closeSession: false });
@@ -2197,6 +2210,17 @@ export class LiveTranslateSession {
       reasonHint,
       rawError: new Error(message)
     });
+    if (reasonHint === 'pcm_send_failed') {
+      // The capture graph and its Journal callback belong to the recording, not
+      // to the provider connection. Keep them alive while the provider recovers.
+      this.providerReady = false;
+      this.inputSendingEnabled = false;
+      this.onCaptureStateChange?.({ state: 'provider-unavailable', diagnostic });
+      void this.reconnectProvider({ forceRefresh: true }).catch((error) => {
+        this.recordFailureDiagnostic({ source: 'provider_reconnect_failed', reasonHint, rawError: error });
+      });
+      return;
+    }
     await this.cleanup({ closeSession: true });
     const error = new Error(message);
     this.onConnectionFailure?.({

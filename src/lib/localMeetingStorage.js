@@ -1,8 +1,9 @@
 import { mergeCheckpoint } from '../application/meetingCheckpointService.js';
 import { checkCheckpointOperation, checkpointConflict, recordCheckpointOperation } from './checkpointOperation.js';
+import { lifecycleIntentKey, projectLifecycleOperationIntent, sameLifecycleIntentIdentity } from './lifecycleOperationIntent.js';
 
 export const LOCAL_MEETING_SCHEMA_VERSION = 5;
-export const LOCAL_MEETING_DATABASE_VERSION = 6;
+export const LOCAL_MEETING_DATABASE_VERSION = 8;
 const UNASSIGNED_CUE_SCHEMA_VERSION = 1;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
@@ -23,6 +24,19 @@ export function buildLocalChunkPath({ meetingId, segmentId, sequence, chunkId, e
   const id = safePathPart(chunkId, 'chunkId');
   const suffix = String(extension || 'webm').replace(/[^a-z0-9]+/giu, '').toLowerCase() || 'webm';
   return `meetings/${meeting}/segments/${segment}/chunks/${String(normalizedSequence).padStart(8, '0')}-${id}.${suffix}`;
+}
+
+function projectTranslatedAudioChunk(input = {}) {
+  const meetingId = safePathPart(input.meetingId, 'meetingId');
+  const sessionId = safePathPart(input.sessionId, 'sessionId');
+  const sequence = normalizePositiveInteger(input.sequence, 'sequence');
+  const byteSize = normalizePositiveInteger(input.byteSize, 'byteSize');
+  const checksum = normalizeRequiredString(input.checksum, 'checksum');
+  const key = `${meetingId}\u0000${sessionId}\u0000${sequence}`;
+  const path = `meetings/${meetingId}/translated-audio/${sessionId}/${String(sequence).padStart(8, '0')}.pcm`;
+  if (input.key !== undefined && input.key !== key) throw conflict('local_translated_audio_identity_conflict');
+  if (input.path !== undefined && input.path !== path) throw conflict('local_translated_audio_identity_conflict');
+  return Object.freeze({ key, meetingId, sessionId, sequence, byteSize, checksum, path });
 }
 
 export function reserveLocalChunk({ meetingId, recordingId = meetingId, segmentId, chunkId, sequence, startedAt, endedAt = null, byteSize = null, checksum = null, mimeType = 'audio/webm' } = {}) {
@@ -129,6 +143,9 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
   const cues = new Map();
   const unassignedCues = new Map();
   const checkpoints = new Map();
+  const transcripts = new Map();
+  const translatedAudioChunks = new Map();
+  const deletedMeetings = new Set();
   for (const rawRecord of initial) {
     const record = projectLocalChunk(rawRecord);
     assertChunkRecord(record);
@@ -142,6 +159,7 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     saveRecording(input) {
       const record = projectLocalRecording(input);
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(record.meetingId) });
       recordings.set(record.meetingId, record);
       return Object.freeze({ ...record });
     },
@@ -151,10 +169,29 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     saveContinueOperation(input) {
       const operation = projectContinueOperation(input);
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(operation.meetingId) });
       const existing = operations.get(operation.key);
       if (existing && !sameContinueIdentity(existing, operation)) throw conflict('local_continue_operation_conflict');
       operations.set(operation.key, operation);
       return operation;
+    },
+    saveLifecycleIntent(input) {
+      const intent = projectLifecycleOperationIntent(input);
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(intent.meetingId) });
+      const existing = operations.get(intent.key);
+      if (existing && !sameLifecycleIntentIdentity(existing, intent)) throw conflict('local_lifecycle_intent_conflict');
+      operations.set(intent.key, intent);
+      return intent;
+    },
+    getLifecycleIntent(ownerUserId, meetingId, originalOperationId) {
+      const value = operations.get(lifecycleIntentKey(ownerUserId, meetingId, originalOperationId));
+      return value ? projectLifecycleOperationIntent(value) : null;
+    },
+    listPendingLifecycleIntents(ownerUserId, meetingId) {
+      return [...operations.values()]
+        .filter((value) => value.type === 'lifecycle_intent' && value.ownerUserId === ownerUserId
+          && value.meetingId === meetingId && !['committed', 'rejected', 'expired'].includes(value.status))
+        .map(projectLifecycleOperationIntent);
     },
     getPendingContinueOperation(meetingId) {
       const values = [...operations.values()]
@@ -166,6 +203,7 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     commitRecordingOperation({ recording: recordingInput, operation: operationInput }) {
       const recording = projectLocalRecording(recordingInput);
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(recording.meetingId) });
       const operation = projectLocalOperation(operationInput);
       if (recording.meetingId !== operation.meetingId) throw conflict('local_recorder_operation_conflict');
       const key = operationKey(operation.meetingId, operation.operationId);
@@ -177,6 +215,8 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     async saveCue(input) {
       const cue = projectLocalCue(input);
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(cue.meetingId) });
+      assertCueSegmentOwnership([...cues.values()], cue);
       const existing = cues.get(cue.key);
       const saved = mergeLocalCue(existing, cue);
       if (saved !== existing) cues.set(cue.key, saved);
@@ -184,12 +224,14 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     async saveUnassignedCue(input) {
       const cue = projectUnassignedCue(input);
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(cue.meetingId) });
       const saved = mergeUnassignedCue(unassignedCues.get(cue.key), cue);
       unassignedCues.set(cue.key, saved);
       return saved;
     },
     async reconcileUnassignedCues({ upserts = [], removals = [] } = {}) {
       const projected = upserts.map(projectUnassignedCue);
+      for (const cue of projected) assertLocalRetentionWritable({ deleted: deletedMeetings.has(cue.meetingId) });
       const staged = new Map(unassignedCues);
       for (const cue of projected) staged.set(cue.key, mergeUnassignedCue(staged.get(cue.key), cue));
       for (const input of removals) {
@@ -224,8 +266,21 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
         .sort(compareLocalCues)
         .map((record) => projectLocalCue(record)));
     },
+    async saveTranscriptItem(input) {
+      const item = projectLocalTranscript(input);
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(item.meetingId) });
+      const saved = mergeLocalTranscript(transcripts.get(item.key), item);
+      transcripts.set(item.key, saved);
+      return saved;
+    },
+    async listTranscriptItems(meetingId) {
+      return [...transcripts.values()].filter((item) => item.meetingId === meetingId)
+        .sort(compareLocalTranscripts);
+    },
     async saveCheckpoint(input) {
       const checkpoint = projectLocalCheckpoint(input);
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(checkpoint.meetingId) });
+      await assertCheckpointCueProgress(checkpoint, (key) => cues.get(key));
       const existing = checkpoints.get(checkpoint.key);
       const saved = mergeLocalCheckpoint(existing, checkpoint);
       checkpoints.set(checkpoint.key, saved);
@@ -235,8 +290,32 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
       const value = checkpoints.get(localCheckpointKey(meetingId, segmentId));
       return value ? projectLocalCheckpoint(value) : null;
     },
+    async listCheckpoints(meetingId) {
+      return [...checkpoints.values()].filter((checkpoint) => checkpoint.meetingId === meetingId);
+    },
+    async clearMeetingContent(meetingId) {
+      deletedMeetings.add(meetingId);
+      for (const collection of [records, recordings, operations, cues, unassignedCues, checkpoints, transcripts, translatedAudioChunks]) {
+        for (const [key, value] of collection) {
+          if (value.meetingId === meetingId) collection.delete(key);
+        }
+      }
+    },
+    async saveTranslatedAudioChunk(input) {
+      const chunk = projectTranslatedAudioChunk(input);
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(chunk.meetingId) });
+      const existing = translatedAudioChunks.get(chunk.key);
+      if (existing && !sameCanonicalValue(existing, chunk)) throw conflict('local_translated_audio_conflict');
+      translatedAudioChunks.set(chunk.key, chunk);
+      return chunk;
+    },
+    async listTranslatedAudioChunks(meetingId) {
+      return [...translatedAudioChunks.values()].filter((chunk) => chunk.meetingId === meetingId)
+        .sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.sequence - right.sequence);
+    },
     async reserve(input) {
       const record = reserveLocalChunk(input);
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(record.meetingId) });
       const existing = records.get(record.chunkId);
       if (existing) {
         if (!sameChunkIdentity(existing, record)) {
@@ -315,8 +394,8 @@ export function createIndexedDbLocalMeetingManifestStore({
     },
     async listLocalMeetingIds() {
       const database = await openDatabase();
-      return runNamedTransaction(database, ['recordings', 'chunks', 'cues', 'checkpoints', 'unassignedCues'], 'readonly', async (transaction) => {
-        const records = await Promise.all(['recordings', 'chunks', 'cues', 'checkpoints', 'unassignedCues']
+      return runNamedTransaction(database, ['recordings', 'chunks', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readonly', async (transaction) => {
+        const records = await Promise.all(['recordings', 'chunks', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']
           .map((name) => request(transaction.objectStore(name).getAll())));
         return [...new Set(records.flat().map((row) => row.meetingId).filter(Boolean))];
       });
@@ -324,11 +403,9 @@ export function createIndexedDbLocalMeetingManifestStore({
     async clearMeetingContent(meetingId) {
       const database = await openDatabase();
       return runNamedTransaction(database,
-        ['recordings', 'chunks', 'operations', 'cues', 'checkpoints', 'retentions', 'unassignedCues'], 'readwrite',
+        ['recordings', 'chunks', 'operations', 'cues', 'checkpoints', 'retentions', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readwrite',
         async (transaction) => {
-          const pending = await request(transaction.objectStore('unassignedCues').index('meetingId').count(meetingId));
-          if (pending > 0) throw conflict('local_unassigned_cues_pending');
-          for (const name of ['recordings', 'chunks', 'operations', 'cues', 'checkpoints']) {
+          for (const name of ['recordings', 'chunks', 'operations', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']) {
             const store = transaction.objectStore(name);
             const records = await request(store.getAll());
             for (const row of records) {
@@ -337,7 +414,8 @@ export function createIndexedDbLocalMeetingManifestStore({
           }
           const retentions = transaction.objectStore('retentions');
           const record = await request(retentions.get(meetingId));
-          if (record) await request(retentions.put({ ...record, physicalCleared: true, cleanupError: null }));
+          await request(retentions.put({ ...record, meetingId,
+            deleted: true, physicalCleared: true, cleanupError: null }));
         });
     },
     async getRecording(meetingId) {
@@ -354,7 +432,8 @@ export function createIndexedDbLocalMeetingManifestStore({
     async saveRecording(input) {
       const recording = projectLocalRecording(input);
       const database = await openDatabase();
-      return runNamedTransaction(database, 'recordings', 'readwrite', async (transaction) => {
+      return runNamedTransaction(database, ['recordings', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(recording.meetingId)));
         await request(transaction.objectStore('recordings').put(recording));
         return recording;
       });
@@ -373,12 +452,43 @@ export function createIndexedDbLocalMeetingManifestStore({
     async saveContinueOperation(input) {
       const operation = projectContinueOperation(input);
       const database = await openDatabase();
-      return runNamedTransaction(database, 'operations', 'readwrite', async (transaction) => {
+      return runNamedTransaction(database, ['operations', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(operation.meetingId)));
         const store = transaction.objectStore('operations');
         const existing = await request(store.get(operation.key));
         if (existing && !sameContinueIdentity(existing, operation)) throw conflict('local_continue_operation_conflict');
         await request(store.put(operation));
         return operation;
+      });
+    },
+    async saveLifecycleIntent(input) {
+      const intent = projectLifecycleOperationIntent(input);
+      const database = await openDatabase();
+      return runNamedTransaction(database, ['operations', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(intent.meetingId)));
+        const store = transaction.objectStore('operations');
+        const existing = await request(store.get(intent.key));
+        if (existing && !sameLifecycleIntentIdentity(existing, intent)) throw conflict('local_lifecycle_intent_conflict');
+        await request(store.put(intent));
+        return intent;
+      });
+    },
+    async getLifecycleIntent(ownerUserId, meetingId, originalOperationId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'operations', 'readonly', async (transaction) => {
+        const value = await request(transaction.objectStore('operations').get(
+          lifecycleIntentKey(ownerUserId, meetingId, originalOperationId)));
+        return value ? projectLifecycleOperationIntent(value) : null;
+      });
+    },
+    async listPendingLifecycleIntents(ownerUserId, meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'operations', 'readonly', async (transaction) => {
+        const values = await request(transaction.objectStore('operations').getAll());
+        return values.filter((value) => value.type === 'lifecycle_intent'
+          && value.ownerUserId === ownerUserId && value.meetingId === meetingId
+          && !['committed', 'rejected', 'expired'].includes(value.status))
+          .map(projectLifecycleOperationIntent);
       });
     },
     async getPendingContinueOperation(meetingId) {
@@ -399,7 +509,8 @@ export function createIndexedDbLocalMeetingManifestStore({
       const operation = projectLocalOperation(operationInput);
       if (recording.meetingId !== operation.meetingId) throw conflict('local_recorder_operation_conflict');
       const database = await openDatabase();
-      return runNamedTransaction(database, ['recordings', 'operations'], 'readwrite', async (transaction) => {
+      return runNamedTransaction(database, ['recordings', 'operations', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(recording.meetingId)));
         const operationStore = transaction.objectStore('operations');
         const existing = await request(operationStore.get(operation.key));
         if (existing && !sameProjection(projectLocalOperation(existing), operation)) {
@@ -413,8 +524,10 @@ export function createIndexedDbLocalMeetingManifestStore({
     async saveCue(input) {
       const cue = projectLocalCue(input);
       const database = await openDatabase();
-      return runNamedTransaction(database, 'cues', 'readwrite', async (transaction) => {
+      return runNamedTransaction(database, ['cues', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(cue.meetingId)));
         const store = transaction.objectStore('cues');
+        assertCueSegmentOwnership(await request(store.index('meeting-cue-id').getAll([cue.meetingId, cue.cueId])), cue);
         const existing = await request(store.get(cue.key));
         const projectedExisting = existing && projectLocalCue(existing);
         const saved = mergeLocalCue(projectedExisting, cue);
@@ -425,7 +538,8 @@ export function createIndexedDbLocalMeetingManifestStore({
     async saveUnassignedCue(input) {
       const cue = projectUnassignedCue(input);
       const database = await openDatabase();
-      return runNamedTransaction(database, 'unassignedCues', 'readwrite', async (transaction) => {
+      return runNamedTransaction(database, ['unassignedCues', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(cue.meetingId)));
         const store = transaction.objectStore('unassignedCues');
         const existing = await request(store.get(cue.key));
         const saved = mergeUnassignedCue(existing && projectUnassignedCue(existing), cue);
@@ -437,7 +551,10 @@ export function createIndexedDbLocalMeetingManifestStore({
       const projected = upserts.map(projectUnassignedCue);
       const projectedRemovals = removals.map((input) => projectUnassignedRemoval(input, projected));
       const database = await openDatabase();
-      return runNamedTransaction(database, 'unassignedCues', 'readwrite', async (transaction) => {
+      return runNamedTransaction(database, ['unassignedCues', 'retentions'], 'readwrite', async (transaction) => {
+        for (const meetingId of new Set([...projected, ...projectedRemovals].map((item) => item.meetingId))) {
+          assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(meetingId)));
+        }
         const store = transaction.objectStore('unassignedCues');
         for (const cue of projected) {
           const existing = await request(store.get(cue.key));
@@ -489,10 +606,51 @@ export function createIndexedDbLocalMeetingManifestStore({
           .sort(compareLocalCues);
       });
     },
+    async saveTranscriptItem(input) {
+      const item = projectLocalTranscript(input);
+      const database = await openDatabase();
+      return runNamedTransaction(database, ['transcripts', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(item.meetingId)));
+        const store = transaction.objectStore('transcripts');
+        const existing = await request(store.get(item.key));
+        const saved = mergeLocalTranscript(existing && projectLocalTranscript(existing), item);
+        if (!existing || !sameProjection(existing, saved)) await request(store.put(saved));
+        return saved;
+      });
+    },
+    async listTranscriptItems(meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'transcripts', 'readonly', async (transaction) =>
+        (await request(transaction.objectStore('transcripts').index('meetingId').getAll(meetingId)))
+          .map(projectLocalTranscript).sort(compareLocalTranscripts));
+    },
+    async saveTranslatedAudioChunk(input) {
+      const chunk = projectTranslatedAudioChunk(input);
+      const database = await openDatabase();
+      return runNamedTransaction(database, ['translatedAudioChunks', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(chunk.meetingId)));
+        const store = transaction.objectStore('translatedAudioChunks');
+        const existing = await request(store.get(chunk.key));
+        if (existing && !sameCanonicalValue(existing, chunk)) throw conflict('local_translated_audio_conflict');
+        if (!existing) await request(store.put(chunk));
+        return chunk;
+      });
+    },
+    async listTranslatedAudioChunks(meetingId) {
+      normalizeRequiredString(meetingId, 'meetingId');
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'translatedAudioChunks', 'readonly', async (transaction) =>
+        (await request(transaction.objectStore('translatedAudioChunks').index('meetingId').getAll(meetingId)))
+          .map(projectTranslatedAudioChunk)
+          .sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.sequence - right.sequence));
+    },
     async saveCheckpoint(input) {
       const checkpoint = projectLocalCheckpoint(input);
       const database = await openDatabase();
-      return runNamedTransaction(database, 'checkpoints', 'readwrite', async (transaction) => {
+      return runNamedTransaction(database, ['checkpoints', 'cues', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(checkpoint.meetingId)));
+        await assertCheckpointCueProgress(checkpoint,
+          (key) => request(transaction.objectStore('cues').get(key)));
         const store = transaction.objectStore('checkpoints');
         const existing = await request(store.get(checkpoint.key));
         const projected = existing ? projectLocalCheckpoint(existing) : null;
@@ -513,10 +671,18 @@ export function createIndexedDbLocalMeetingManifestStore({
         return projected;
       });
     },
+    async listCheckpoints(meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'checkpoints', 'readonly', async (transaction) =>
+        (await request(transaction.objectStore('checkpoints').getAll()))
+          .filter((checkpoint) => checkpoint.meetingId === meetingId).map(projectLocalCheckpoint));
+    },
     async reserve(input) {
       const record = reserveLocalChunk(input);
       const database = await openDatabase();
-      return runTransaction(database, 'readwrite', async (store) => {
+      return runNamedTransaction(database, ['chunks', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(record.meetingId)));
+        const store = transaction.objectStore('chunks');
         const existing = await request(store.get(record.chunkId));
         if (existing) {
           const projected = projectLocalChunk(existing);
@@ -598,12 +764,24 @@ export function createIndexedDbLocalMeetingManifestStore({
             const store = database.createObjectStore('cues', { keyPath: 'key' });
             store.createIndex('meeting-segment-sequence', ['meetingId', 'segmentId', 'sequence'], { unique: true });
           }
+          const cueStore = requestHandle.transaction.objectStore('cues');
+          if (!cueStore.indexNames.contains('meeting-cue-id')) {
+            cueStore.createIndex('meeting-cue-id', ['meetingId', 'cueId']);
+          }
           if (!database.objectStoreNames.contains('unassignedCues')) {
             const store = database.createObjectStore('unassignedCues', { keyPath: 'key' });
             store.createIndex('meetingId', 'meetingId');
           }
           if (!database.objectStoreNames.contains('checkpoints')) {
             database.createObjectStore('checkpoints', { keyPath: 'key' });
+          }
+          if (!database.objectStoreNames.contains('transcripts')) {
+            const store = database.createObjectStore('transcripts', { keyPath: 'key' });
+            store.createIndex('meetingId', 'meetingId');
+          }
+          if (!database.objectStoreNames.contains('translatedAudioChunks')) {
+            const store = database.createObjectStore('translatedAudioChunks', { keyPath: 'key' });
+            store.createIndex('meetingId', 'meetingId');
           }
           if (!database.objectStoreNames.contains('retentions')) {
             database.createObjectStore('retentions', { keyPath: 'meetingId' });
@@ -797,6 +975,11 @@ function projectLocalCue(value = {}) {
   const rawCue = value.cue && typeof value.cue === 'object' ? value.cue : value;
   const cueId = normalizeRequiredString(value.cueId || rawCue.cueId, 'cueId');
   const sequence = normalizePositiveInteger(value.sequence ?? rawCue.sequence, 'sequence');
+  if ((rawCue.segmentId != null && rawCue.segmentId !== segmentId)
+    || (rawCue.sessionId != null && rawCue.sessionId !== sessionId)
+    || (rawCue.sequence != null && rawCue.sequence !== sequence)) {
+    throw conflict('local_cue_identity_conflict');
+  }
   return Object.freeze({
     schemaVersion: LOCAL_MEETING_SCHEMA_VERSION,
     key: localCueKey(meetingId, segmentId, cueId),
@@ -811,6 +994,50 @@ function projectLocalCue(value = {}) {
     producedAt: normalizeOptionalTimestamp(value.producedAt ?? rawCue.finalizedAt, 'producedAt'),
     updatedAt: normalizeOptionalTimestamp(value.updatedAt, 'updatedAt') ?? Date.now()
   });
+}
+
+function projectLocalTranscript(value = {}) {
+  const meetingId = normalizeRequiredString(value.meetingId, 'meetingId');
+  const rawItem = value.item && typeof value.item === 'object' ? value.item : value;
+  const sessionId = normalizeRequiredString(value.sessionId || rawItem.sessionId, 'sessionId');
+  const id = normalizeRequiredString(value.id || rawItem.id, 'item.id');
+  const segmentId = value.segmentId ?? rawItem.segmentId ?? null;
+  if (segmentId !== null) normalizeRequiredString(segmentId, 'segmentId');
+  if (value.segmentId != null && rawItem.segmentId != null && value.segmentId !== rawItem.segmentId) {
+    throw conflict('local_transcript_segment_conflict');
+  }
+  const sequence = normalizePositiveInteger(value.sequence ?? rawItem.sequence, 'item.sequence');
+  if (!['source', 'translation'].includes(rawItem.stream) || typeof rawItem.text !== 'string') {
+    throw invalid('Transcript stream and text are required.');
+  }
+  return Object.freeze({
+    schemaVersion: LOCAL_MEETING_SCHEMA_VERSION,
+    key: `${meetingId}\u0000${sessionId}\u0000${id}`,
+    meetingId, sessionId, segmentId, id, sequence,
+    revision: value.revision ?? rawItem.revision ?? null,
+    sourceText: rawItem.stream === 'source' ? rawItem.text : null,
+    translatedText: rawItem.stream === 'translation' ? rawItem.text : null,
+    item: sanitizeLocalValue(rawItem)
+  });
+}
+
+function mergeLocalTranscript(existing, incoming) {
+  if (!existing) return { ...incoming, revision: incoming.revision ?? 1 };
+  if (existing.sequence !== incoming.sequence || existing.item.stream !== incoming.item.stream
+    || (existing.segmentId && incoming.segmentId !== existing.segmentId)) {
+    throw conflict('local_transcript_identity_conflict');
+  }
+  if (sameCanonicalValue(existing.item, incoming.item) && existing.segmentId === incoming.segmentId) {
+    return incoming.revision != null && incoming.revision > existing.revision
+      ? { ...incoming, revision: incoming.revision } : existing;
+  }
+  const revision = incoming.revision ?? existing.revision + 1;
+  if (revision <= existing.revision) throw conflict('local_transcript_stale_revision');
+  return { ...incoming, revision };
+}
+
+function compareLocalTranscripts(left, right) {
+  return left.sequence - right.sequence || left.id.localeCompare(right.id);
 }
 
 // A caller must supply a stable Cue identity and revision. This store never
@@ -869,11 +1096,53 @@ function mergeLocalCue(existing, incoming) {
   const incomingRevision = incoming.cue?.revision ?? 0;
   if (incomingRevision < storedRevision) throw conflict('local_cue_stale_revision');
   if (incomingRevision === storedRevision) {
-    if (storedRevision === 0) return incoming; // Preserve legacy unversioned writes.
+    if (storedRevision === 0) {
+      const storedSource = existing.cue?.sourceVersion ?? 0;
+      const storedTranslation = existing.cue?.translationVersion ?? 0;
+      const nextSource = incoming.cue?.sourceVersion ?? 0;
+      const nextTranslation = incoming.cue?.translationVersion ?? 0;
+      if (storedSource || storedTranslation || nextSource || nextTranslation) {
+        if (nextSource < storedSource || nextTranslation < storedTranslation) {
+          throw conflict('local_cue_stale_revision');
+        }
+        if (nextSource === storedSource && nextTranslation === storedTranslation) {
+          if (!sameCanonicalValue(existing.cue, incoming.cue)) throw conflict('local_cue_revision_conflict');
+          return existing;
+        }
+      }
+      return incoming; // Preserve legacy writes without either version contract.
+    }
     if (!sameCanonicalValue(existing.cue, incoming.cue)) throw conflict('local_cue_revision_conflict');
     return existing;
   }
   return incoming;
+}
+
+function assertCueSegmentOwnership(records, cue) {
+  if (records.some((record) => record.meetingId === cue.meetingId
+    && record.cueId === cue.cueId && record.segmentId !== cue.segmentId)) {
+    throw conflict('local_cue_segment_conflict');
+  }
+}
+
+function assertLocalRetentionWritable(retention) {
+  if (retention?.deleted || retention?.physicalCleared
+    || (retention?.expiresAt && Date.parse(retention.expiresAt) <= Date.now())) {
+    throw conflict('meeting_content_expired');
+  }
+}
+
+function assertCheckpointCueProgress(checkpoint, lookup) {
+  const finalCues = checkpoint.checkpoint?.finalCues || [];
+  return Promise.all(finalCues.map(async (cue) => {
+    if (cue.segmentId !== checkpoint.segmentId) throw conflict('local_checkpoint_cue_segment_conflict');
+    const stored = await lookup(localCueKey(checkpoint.meetingId, checkpoint.segmentId, cue.cueId));
+    if (!stored || stored.sessionId !== cue.sessionId || stored.sequence !== cue.sequence
+      || stored.cue?.status !== 'final'
+      || (cue.revision != null && (stored.cue?.revision ?? 0) < cue.revision)) {
+      throw conflict('local_checkpoint_cue_not_durable');
+    }
+  }));
 }
 
 function mergeUnassignedCue(existing, incoming) {

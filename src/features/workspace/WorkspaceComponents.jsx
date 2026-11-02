@@ -87,9 +87,7 @@ import {
 } from '../../lib/audio.js';
 import { canonicalHashForLocation, FEATURE_PAGES, pageFromLocation, pageInfoFromLocation } from '../../app/routes.js';
 import { AudioArtifactDownloads } from '../history/AudioArtifactDownloads.jsx';
-import { CloudMeetingExportPanel } from '../meetings/CloudMeetingExportPanel.jsx';
 import { LocalMeetingExportPanel } from '../meetings/LocalMeetingExportPanel.jsx';
-import { isSupabaseConfigured } from '../../lib/supabaseAuth.js';
 import { GeminiCredentialNotice } from '../../components/GeminiCredentialNotice.jsx';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時字幕。準備就緒後可以開始新的工作階段。';
@@ -753,45 +751,35 @@ export function MeetingExportSection({ detail, detailError = '', onRetry }) {
   return (
     <section className="meeting-record-section meeting-export-section" aria-label="匯出" data-history-section="export">
       <div className="meeting-record-section-heading"><div><p className="eyebrow">EXPORT</p><h2>匯出</h2><p>下載語音紀錄或匯出字幕檔案。</p></div></div>
-      <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這場會議保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.audioArtifacts} cloudAudioArtifacts={detail.cloudAudioArtifacts} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks onRefresh={onRetry} /></section>
+      <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這台設備保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.localExportAudioArtifacts || {}} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks onRefresh={onRetry} /></section>
       <MeetingTranscriptExportPanel detail={detail} />
     </section>
   );
 }
 
 export function MeetingTranscriptExportPanel({ detail }) {
-  const cues = Array.isArray(detail?.cues) ? detail.cues : [];
-  if (cues.length > 0) {
-    return (
-      <>
-        {detail.localTranscriptStatus === 'recovered' ? <LocalTranscriptRecoveryNotice /> : null}
-        <LocalMeetingExportPanel meetingId={detail.meeting?.id} cues={cues} />
-      </>
-    );
-  }
-  return isSupabaseConfigured()
-    ? <CloudMeetingExportPanel meetingId={detail?.meeting?.id} />
-    : <CloudExportUnavailableNotice meetingId={detail?.meeting?.id} />;
+  const cues = Array.isArray(detail?.localExportCues) ? detail.localExportCues : [];
+  return (
+    <>
+      {detail.localTranscriptStatus === 'recovered' ? <LocalTranscriptRecoveryNotice /> : null}
+      <LocalMeetingExportPanel meetingId={detail?.meeting?.id} cues={cues} />
+    </>
+  );
 }
 
 function LocalTranscriptRecoveryNotice() {
   return (
     <p className="export-note" data-testid="local-transcript-recovery" role="status">
-      已從這個瀏覽器的本機保存資料恢復字幕。查看與匯出可正常使用；若 Viewer 尚無內容，代表雲端同步仍未完成。
+      已從這個瀏覽器的本機保存資料恢復字幕。查看與匯出可正常使用；Viewer 需連上 Host 才能取得字幕。
     </p>
   );
 }
 
-export function CloudExportUnavailableNotice({ meetingId = '' }) {
-  const meetingHref = isSupabaseConfigured() && meetingId
-    ? `#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&section=export`
-    : '';
-
+export function LocalExportUnavailableNotice() {
   return (
-    <section className="meeting-export-block cloud-export-unavailable" aria-label="字幕匯出" data-testid="cloud-export-unavailable" data-history-section="export">
+    <section className="meeting-export-block" aria-label="字幕匯出" data-history-section="export">
       <h3>字幕匯出</h3>
-      <p className="export-note">字幕匯出僅支援 Supabase cloud mode。此 local runtime 不會直接產生瀏覽器檔案。</p>
-      {meetingHref ? <a className="button secondary" href={meetingHref}>前往會議 cloud 匯出</a> : null}
+      <p className="export-note">這台設備沒有可匯出的本機字幕資料。</p>
     </section>
   );
 }
@@ -1699,7 +1687,7 @@ export function SessionDetail({ detail, historyRecord, activeSection = 'overview
           historySection="source"
         />
       )}
-      <CloudExportUnavailableNotice meetingId={sessionRecord.meetingId} />
+      <LocalExportUnavailableNotice />
     </section>
   );
 }

@@ -136,6 +136,30 @@ export function createMeetingCheckpointApiClient({
       return parseLifecycleResponse(response);
     },
 
+    async lookupRecordingOperation({ meetingId, operationId } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      assertNonEmptyString(operationId, 'operationId');
+      const path = `/api/meetings/${encodeURIComponent(meetingId)}/recording/operations/${encodeURIComponent(operationId)}`;
+      const response = await request(buildUrl(baseUrl, path), {
+        method: 'GET',
+        headers: authorizationHeadersFor(authorizationHeaders)
+      }, 'recording-operation-lookup', lifecycleTimeoutMs);
+      await assertOkResponse(response, { operation: 'recording-operation-lookup' });
+      return parseJsonResponse(response);
+    },
+
+    async recoverRecordingLease({ meetingId, ...body } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      const path = `/api/meetings/${encodeURIComponent(meetingId)}/recording/lease/recover`;
+      const response = await request(buildUrl(baseUrl, path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
+        body: JSON.stringify(body)
+      }, 'recording-lease-recover', lifecycleTimeoutMs);
+      await assertOkResponse(response, { operation: 'recording-lease-recover' });
+      return parseJsonResponse(response);
+    },
+
     async renewRecordingLease({ meetingId, leaseId, fenceToken } = {}) {
       return postRecordingHeartbeat({ meetingId, path: 'recording/lease/heartbeat', leaseId, fenceToken });
     },
@@ -373,8 +397,10 @@ async function parseCreateMeetingResponse(response) {
   const body = await parseJsonResponse(response);
   const meeting = body?.meeting;
   const segment = body?.segment;
-  if (!meeting || typeof meeting.id !== 'string' || !segment || typeof segment.id !== 'string') {
-    throw new Error('Create meeting response must contain meeting.id and segment.id.');
+  const lifecycleV2 = Number(meeting?.lifecycleContractVersion ?? meeting?.lifecycle_contract_version) === 2;
+  if (!meeting || typeof meeting.id !== 'string'
+    || (lifecycleV2 ? segment !== null : !segment || typeof segment.id !== 'string')) {
+    throw new Error('Create meeting response must contain meeting.id and segment.id for v1, or a null segment for v2.');
   }
   return body;
 }

@@ -11,7 +11,6 @@ import { meetingApiErrorMessage } from '../lib/meetingApiError.js';
 import { createSessionSnapshotApiClient } from '../lib/sessionSnapshotApiClient.js';
 import { createSessionCommandApiClient } from '../lib/sessionCommandApiClient.js';
 import { createMeetingCheckpointApiClient } from '../lib/meetingCheckpointApiClient.js';
-import { createMeetingCueApiClient } from '../lib/meetingCueApiClient.js';
 import { createCloudSaveCoordinator } from '../lib/cloudSaveCoordinator.js';
 import { createLocalMeetingPersistence } from '../lib/localMeetingPersistence.js';
 import { createLocalMeetingRetention } from '../lib/localMeetingRetention.js';
@@ -37,7 +36,6 @@ import { cueRefinementInputHash, effectiveTranslationForCue, rawSourceForCue, ra
 import { liveCueLatencyTracker } from '../lib/liveCueLatency.js';
 import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
 import { attachClientDiagnosticLifecycle } from '../lib/clientDiagnostics.js';
-import { waitForDurabilityPromises } from '../lib/durabilityBarrier.js';
 import {
   buildFinalizePatch,
   finalizeActiveSessionRecord
@@ -205,7 +203,6 @@ export function App() {
   const audioUploadSegmentsRef = useRef(createAudioUploadSegmentState());
   const audioUploadRetryTimersRef = useRef({ input: null, translation: null });
   const audioUploadRetryAttemptsRef = useRef({ input: 0, translation: 0 });
-  const meetingCuePublishQueuesRef = useRef(new Map());
   const cloudSaveCoordinatorRef = useRef(null);
   if (!cloudSaveCoordinatorRef.current) {
     cloudSaveCoordinatorRef.current = createCloudSaveCoordinator({
@@ -239,7 +236,6 @@ export function App() {
   const sessionCommandApiClientRef = useRef(createSessionCommandApiClient());
   const pendingSessionSnapshotItemIdsRef = useRef(new Map());
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
-  const meetingCueApiClientRef = useRef(createMeetingCueApiClient({ fetchImpl: authenticatedFetch(fetch) }));
 const localMeetingPersistenceRef = useRef(null);
 const localMeetingRetentionRef = useRef(null);
   const localMeetingCuePersistenceQueueRef = useRef(Promise.resolve());
@@ -384,6 +380,7 @@ const activeMeetingCheckpointRef = useRef(null);
       activeMeetingCheckpointRef,
       meetingCheckpointApiClientRef,
       getLocalMeetingPersistence,
+      waitForLocalCuePersistence: () => localMeetingCuePersistenceQueueRef.current,
       cloudSaveCoordinator: cloudSaveCoordinatorRef.current,
       setMeetingCheckpointStatus: setCheckpointStatusWithOwnership,
       clearCheckpointError: clearMeetingCheckpointError,
@@ -525,6 +522,7 @@ const activeMeetingCheckpointRef = useRef(null);
   }, [liveController.meetingStartedAt, routeMeetingId]);
   const webRtcDevice = useWebRtcDeviceSidecar({
     meetingId: routeMeetingId,
+    loadLocalCues: (meetingId) => getLocalMeetingPersistence().listCues(meetingId),
     enabled: Boolean(routeMeetingId && ['listening', 'reconnecting', 'switching-segment', 'provider-recovery', 'provider-recovery-failed'].includes(liveController.status)),
     lifecycleStatus: liveController.status,
     cues: liveController.subtitleCueState?.finalCues || [],
@@ -1239,6 +1237,9 @@ const activeMeetingCheckpointRef = useRef(null);
         if (state === 'capturing') {
           setStatusLabelOverride('正在連線，已暫存音訊');
         }
+        if (state === 'provider-unavailable') {
+          setStatusLabelOverride('翻譯連線中斷，本機錄音持續中');
+        }
       },
       onInputBufferOverflow: (diagnostic) => {
         if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
@@ -1266,6 +1267,9 @@ const activeMeetingCheckpointRef = useRef(null);
       },
       onInputAudioChunk: (chunk, metadata) => {
         if (isCurrentLiveSessionInstance(callbackGeneration)) liveController.audio.handleInputAudioChunk(chunk, metadata);
+      },
+      onOutputAudioChunk: (chunk) => {
+        if (isCurrentLiveSessionInstance(callbackGeneration)) liveController.audio.handleTranslatedAudioChunk(chunk);
       },
       onInputTranscript: (update) => {
         if (isCurrentLiveSessionCallback(callbackGeneration) && isOwnedLiveSessionEvent(update, callbackGeneration)) {
@@ -1547,6 +1551,25 @@ const activeMeetingCheckpointRef = useRef(null);
 
     transcriptRef.current = next;
     const activeSessionRecordId = activeSessionRecordIdRef.current;
+    const meetingId = activeMeetingCheckpointRef.current?.meetingId;
+    const items = (state) => ['source', 'translation'].flatMap((stream) => [
+      ...(state[stream]?.finalItems || []), state[stream]?.currentPartial
+    ].filter(Boolean));
+    const previousItems = new Map(items(current).map((item) => [item.id, item]));
+    const changedItems = items(next).filter((item) =>
+      JSON.stringify(previousItems.get(item.id)) !== JSON.stringify(item));
+    if (meetingId && activeSessionRecordId && changedItems.length) {
+      const localSave = localMeetingCuePersistenceQueueRef.current.catch(() => {}).then(() =>
+        Promise.all(changedItems.map((item) => getLocalMeetingPersistence().saveTranscriptItem({
+          meetingId, sessionId: item.sessionId || activeSessionRecordId,
+          segmentId: item.segmentId ?? null, item
+        }))));
+      localMeetingCuePersistenceQueueRef.current = localSave;
+      void localSave.catch(() => {
+        setMeetingCheckpointStatus('error');
+        setMeetingCheckpointErrorMessage('本機逐字稿未能持久保存；請保持此頁面開啟。');
+      });
+    }
     const lifecycleContractVersion = liveController.checkpoint.isLifecycleV2Session(activeSessionRecordId) ? 2 : 1;
     const appended = finalizedTranscriptItemsForRecording({
       lifecycleContractVersion,
@@ -1679,12 +1702,13 @@ const activeMeetingCheckpointRef = useRef(null);
       try {
         await completeMeetingAfterRecordingFinalize({
           flushAudio: () => liveController.audio.finalizeRawAudioRecording?.(),
+          flushTranslatedAudio: () => liveController.audio.finalizeTranslatedAudioDownload?.(),
           flushCues: () => liveController.cue.flushSubtitleCues?.('complete'),
           flushCheckpoint: async () => {
             const flushed = await liveController.checkpoint.flushMeetingCheckpointSync?.();
             if (flushed === false) throw new Error('Unable to flush meeting checkpoint before completion.');
           },
-          flushCuePublishes: () => flushMeetingCuePublishes(activeSessionRecordIdRef.current, { forceCloud: true }),
+          flushCuePublishes: () => flushMeetingCuePublishes(activeSessionRecordIdRef.current),
           completeMeeting: () => meetingCheckpointApiClientRef.current.completeMeeting({ meetingId })
         });
         applyCloudSaveSnapshot(cloudSaveCoordinatorRef.current.snapshot());
@@ -1761,7 +1785,6 @@ const activeMeetingCheckpointRef = useRef(null);
     }
     const unassignedChanges = unassignedCuePersistenceChanges(previous, next);
     const currentSegmentCues = checkpointCues.filter((cue) => cue.segmentId === activeMeetingCheckpoint?.segmentId);
-    const activeSessionId = activeSessionRecordIdRef.current;
     const localSave = localMeetingCuePersistenceQueueRef.current.catch(() => {}).then(() => (
       Promise.all([
         ...checkpointCues.map((cue) => getLocalMeetingPersistence().saveCue({
@@ -1809,12 +1832,6 @@ const activeMeetingCheckpointRef = useRef(null);
           persistenceState: 'local_saved'
         });
       }
-      try {
-        await publishMeetingCues(currentSegmentCues, activeMeetingCheckpoint, activeSessionId);
-      } catch {
-        setMeetingCheckpointStatus('error');
-        setMeetingCheckpointErrorMessage('字幕已保存在本機，但雲端同步失敗。結束時會再重試。');
-      }
     }).catch(() => {
       setMeetingCheckpointStatus('error');
       setMeetingCheckpointErrorMessage('本機字幕保存失敗，資料仍保留在當前頁面。請勿關閉頁面，並再次結束以重試。');
@@ -1824,32 +1841,31 @@ const activeMeetingCheckpointRef = useRef(null);
     }
   }
 
-  async function publishMeetingCues(cues, meetingCheckpoint, sessionId, { allowInactive = false, cloudKind = 'cue' } = {}) {
-    if (!meetingCheckpoint?.meetingId || !meetingCheckpoint?.segmentId || !sessionId || !Array.isArray(cues) || cues.length === 0) return;
-    if (!allowInactive && (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
-      || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
-      || activeSessionRecordIdRef.current !== sessionId)) {
-      return;
-    }
-
-    const finalCues = cues.filter((cue) => (
-      cue?.status === 'final'
-      && (!cue.sessionId || cue.sessionId === sessionId)
-      && cue.segmentId === meetingCheckpoint.segmentId
-    ));
-    await Promise.all(finalCues.map((cue) => enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId, { allowInactive, cloudKind })));
-  }
-
-  async function flushMeetingCuePublishes(sessionId, { forceCloud = false } = {}) {
-    if (!sessionId) return { localSaved: true, cloudSynced: true };
+  async function flushMeetingCuePublishes(sessionId) {
+    if (!sessionId) return { localSaved: true, pendingCount: 0 };
     const meetingCheckpoint = activeMeetingCheckpointRef.current;
-    const localSave = localMeetingCuePersistenceQueueRef.current.catch(() => {}).then(() => persistFinalMeetingCues({
-      persistence: getLocalMeetingPersistence(),
-      meetingId: meetingCheckpoint?.meetingId,
-      sessionId,
-      segmentId: meetingCheckpoint?.segmentId,
-      cues: subtitleCueStateRef.current?.finalCues || []
-    }));
+    const localSave = localMeetingCuePersistenceQueueRef.current.catch(() => {}).then(async () => {
+      const persistence = getLocalMeetingPersistence();
+      const meetingId = meetingCheckpoint?.meetingId;
+      await persistFinalMeetingCues({
+        persistence,
+        meetingId,
+        sessionId,
+        segmentId: meetingCheckpoint?.segmentId,
+        cues: subtitleCueStateRef.current?.finalCues || []
+      });
+      const transcript = transcriptRef.current;
+      const items = ['source', 'translation'].flatMap((stream) => [
+        ...(transcript?.[stream]?.finalItems || []),
+        transcript?.[stream]?.currentPartial
+      ].filter(Boolean));
+      await Promise.all(items.map((item) => persistence.saveTranscriptItem({
+        meetingId,
+        sessionId: item.sessionId || sessionId,
+        segmentId: item.segmentId ?? null,
+        item
+      })));
+    });
     localMeetingCuePersistenceQueueRef.current = localSave;
     try {
       await localSave;
@@ -1858,187 +1874,7 @@ const activeMeetingCheckpointRef = useRef(null);
       setMeetingCheckpointErrorMessage('本機字幕保存失敗，資料仍保留在當前頁面。請勿關閉頁面，並再次結束以重試。');
       throw error;
     }
-
-    const cloudResults = [];
-    if (forceCloud) {
-      if (meetingCheckpoint?.meetingId) {
-        const localCues = await getLocalMeetingPersistence().listCues(meetingCheckpoint.meetingId);
-        const groups = new Map();
-        for (const record of localCues) {
-          const key = `${record.sessionId}:${record.segmentId}`;
-          const group = groups.get(key) || { sessionId: record.sessionId, segmentId: record.segmentId, cues: [] };
-          group.cues.push(record.cue);
-          groups.set(key, group);
-        }
-        cloudResults.push(...await Promise.allSettled([...groups.values()].map((group) => publishMeetingCues(
-          group.cues,
-          { meetingId: meetingCheckpoint.meetingId, segmentId: group.segmentId },
-          group.sessionId,
-              { allowInactive: true, cloudKind: 'terminal' }
-        ))));
-      }
-    }
-    const queued = [...meetingCuePublishQueuesRef.current.entries()]
-      .filter(([key]) => key.startsWith(`cue:${sessionId}:`))
-      .map(([, promise]) => promise);
-    if (queued.length > 0) {
-      recordLivePipelineTrace({
-        stage: 'DURABLE_BARRIER_WAITING',
-        meetingId: meetingCheckpoint?.meetingId,
-        sessionId,
-        segmentId: meetingCheckpoint?.segmentId,
-        persistenceState: 'waiting',
-        decision: 'terminal_flush_only',
-        eventSequence: queued.length
-      });
-    }
-    const barrier = await waitForDurabilityPromises(queued, { timeoutMs: 5_000 });
-    cloudResults.push(...barrier.settlements);
-    if (barrier.timedOut) {
-      recordLivePipelineTrace({
-        stage: 'DURABLE_BARRIER_TIMEOUT',
-        meetingId: meetingCheckpoint?.meetingId,
-        sessionId,
-        segmentId: meetingCheckpoint?.segmentId,
-        persistenceState: 'local-durable-cloud-pending',
-        queueDepth: queued.length,
-        inFlight: barrier.pendingCount,
-        reason: 'cue_publish_timeout'
-      });
-    }
-    return {
-      localSaved: true,
-      cloudSynced: !barrier.timedOut && cloudResults.every((result) => result.status === 'fulfilled'),
-      pendingCount: barrier.pendingCount
-    };
-  }
-
-  function enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId, { allowInactive = false, cloudKind = 'cue' } = {}) {
-    const operation = Object.freeze({
-      meetingId: meetingCheckpoint.meetingId,
-      sessionId,
-      segmentId: cue.segmentId,
-      operationId: `cue:${sessionId}:${cue.segmentId}:${cue.cueId}`,
-      cueId: cue.cueId,
-      cue
-    });
-    const key = operation.operationId;
-    recordLivePipelineTrace({
-      stage: 'DURABLE_OPERATION_CREATED',
-      meetingId: operation.meetingId,
-      sessionId: operation.sessionId,
-      segmentId: operation.segmentId,
-      operationId: operation.operationId,
-      cueId: operation.cueId
-    });
-    const previous = meetingCuePublishQueuesRef.current.get(key) || Promise.resolve();
-    const next = previous.catch(() => {}).then(async () => {
-      if (!allowInactive && (activeMeetingCheckpointRef.current?.meetingId !== operation.meetingId
-        || activeMeetingCheckpointRef.current?.segmentId !== operation.segmentId
-        || activeSessionRecordIdRef.current !== operation.sessionId)) return;
-      cloudSaveCoordinatorRef.current.begin({ id: key, kind: cloudKind });
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        if (!allowInactive && attempt > 0 && (activeMeetingCheckpointRef.current?.meetingId !== operation.meetingId
-          || activeMeetingCheckpointRef.current?.segmentId !== operation.segmentId
-          || activeSessionRecordIdRef.current !== operation.sessionId)) return;
-        if (attempt > 0) cloudSaveCoordinatorRef.current.retry(key);
-        recordLivePipelineTrace({
-          stage: attempt === 0 ? 'CUE_PERSIST_REQUEST' : 'DURABLE_OPERATION_RETRY',
-          meetingId: operation.meetingId,
-          sessionId: operation.sessionId,
-          segmentId: operation.segmentId,
-          operationId: operation.operationId,
-          cueId: operation.cueId,
-          audioTurnId: operation.cue.audioTurnId || null
-        });
-        recordLivePipelineTrace({
-          stage: attempt === 0 ? 'CLOUD_CUE_SAVE_STARTED' : 'DURABLE_QUEUE_RETRYING',
-          meetingId: operation.meetingId,
-          sessionId: operation.sessionId,
-          segmentId: operation.segmentId,
-          operationId: operation.operationId,
-          cueId: operation.cueId,
-          recorderEpoch: liveSessionCallbackGenerationRef.current.generation,
-          providerEpoch: sessionRef.current?.connectionEpoch ?? reconnectSessionRef.current?.connectionEpoch ?? null,
-          persistenceState: attempt === 0 ? 'saving' : 'retrying'
-        });
-        try {
-          await meetingCueApiClientRef.current.publish({
-            meetingId: operation.meetingId,
-            segmentId: operation.segmentId,
-            sessionId: operation.sessionId,
-            cue: operation.cue,
-            producedAt: operation.cue.finalizedAt || Date.now()
-          });
-          cloudSaveCoordinatorRef.current.succeed(key);
-          recordLivePipelineTrace({
-            stage: 'CUE_PUBLISHED',
-            meetingId: operation.meetingId,
-            sessionId: operation.sessionId,
-            recordingId: operation.sessionId,
-            segmentId: operation.segmentId,
-            operationId: operation.operationId,
-            cueId: operation.cueId,
-            sourceText: operation.cue.rawSource ?? operation.cue.sourceText ?? '',
-            translationText: operation.cue.translatedText || '',
-            turnKey: operation.cue.turnKey || null,
-            audioTurnId: operation.cue.audioTurnId || null,
-            reason: 'meeting_cue_publish_succeeded'
-          });
-          recordLivePipelineTrace({
-            stage: 'CLOUD_CUE_SAVE_SUCCEEDED',
-            meetingId: operation.meetingId,
-            sessionId: operation.sessionId,
-            segmentId: operation.segmentId,
-            operationId: operation.operationId,
-            cueId: operation.cueId,
-            persistenceState: 'synced'
-          });
-          liveCueLatencyTracker.recordViewerPublished({ cue: operation.cue });
-          return;
-        } catch (error) {
-          cloudSaveCoordinatorRef.current.fail(key, error);
-          recordLivePipelineTrace({
-            stage: 'CUE_PERSIST_FAILED',
-            meetingId: operation.meetingId,
-            sessionId: operation.sessionId,
-            segmentId: operation.segmentId,
-            operationId: operation.operationId,
-            cueId: operation.cueId,
-            audioTurnId: operation.cue.audioTurnId || null,
-            httpStatus: error?.status,
-            serverErrorCode: error?.code
-          });
-          recordLivePipelineTrace({
-            stage: 'CLOUD_CUE_SAVE_FAILED',
-            meetingId: operation.meetingId,
-            sessionId: operation.sessionId,
-            segmentId: operation.segmentId,
-            operationId: operation.operationId,
-            cueId: operation.cueId,
-            recorderEpoch: liveSessionCallbackGenerationRef.current.generation,
-            persistenceState: 'retrying',
-            httpStatus: error?.status,
-            errorCode: error?.code
-          });
-          const retryableBindingFailure = error?.status === 403 || error?.status === 404 || error?.status === 409;
-          if (retryableBindingFailure && attempt === 0) continue;
-          if (import.meta.env?.DEV) {
-            console.warn('[meeting-cue-publish]', {
-              status: Number.isInteger(error?.status) ? error.status : null,
-              code: typeof error?.code === 'string' ? error.code : null,
-              requestId: typeof error?.requestId === 'string' ? error.requestId : null
-            });
-          }
-          throw error;
-        }
-      }
-    });
-    meetingCuePublishQueuesRef.current.set(key, next);
-    void next.finally(() => {
-      if (meetingCuePublishQueuesRef.current.get(key) === next) meetingCuePublishQueuesRef.current.delete(key);
-    }).catch(() => {});
-    return next;
+    return { localSaved: true, pendingCount: 0 };
   }
 
   function cueCheckpointForState(state, segmentId) {
@@ -2270,7 +2106,14 @@ const activeMeetingCheckpointRef = useRef(null);
       const segments = [...result.segments].sort((left, right) => left.sequence - right.sequence);
       const resumableSegment = [...segments].reverse().find((segment) => ['active', 'created'].includes(segment.status));
       if (!resumableSegment) {
-        setResumeDraft(null);
+        const unstartedV2Meeting = [
+          selectedMeetingDetail?.meeting,
+          meetingRecords.find((meeting) => meeting.id === meetingId)
+        ].some((meeting) => meeting?.id === meetingId && meeting.status === 'created'
+          && Number(meeting.lifecycleContractVersion) === 2);
+        setResumeDraft(unstartedV2Meeting
+          ? { meetingId, sessionId: null, segmentId: null, hasTranscript: false, hasBoundLiveSession: false }
+          : null);
         setMeetingCheckpointStatus('idle');
         return;
       }
@@ -2311,7 +2154,7 @@ const activeMeetingCheckpointRef = useRef(null);
             segmentId: segment.id
           });
           if (localCheckpoint) return localCheckpoint;
-          return await meetingCheckpointApiClientRef.current.getCheckpoint({ meetingId, segmentId: segment.id });
+          return null;
       } catch (error) {
         checkpointReadErrors.push({ segmentId: segment.id, error });
         if (import.meta.env?.DEV) {
@@ -2566,7 +2409,14 @@ const activeMeetingCheckpointRef = useRef(null);
         persistence.listFinalizedAudioArtifacts?.(id),
         persistence.getLocalAudioStatus?.(id)
       ]);
-      return mergeMeetingDetailWithLocalAudio(merged, localAudio, localAudioStatus);
+      return mergeMeetingDetailWithLocalAudio({
+        ...merged,
+        localExportCues: finalLocalCues,
+        localExportAudioArtifacts: {
+          input: localAudio.find((artifact) => artifact.kind === 'input') || null,
+          translation: localAudio.find((artifact) => artifact.kind === 'translation') || null
+        }
+      }, localAudio, localAudioStatus);
     } catch (error) {
       const wrapped = new Error('Local meeting transcript could not be read.', { cause: error });
       wrapped.code = error?.code === 'subtitle_cue_conflict'

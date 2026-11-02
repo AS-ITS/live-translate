@@ -71,6 +71,10 @@ export function createMemoryMeetingRepository() {
       requireMeeting(meetingId);
       return (segments.get(meetingId) || []).map((segment) => new MeetingSegment(segment)).sort(compareSegments);
     },
+    listMeetingSegmentMetadata(meetingId) {
+      requireMeeting(meetingId);
+      return (segments.get(meetingId) || []).map(segmentMetadata).sort(compareSegments);
+    },
 
     updateMeetingSegment(segment) {
       const entity = new MeetingSegment(segment);
@@ -116,6 +120,7 @@ export function createMemoryMeetingRepository() {
 
   const exposed = Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method]]));
   Object.defineProperty(exposed, 'mutateMeetingSegment', { value: repository.mutateMeetingSegment });
+  Object.defineProperty(exposed, 'listMeetingSegmentMetadata', { value: repository.listMeetingSegmentMetadata });
   return Object.freeze(exposed);
 
   function requireMeeting(meetingId) {
@@ -136,6 +141,11 @@ export function createMemoryMeetingRepository() {
 
 function compareSegments(left, right) {
   return left.sequence - right.sequence || compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id);
+}
+
+function segmentMetadata(segment) {
+  const { id, meetingId, sessionId, sequence, status, startedAt, endedAt, createdAt } = segment;
+  return { id, meetingId, sessionId, sequence, status, startedAt, endedAt, createdAt };
 }
 
 function compareTimestamps(left, right) {

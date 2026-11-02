@@ -9,17 +9,46 @@ import { createMeetingReadQueryService } from '../../src/application/meetingRead
 import { createMemoryMeetingRepository } from '../../src/infrastructure/meetingRepositoryAdapter.js';
 import { createSessionShareService } from '../../src/application/sessionShareService.js';
 
-test('POST /api/meetings creates an active meeting and first segment', async () => {
+test('local-only cutover rejects legacy content routes without calling writers', async () => {
+  const handler = createHandler();
+  for (const { method, url } of [
+    { method: 'POST', url: '/api/meetings/meeting-1/segments/segment-1/cues' },
+    { method: 'PUT', url: '/api/meetings/meeting-1/segments/segment-1/checkpoint' },
+    { method: 'POST', url: '/api/meetings/meeting-1/segments/segment-1/audio-uploads' },
+    { method: 'POST', url: '/api/meetings/meeting-1/segments/segment-1/rollover' },
+    { method: 'POST', url: '/api/meetings/meeting-1/recording/legacy-resume' },
+    { method: 'POST', url: '/api/meetings/meeting-1/exports' },
+    { method: 'POST', url: '/api/meetings/meeting-1/exports/export-1/download-url' },
+    { method: 'GET', url: '/api/sessions/session-1' },
+    { method: 'PUT', url: '/api/sessions/session-1' },
+    { method: 'POST', url: '/api/translation-outputs' },
+    { method: 'POST', url: '/api/saved-transcripts/session-1/translations' },
+    { method: 'GET', url: '/api/shared-sessions/legacy-token' }
+  ]) {
+    const response = await request(handler, { method, url, body: '{"sourceText":"secret"}' });
+    assert.equal(response.status, 410, `${method} ${url}`);
+    assert.equal(response.json().error.code, 'meeting_content_local_only');
+    assert.equal(JSON.stringify(response.json()).includes('secret'), false);
+  }
+  const sessionCreate = await request(handler, {
+    method: 'POST', url: '/api/sessions', body: '{"meetingId":"meeting-1","sourceText":"secret"}'
+  });
+  assert.equal(sessionCreate.status, 410);
+  assert.equal(sessionCreate.json().error.code, 'meeting_content_local_only');
+});
+
+test('POST /api/meetings creates a v2 draft without a Segment', async () => {
   const response = await request(createHandler(), { method: 'POST', url: '/api/meetings' });
   const body = response.json();
 
   assert.equal(response.status, 201);
-  assert.equal(body.meeting.status, 'active');
-  assert.equal(body.segment.status, 'active');
-  assert.equal(body.segment.meetingId, body.meeting.id);
+  assert.equal(body.meeting.status, 'created');
+  assert.equal(body.meeting.lifecycleContractVersion, 2);
+  assert.equal(body.meeting.lifecycleVersion, 0);
+  assert.equal(body.segment, null);
 });
 
-test('Meeting Management creates a draft, updates settings, and starts its first segment', async () => {
+test('Meeting Management creates a v2 draft and updates settings before Start', async () => {
   const handler = createHandler();
   const createResponse = await request(handler, {
     method: 'POST',
@@ -39,7 +68,7 @@ test('Meeting Management creates a draft, updates settings, and starts its first
 
   assert.equal(createResponse.status, 201);
   assert.equal(created.meeting.status, 'created');
-  assert.equal(created.segment.status, 'created');
+  assert.equal(created.segment, null);
   assert.equal(created.meeting.echoTargetLanguage, false);
   assert.equal(created.meeting.shouldRecordInputAudio, true);
   assert.deepEqual(created.meeting.privateGlossaryEntries, [{ source: '專案代號', translations: { en: 'Project Codename' }, replacementAliases: {} }]);
@@ -55,54 +84,30 @@ test('Meeting Management creates a draft, updates settings, and starts its first
   assert.equal(updateResponse.json().meeting.shouldRecordInputAudio, false);
   assert.deepEqual(updateResponse.json().meeting.privateGlossaryEntries, [{ source: '專案代號', translations: { ja: 'プロジェクトコード' }, replacementAliases: {} }]);
 
-  const startResponse = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${created.meeting.id}/segments/${created.segment.id}/start`,
-    body: JSON.stringify({ liveSessionId: 'live-session-management-1' })
-  });
-  const started = startResponse.json();
-  assert.equal(startResponse.status, 201);
-  assert.equal(started.meeting.status, 'active');
-  assert.equal(started.segment.status, 'active');
-  assert.equal(started.segment.liveSessionId, 'live-session-management-1');
+  const detail = await request(handler, { method: 'GET', url: `/api/meetings/${created.meeting.id}` });
+  assert.equal(detail.status, 200);
+  assert.deepEqual(detail.json().timeline, []);
 });
 
-test('completed meetings reject settings changes and new shares but allow revoking existing Viewer shares', async () => {
+test('completed Meeting locks settings and new shares but permits Viewer share revocation', async () => {
+  const repository = createMemoryMeetingRepository();
   const shareService = createSessionShareService();
-  const handler = createHandler({ sessionShareService: shareService });
-  const created = (await request(handler, {
-    method: 'POST',
-    url: '/api/meetings',
-    body: JSON.stringify({ draft: true })
-  })).json();
+  const handler = createHandler({ meetingRepository: repository, sessionShareService: shareService });
+  const created = (await request(handler, { method: 'POST', url: '/api/meetings', body: JSON.stringify({ draft: true }) })).json();
   const share = shareService.createMeetingShare(created.meeting.id, { role: 'viewer' });
-
-  const completed = await request(handler, { method: 'POST', url: `/api/meetings/${created.meeting.id}/complete` });
-  assert.equal(completed.status, 200);
-
-  const update = await request(handler, {
-    method: 'PATCH',
-    url: `/api/meetings/${created.meeting.id}`,
-    body: JSON.stringify({ name: '不應修改' })
-  });
+  repository.updateMeeting(repository.getMeeting(created.meeting.id).complete(2000));
+  const detail = await request(handler, { method: 'GET', url: `/api/meetings/${created.meeting.id}` });
+  assert.equal(detail.status, 200);
+  assert.equal(detail.json().meeting.status, 'completed');
+  const update = await request(handler, { method: 'PATCH', url: `/api/meetings/${created.meeting.id}`, body: JSON.stringify({ name: 'locked' }) });
   assert.equal(update.status, 409);
   assert.equal(update.json().error.code, 'meeting_settings_locked');
-
-  const createShare = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${created.meeting.id}/shares`,
-    body: JSON.stringify({})
-  });
+  const createShare = await request(handler, { method: 'POST', url: `/api/meetings/${created.meeting.id}/shares`, body: '{}' });
   assert.equal(createShare.status, 409);
   assert.equal(createShare.json().error.code, 'meeting_share_locked');
-
-  const revokeShare = await request(handler, {
-    method: 'DELETE',
-    url: `/api/meetings/${created.meeting.id}/shares/${share.id}`
-  });
+  const revokeShare = await request(handler, { method: 'DELETE', url: `/api/meetings/${created.meeting.id}/shares/${share.id}` });
   assert.equal(revokeShare.status, 204);
 });
-
 test('Meeting Viewer shares expose sanitized historical detail by token and short code', async () => {
   const shareService = createSessionShareService();
   const handler = createHandler({ sessionShareService: shareService });
@@ -139,36 +144,31 @@ test('Meeting Viewer shares expose sanitized historical detail by token and shor
   }
 });
 
-test('meeting audio upload endpoints delegate metadata only and issue signed downloads', async () => {
-  const calls = [];
-  const meetingAudioService = {
-    async beginUpload(input) {
-      calls.push(['begin', input]);
-      return { id: 'artifact-1', status: 'uploading', bucket: 'meeting-audio', objectPath: 'user/meeting/segment/recording.webm', uploadEndpoint: 'https://storage.example/upload/resumable' };
-    },
-    async completeUpload(input) { calls.push(['complete', input]); return { id: input.artifactId, status: 'ready' }; },
-    async createDownloadUrl(input) { calls.push(['download', input]); return { url: 'https://storage.example/signed', expiresAt: 61_000, fileName: 'recording.webm' }; }
-  };
-  const handler = createHandler({ meetingAudioService });
-
-  const started = await request(handler, {
-    method: 'POST',
-    url: '/api/meetings/meeting-1/segments/segment-1/audio-uploads',
-    body: JSON.stringify({ mimeType: 'audio/webm', byteSize: 4096 })
-  });
-  const completed = await request(handler, { method: 'POST', url: '/api/meetings/meeting-1/audio-artifacts/artifact-1/complete' });
-  const download = await request(handler, { method: 'POST', url: '/api/meetings/meeting-1/audio-artifacts/artifact-1/download-url' });
-
-  assert.equal(started.status, 201, started.body);
-  assert.equal(completed.status, 200, completed.body);
-  assert.equal(download.status, 200, download.body);
-  assert.deepEqual(calls, [
-    ['begin', { meetingId: 'meeting-1', segmentId: 'segment-1', mimeType: 'audio/webm', byteSize: 4096 }],
-    ['complete', { meetingId: 'meeting-1', artifactId: 'artifact-1' }],
-    ['download', { meetingId: 'meeting-1', artifactId: 'artifact-1', expiresIn: 60 }]
-  ]);
+test('legacy content routes return stable local-only errors before content writers run', async () => {
+  let writes = 0;
+  const handler = createHandler({ meetingAudioService: {
+    async startUpload() { writes += 1; },
+    async createDownloadUrl() { writes += 1; }
+  } });
+  const routes = [
+    ['POST', '/api/meetings/meeting-1/segments/segment-1/cues'],
+    ['PUT', '/api/meetings/meeting-1/segments/segment-1/checkpoint'],
+    ['GET', '/api/meetings/meeting-1/segments/segment-1/checkpoint'],
+    ['POST', '/api/meetings/meeting-1/segments/segment-1/rollover'],
+    ['POST', '/api/meetings/meeting-1/segments/segment-1/recover'],
+    ['POST', '/api/meetings/meeting-1/segments/segment-1/audio-uploads'],
+    ['POST', '/api/meetings/meeting-1/audio-artifacts/artifact-1/complete'],
+    ['POST', '/api/meetings/meeting-1/exports'],
+    ['GET', '/api/meetings/meeting-1/audio/original']
+  ];
+  for (const [method, url] of routes) {
+    const response = await request(handler, { method, url, body: '{}' });
+    assert.equal(response.status, 410, `${method} ${url}`);
+    assert.equal(response.json().error.code, 'meeting_content_local_only');
+    assert.ok(response.json().error.requestId);
+  }
+  assert.equal(writes, 0);
 });
-
 test('Meeting Settings share ensure route returns a reusable Viewer link', async () => {
   const shareService = createSessionShareService();
   const handler = createHandler({ sessionShareService: shareService });
@@ -241,334 +241,9 @@ test('Meeting share management list rebuilds a stable code URL after the share s
   });
 });
 
-test('Meeting Cue publish API emits a Viewer SSE event without checkpoint persistence', async () => {
-  let meetingId = null;
-  const sessionRepository = {
-    async getSessionRecord() {
-      return { sessionRecord: { id: 'session-live', meetingId, segmentId: 'segment-1' } };
-    }
-  };
-  const meetingEventBroadcaster = (await import('../../src/infrastructure/meetingEventBroadcaster.js')).createMeetingEventBroadcaster();
-  const shareService = createSessionShareService();
-  const handler = createHandler({ sessionShareService: shareService, sessionRepository, meetingEventBroadcaster });
-  const created = (await request(handler, { method: 'POST', url: '/api/meetings', body: JSON.stringify({ draft: true }) })).json();
-  meetingId = created.meeting.id;
-  const share = (await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meetingId}/shares`,
-    body: JSON.stringify({ role: 'viewer' })
-  })).json().share;
-  const published = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meetingId}/segments/segment-1/cues`,
-    body: JSON.stringify({ sessionId: 'session-live', producedAt: 10, cue: finalCue({ sessionId: 'session-live', segmentId: 'segment-1' }) })
-  });
-  assert.equal(published.status, 202);
-  assert.deepEqual(published.json(), { eventId: 1, cueSequence: 1 });
-
-  const events = await request(handler, { method: 'GET', url: `/api/shared-meetings/${share.token}/events?after=0` });
-  assert.equal(events.status, 200);
-  assert.match(events.body, /event: cue\.append/);
-  assert.match(events.body, /"translatedText":"hello"/);
-
-  const replay = await request(handler, {
-    method: 'GET',
-    url: `/api/shared-meetings/${share.token}/events?after=1`,
-    headers: { accept: 'application/json' }
-  });
-  assert.equal(replay.status, 200);
-  assert.equal(replay.headers['Content-Type'], 'application/json');
-  assert.deepEqual(replay.json(), {
-    events: [],
-    cursor: { eventId: 1, cueSequence: 1 },
-    gap: false
-  });
-});
-
-test('Meeting Cue publish accepts a successor Segment bound to the same Session', async () => {
-  let meetingId = null;
-  const repository = createMemoryMeetingRepository();
-  const sessionRepository = {
-    async getSessionRecord() {
-      return { sessionRecord: { id: 'session-live', meetingId, segmentId: 'segment-1' } };
-    }
-  };
-  const meetingEventBroadcaster = (await import('../../src/infrastructure/meetingEventBroadcaster.js')).createMeetingEventBroadcaster();
-  const handler = createHandler({
-    meetingRepository: repository,
-    sessionRepository,
-    meetingEventBroadcaster
-  });
-  const created = (await request(handler, {
-    method: 'POST',
-    url: '/api/meetings',
-    body: JSON.stringify({ draft: true })
-  })).json();
-  meetingId = created.meeting.id;
-  repository.createMeetingSegment({
-    id: 'segment-successor',
-    meetingId,
-    sequence: created.segment.sequence + 1,
-    status: 'active',
-    startedAt: 1001,
-    endedAt: null,
-    liveSessionId: 'live-successor',
-    sessionId: 'session-live',
-    createdAt: 1001,
-    updatedAt: 1001
-  });
-
-  const published = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meetingId}/segments/segment-successor/cues`,
-    body: JSON.stringify({
-      sessionId: 'session-live',
-      producedAt: 1010,
-      cue: finalCue({ sessionId: 'session-live', segmentId: 'segment-successor' })
-    })
-  });
-
-  assert.equal(published.status, 202, published.body);
-  assert.deepEqual(published.json(), { eventId: 1, cueSequence: 1 });
-});
-
-test('legacy v1 rollover binds S0 and S1 for Cue writes and delayed replay', async () => {
-  const repository = createMemoryMeetingRepository();
-  let meetingId;
-  let sourceSegmentId;
-  let sessionSegmentId;
-  let ambiguous = false;
-  const sessionId = 'session-live';
-  const sessionRepository = {
-    async getSessionRecord(id) {
-      return id === sessionId
-        ? { sessionRecord: { id, meetingId, segmentId: sessionSegmentId, status: 'active', lifecycleContractVersion: 1 } }
-        : null;
-    },
-    async listSessionRecords() {
-      const records = [{ id: sessionId, meetingId, segmentId: sessionSegmentId, status: 'active', lifecycleContractVersion: 1 }];
-      if (ambiguous) records.push({ id: 'session-other', meetingId, segmentId: sessionSegmentId, status: 'active', lifecycleContractVersion: 1 });
-      return records;
-    }
-  };
-  const handler = createHandler({
-    meetingRepository: repository,
-    sessionRepository,
-    meetingEventBroadcaster: (await import('../../src/infrastructure/meetingEventBroadcaster.js')).createMeetingEventBroadcaster()
-  });
-  const created = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  meetingId = created.meeting.id;
-  sourceSegmentId = created.segment.id;
-  sessionSegmentId = sourceSegmentId;
-  const publish = (segmentId, sequence, requestedSessionId = sessionId) => request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meetingId}/segments/${segmentId}/cues`,
-    body: JSON.stringify({
-      sessionId: requestedSessionId,
-      cue: finalCue({
-        cueId: `cue:${requestedSessionId}:${segmentId}:${sequence}`,
-        sessionId: requestedSessionId,
-        segmentId,
-        sequence
-      })
-    })
-  });
-  assert.equal((await publish(sourceSegmentId, 1)).status, 202);
-  const rolloverBody = JSON.stringify({
-    idempotencyKey: 'legacy-rollover-1',
-    checkpoint: checkpoint({ meetingId, segmentId: sourceSegmentId }),
-    nextLiveSessionId: 'live-session-2'
-  });
-  const rollover = () => request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meetingId}/segments/${sourceSegmentId}/rollover`,
-    body: rolloverBody
-  });
-  ambiguous = true;
-  assert.equal((await rollover()).status, 403, 'ambiguous active Session must not claim S1');
-  assert.equal(repository.getMeetingSegment(sourceSegmentId).status, 'active');
-  ambiguous = false;
-  const first = await rollover();
-  assert.equal(first.status, 201, first.body);
-  const successorId = first.json().segment.id;
-  assert.equal((await publish(successorId, 2)).status, 202, 'first S1 Cue');
-  assert.equal((await publish(successorId, 3)).status, 202, 'later S1 Cue');
-  sessionSegmentId = successorId;
-  assert.equal((await publish(sourceSegmentId, 1)).status, 202, 'delayed S0 replay');
-  assert.equal((await publish(successorId, 4, 'session-other')).status, 403);
-  const otherMeeting = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  const crossMeeting = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${otherMeeting.meeting.id}/segments/${otherMeeting.segment.id}/cues`,
-    body: JSON.stringify({
-      sessionId,
-      cue: finalCue({ sessionId, segmentId: otherMeeting.segment.id })
-    })
-  });
-  assert.equal(crossMeeting.status, 403);
-  const duplicate = await rollover();
-  assert.equal(duplicate.status, 201, duplicate.body);
-  assert.equal(duplicate.json().segment.id, successorId);
-  assert.equal(repository.listMeetingSegments(meetingId).length, 2);
-  assert.equal(repository.getMeetingSegment(sourceSegmentId).sessionId, sessionId);
-  assert.equal(repository.getMeetingSegment(successorId).sessionId, sessionId);
-});
-
-test('Cue publish rejects mismatched Recorder header and body Session IDs', async () => {
-  const repository = createMemoryMeetingRepository();
-  let meetingId;
-  const sessions = new Map([
-    ['session-a', { id: 'session-a', status: 'active' }],
-    ['session-b', { id: 'session-b', status: 'active' }]
-  ]);
-  const sessionRepository = {
-    async getSessionRecord(id) {
-      const session = sessions.get(id);
-      return session
-        ? { sessionRecord: { ...session, meetingId } }
-        : null;
-    }
-  };
-  const handler = createHandler({ meetingRepository: repository, sessionRepository });
-  const created = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  meetingId = created.meeting.id;
-  for (const session of sessions.values()) session.segmentId = created.segment.id;
-  const response = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meetingId}/segments/${created.segment.id}/cues`,
-    headers: { 'x-recorder-session-id': 'session-a', 'x-recorder-grant': 'fixture-grant' },
-    body: JSON.stringify({ sessionId: 'session-b', cue: finalCue({ sessionId: 'session-b', segmentId: created.segment.id }) })
-  });
-  assert.equal(response.status, 403);
-  assert.equal(response.json().error.code, 'recorder_session_mismatch');
-});
-
-test('Meeting Cue publish rejects a Segment bound to another Session', async () => {
-  let meetingId = null;
-  const repository = createMemoryMeetingRepository();
-  const sessionRepository = {
-    async getSessionRecord() {
-      return { sessionRecord: { id: 'session-live', meetingId, segmentId: 'segment-1' } };
-    }
-  };
-  const meetingEventBroadcaster = (await import('../../src/infrastructure/meetingEventBroadcaster.js')).createMeetingEventBroadcaster();
-  const handler = createHandler({
-    meetingRepository: repository,
-    sessionRepository,
-    meetingEventBroadcaster
-  });
-  const created = (await request(handler, {
-    method: 'POST',
-    url: '/api/meetings',
-    body: JSON.stringify({ draft: true })
-  })).json();
-  meetingId = created.meeting.id;
-  repository.createMeetingSegment({
-    id: 'segment-other-session',
-    meetingId,
-    sequence: created.segment.sequence + 1,
-    status: 'active',
-    startedAt: 1001,
-    endedAt: null,
-    liveSessionId: 'live-other',
-    sessionId: 'session-other',
-    createdAt: 1001,
-    updatedAt: 1001
-  });
-
-  const published = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meetingId}/segments/segment-other-session/cues`,
-    body: JSON.stringify({
-      sessionId: 'session-live',
-      producedAt: 1010,
-      cue: finalCue({ sessionId: 'session-live', segmentId: 'segment-other-session' })
-    })
-  });
-
-  assert.equal(published.status, 403);
-  assert.equal(published.json().error.code, 'recorder_session_mismatch');
-});
-
-test('Meeting Cue replay keeps source-only Cue and delayed translation update on one Cue ID', async () => {
-  let meetingId = null;
-  const sessionRepository = {
-    async getSessionRecord() {
-      return { sessionRecord: { id: 'session-live', meetingId, segmentId: 'segment-1' } };
-    }
-  };
-  const meetingEventBroadcaster = (await import('../../src/infrastructure/meetingEventBroadcaster.js')).createMeetingEventBroadcaster();
-  const shareService = createSessionShareService();
-  const handler = createHandler({ sessionShareService: shareService, sessionRepository, meetingEventBroadcaster });
-  meetingId = (await request(handler, { method: 'POST', url: '/api/meetings', body: JSON.stringify({ draft: true }) })).json().meeting.id;
-  const share = (await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meetingId}/shares`,
-    body: JSON.stringify({ role: 'viewer' })
-  })).json().share;
-  const url = `/api/meetings/${meetingId}/segments/segment-1/cues`;
-  const sourceOnly = finalCue({
-    sessionId: 'session-live',
-    segmentId: 'segment-1',
-    translatedText: '',
-    sourceStatus: 'finalized',
-    translationStatus: 'pending',
-    sourceVersion: 1,
-    translationVersion: 0
-  });
-
-  assert.equal((await request(handler, {
-    method: 'POST', url, body: JSON.stringify({ sessionId: 'session-live', producedAt: 10, cue: sourceOnly })
-  })).status, 202);
-  assert.equal((await request(handler, {
-    method: 'POST', url, body: JSON.stringify({
-      sessionId: 'session-live',
-      producedAt: 20,
-      cue: { ...sourceOnly, translatedText: 'hello', translationStatus: 'finalized', translationVersion: 1 }
-    })
-  })).status, 202);
-
-  const replay = await request(handler, {
-    method: 'GET',
-    url: `/api/shared-meetings/${share.token}/events?after=0`,
-    headers: { accept: 'application/json' }
-  });
-  const body = replay.json();
-  assert.equal(replay.status, 200);
-  assert.equal(body.events.length, 2);
-  assert.deepEqual(body.events.map((event) => event.cue.cueId), [sourceOnly.cueId, sourceOnly.cueId]);
-  assert.deepEqual(body.events.map((event) => event.cue.translationVersion), [0, 1]);
-  assert.equal(body.events[0].cue.sourceText, '你好');
-  assert.equal(body.events[0].cue.translatedText, '');
-  assert.equal(body.events[1].cue.translatedText, 'hello');
-});
-
-test('POST /api/meetings/:meetingId/complete completes an active segment', async () => {
-  const handler = createHandler();
-  const created = (await request(handler, {
-    method: 'POST',
-    url: '/api/meetings',
-    body: JSON.stringify({ liveSessionId: 'live-session-1' })
-  })).json();
-
-  const response = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${created.meeting.id}/complete`
-  });
-  const body = response.json();
-  const segments = (await request(handler, {
-    method: 'GET',
-    url: `/api/meetings/${created.meeting.id}/segments`
-  })).json();
-
-  assert.equal(response.status, 200);
-  assert.equal(body.meeting.status, 'completed');
-  assert.equal(Date.parse(body.meeting.purgeAt) - new Date(body.meeting.endedAt).getTime(), 30 * 60 * 1000);
-  assert.equal(segments.segments[0].status, 'completed');
-});
-
 test('DELETE /api/meetings/:meetingId deletes an unstarted draft and rejects started meetings', async () => {
-  const handler = createHandler();
+  const repository = createMemoryMeetingRepository();
+  const handler = createHandler({ meetingRepository: repository });
   const draft = (await request(handler, {
     method: 'POST',
     url: '/api/meetings',
@@ -580,12 +255,13 @@ test('DELETE /api/meetings/:meetingId deletes an unstarted draft and rejects sta
   assert.equal((await request(handler, { method: 'GET', url: `/api/meetings/${draft.meeting.id}` })).status, 404);
 
   const active = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  repository.updateMeeting(repository.getMeeting(active.meeting.id).activate(2000));
   const rejected = await request(handler, { method: 'DELETE', url: `/api/meetings/${active.meeting.id}` });
   assert.equal(rejected.status, 409);
   assert.equal(rejected.json().error.code, 'meeting_delete_active_not_allowed');
 });
 
-test('GET /api/meetings/:meetingId/segments returns ordered segments', async () => {
+test('GET /api/meetings/:meetingId/segments returns no Segment before v2 Start', async () => {
   const handler = createHandler();
   const createResponse = await request(handler, { method: 'POST', url: '/api/meetings' });
   const { meeting } = createResponse.json();
@@ -594,128 +270,35 @@ test('GET /api/meetings/:meetingId/segments returns ordered segments', async () 
 
   assert.equal(response.status, 200);
   assert.equal(response.json().meetingId, meeting.id);
-  assert.deepEqual(response.json().segments.map((segment) => segment.sequence), [0]);
+  assert.deepEqual(response.json().segments, []);
 });
 
-test('GET /api/meetings returns meeting history summaries', async () => {
+test('GET /api/meetings returns metadata history without cloud transcript summaries', async () => {
   const handler = createHandler();
-  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-
-  await request(handler, {
-    method: 'PUT',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`,
-    body: JSON.stringify(checkpoint({
-      meetingId: meeting.id,
-      segmentId: segment.id,
-      durableChunks: [
-        chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'source', sequence: 1, text: 'hello' }),
-        chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'translation', sequence: 2, text: 'world' })
-      ]
-    }))
-  });
-
+  const { meeting } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
   const response = await request(handler, { method: 'GET', url: '/api/meetings' });
-  const body = response.json();
-
   assert.equal(response.status, 200);
+  const body = response.json();
   assert.equal(body.length, 1);
   assert.equal(body[0].id, meeting.id);
   assert.equal(body[0].recordKind, 'meeting');
-  assert.deepEqual(body[0].segmentSummary, {
-    totalSegments: 1,
-    countsByStatus: { active: 1 },
-    hasInterruptedSegments: false,
-    hasFailedSegments: false
-  });
-  assert.deepEqual(body[0].transcriptSummary, {
-    totalItems: 2,
-    sourceFinalCount: 1,
-    translationFinalCount: 1,
-    hasTranscript: true
-  });
+  assert.equal(body[0].transcriptSummary.hasTranscript, false);
+  assert.equal(body[0].transcriptSummary.totalItems, 0);
 });
-
-test('GET /api/meetings/:meetingId returns composed meeting detail with transcript items and timeline', async () => {
+test('GET /api/meetings/:meetingId returns metadata detail without cloud content', async () => {
   const handler = createHandler();
-  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-
-  await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/rollover`,
-    body: JSON.stringify({
-      idempotencyKey: 'rollover-1',
-      checkpoint: checkpoint({
-        meetingId: meeting.id,
-        segmentId: segment.id,
-        finalCues: [finalCue({
-          cueId: 'cue:meeting:segment-1:1',
-          segmentId: segment.id,
-          sessionId: 'session-meeting-1',
-          sourceText: 'segment one source',
-          translatedText: 'segment one translation',
-          startTimeMs: 100,
-          endTimeMs: 800
-        })],
-        durableChunks: [
-          chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'source', sequence: 1, text: 'segment one source' }),
-          chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'translation', sequence: 2, text: 'segment one translation' })
-        ]
-      }),
-      nextLiveSessionId: 'live-session-2'
-    })
-  });
-  await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meeting.id}/segments/segment-2/recover`,
-    body: JSON.stringify({
-      idempotencyKey: 'recover-1',
-      checkpoint: checkpoint({
-        meetingId: meeting.id,
-        segmentId: 'segment-2',
-        durableChunks: [
-          chunk({ meetingId: meeting.id, segmentId: 'segment-2', stream: 'source', sequence: 3, text: 'segment two source' }),
-          chunk({ meetingId: meeting.id, segmentId: 'segment-2', stream: 'translation', sequence: 4, text: 'segment two translation' })
-        ]
-      }),
-      nextLiveSessionId: 'live-session-3',
-      failureReason: 'token_expired',
-      failureCategory: 'token',
-      outcome: 'interrupted'
-    })
-  });
-
+  const { meeting } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const rollover = await request(handler, { method: 'POST', url: `/api/meetings/${meeting.id}/segments/unstarted/rollover`, body: '{}' });
+  assert.equal(rollover.status, 410);
   const response = await request(handler, { method: 'GET', url: `/api/meetings/${meeting.id}` });
-  const body = response.json();
-
   assert.equal(response.status, 200);
+  const body = response.json();
   assert.equal(body.meeting.id, meeting.id);
-  assert.deepEqual(body.timeline.map(({ id, status }) => ({ id, status })), [
-    { id: 'segment-1', status: 'completed' },
-    { id: 'segment-2', status: 'interrupted' },
-    { id: 'segment-3', status: 'active' }
-  ]);
-  assert.deepEqual(
-    body.transcriptItems.map(({ segmentId, segmentStatus, stream, sequence, text }) => ({
-      segmentId,
-      segmentStatus,
-      stream,
-      sequence,
-      text
-    })),
-    [
-      { segmentId: 'segment-1', segmentStatus: 'completed', stream: 'source', sequence: 1, text: 'segment one source' },
-      { segmentId: 'segment-1', segmentStatus: 'completed', stream: 'translation', sequence: 2, text: 'segment one translation' },
-      { segmentId: 'segment-2', segmentStatus: 'interrupted', stream: 'source', sequence: 3, text: 'segment two source' },
-      { segmentId: 'segment-2', segmentStatus: 'interrupted', stream: 'translation', sequence: 4, text: 'segment two translation' }
-    ]
-  );
-  assert.equal(body.readingContent.sourceTranscript.status, 'available');
-  assert.equal(body.readingContent.translationArticle.status, 'available');
-  assert.deepEqual(body.cues.map(({ cueId, segmentId, translatedText }) => ({ cueId, segmentId, translatedText })), [
-    { cueId: 'cue:meeting:segment-1:1', segmentId: 'segment-1', translatedText: 'segment one translation' }
-  ]);
+  assert.deepEqual(body.timeline, []);
+  assert.deepEqual(body.transcriptItems, []);
+  assert.deepEqual(body.cues, []);
+  assert.deepEqual(body.audioArtifacts, {});
 });
-
 test('Meeting read requests log safe diagnostic fields for missing resources', async () => {
   const logs = [];
   const handler = createHandler({ requestLogger: (event) => logs.push(event) });
@@ -850,263 +433,6 @@ test('Super admins receive meeting_not_found when the owner lookup is missing', 
   assert.equal(logs.at(-1).supabaseProjectRef, null);
 });
 
-test('PUT and GET checkpoint persist durable chunks idempotently', async () => {
-  const handler = createHandler();
-  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  const body = checkpoint({
-    meetingId: meeting.id,
-    segmentId: segment.id,
-    durableChunks: [
-      chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'translation', sequence: 2, text: 'world' }),
-      chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'source', sequence: 1, text: 'hello' })
-    ]
-  });
-
-  const first = await request(handler, {
-    method: 'PUT',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`,
-    body: JSON.stringify(body)
-  });
-  const duplicate = await request(handler, {
-    method: 'PUT',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`,
-    body: JSON.stringify(body)
-  });
-  const read = await request(handler, {
-    method: 'GET',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`
-  });
-
-  assert.equal(first.status, 200);
-  assert.equal(duplicate.status, 200);
-  assert.equal(read.status, 200);
-  assert.deepEqual(
-    read.json().checkpoint.durableChunks.map(({ stream, sequence, text }) => ({ stream, sequence, text })),
-    [
-      { stream: 'source', sequence: 1, text: 'hello' },
-      { stream: 'translation', sequence: 2, text: 'world' }
-    ]
-  );
-});
-
-test('checkpoint accepts long payloads above the general JSON request limit', async () => {
-  const handler = createHandler();
-  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  const durableChunks = Array.from({ length: 24 }, (_, index) => chunk({
-    meetingId: meeting.id,
-    segmentId: segment.id,
-    sequence: index + 1,
-    text: 'long meeting transcript '.repeat(30)
-  }));
-
-  const response = await request(handler, {
-    method: 'PUT',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`,
-    body: JSON.stringify(checkpoint({ meetingId: meeting.id, segmentId: segment.id, durableChunks }))
-  });
-
-  assert.ok(response.body.length > 10_000);
-  assert.equal(response.status, 200);
-  assert.equal(response.json().checkpoint.durableChunks.length, durableChunks.length);
-});
-
-test('checkpoint rejects payloads above the configured Meeting limit', async () => {
-  const handler = createHandler({ meetingCheckpointMaxBytes: 1_000 });
-  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  const response = await request(handler, {
-    method: 'PUT',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`,
-    body: JSON.stringify(checkpoint({
-      meetingId: meeting.id,
-      segmentId: segment.id,
-      durableChunks: [chunk({ meetingId: meeting.id, segmentId: segment.id, text: 'x'.repeat(2_000) })]
-    }))
-  });
-
-  assert.equal(response.status, 413);
-  assert.equal(response.json().error.code, 'request_too_large');
-});
-
-test('checkpoint conflict returns HTTP 409', async () => {
-  const handler = createHandler();
-  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  const url = `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`;
-
-  await request(handler, {
-    method: 'PUT',
-    url,
-    body: JSON.stringify(checkpoint({ meetingId: meeting.id, segmentId: segment.id, durableChunks: [chunk({ meetingId: meeting.id, segmentId: segment.id, sequence: 1, text: 'hello' })] }))
-  });
-  const response = await request(handler, {
-    method: 'PUT',
-    url,
-    body: JSON.stringify(checkpoint({ meetingId: meeting.id, segmentId: segment.id, durableChunks: [chunk({ meetingId: meeting.id, segmentId: segment.id, sequence: 1, text: 'changed' })] }))
-  });
-
-  assert.equal(response.status, 409);
-  assert.equal(response.json().error.code, 'checkpoint_conflict');
-});
-
-test('checkpoint accepts a monotonic merged Cue update', async () => {
-  const handler = createHandler();
-  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  const url = `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`;
-  const cue = finalCue({ segmentId: segment.id });
-
-  await request(handler, { method: 'PUT', url, body: JSON.stringify(checkpoint({ meetingId: meeting.id, segmentId: segment.id, finalCues: [cue] })) });
-  const response = await request(handler, {
-    method: 'PUT',
-    url,
-    body: JSON.stringify(checkpoint({
-      meetingId: meeting.id,
-      segmentId: segment.id,
-      idempotencyKey: 'checkpoint-merged-2',
-      finalCues: [{ ...cue, sourceText: '你好世界', translatedText: 'hello world', endTimeMs: 200, finalizedReason: 'merged' }]
-    }))
-  });
-
-  assert.equal(response.status, 200);
-  assert.equal(response.json().checkpoint.finalCues[0].sourceText, '你好世界');
-});
-
-test('checkpoint rejects an invalid final Cue with a structured error code', async () => {
-  const handler = createHandler();
-  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  const response = await request(handler, {
-    method: 'PUT',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`,
-    body: JSON.stringify(checkpoint({
-      meetingId: meeting.id,
-      segmentId: segment.id,
-      finalCues: [{ cueId: 'cue-1' }]
-    }))
-  });
-
-  assert.equal(response.status, 400);
-  assert.equal(response.json().error.code, 'subtitle_cue_invalid');
-  assert.match(response.json().error.requestId, /[0-9a-f-]{36}/);
-});
-
-test('POST /api/meetings/:meetingId/segments/:segmentId/rollover creates next segment', async () => {
-  const handler = createHandler();
-  const { meeting, segment } = (await request(handler, {
-    method: 'POST',
-    url: '/api/meetings',
-    body: JSON.stringify({ liveSessionId: 'live-session-1' })
-  })).json();
-
-  const response = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/rollover`,
-    body: JSON.stringify({
-      idempotencyKey: 'rollover-1',
-      checkpoint: checkpoint({
-        meetingId: meeting.id,
-        segmentId: segment.id,
-        durableChunks: [chunk({ meetingId: meeting.id, segmentId: segment.id, sequence: 1, text: 'hello' })]
-      }),
-      nextLiveSessionId: 'live-session-2'
-    })
-  });
-
-  assert.equal(response.status, 201);
-  assert.equal(response.json().completedSegment.status, 'completed');
-  assert.equal(response.json().completedSegment.liveSessionId, 'live-session-1');
-  assert.equal(response.json().segment.sequence, 1);
-  assert.equal(response.json().segment.status, 'active');
-  assert.equal(response.json().segment.liveSessionId, 'live-session-2');
-});
-
-test('POST /api/meetings/:meetingId/segments/:segmentId/recover interrupts current segment and creates next segment', async () => {
-  const handler = createHandler();
-  const { meeting, segment } = (await request(handler, {
-    method: 'POST',
-    url: '/api/meetings',
-    body: JSON.stringify({ liveSessionId: 'live-session-1' })
-  })).json();
-
-  const response = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/recover`,
-    body: JSON.stringify({
-      idempotencyKey: 'recover-1',
-      checkpoint: checkpoint({
-        meetingId: meeting.id,
-        segmentId: segment.id,
-        durableChunks: [chunk({ meetingId: meeting.id, segmentId: segment.id, sequence: 1, text: 'hello' })]
-      }),
-      nextLiveSessionId: 'live-session-2',
-      failureReason: 'token_expired',
-      failureCategory: 'token',
-      outcome: 'interrupted'
-    })
-  });
-
-  assert.equal(response.status, 201);
-  assert.equal(response.json().interruptedSegment.status, 'interrupted');
-  assert.equal(response.json().interruptedSegment.checkpoint.idempotencyKey, 'recover-1');
-  assert.deepEqual(response.json().interruptedSegment.errorInfo, { reason: 'token_expired', category: 'token' });
-  assert.equal(response.json().segment.sequence, 1);
-  assert.equal(response.json().segment.status, 'active');
-  assert.equal(response.json().segment.liveSessionId, 'live-session-2');
-});
-
-test('POST /api/meetings/:meetingId/segments/:segmentId/recover fails current segment without next segment', async () => {
-  const handler = createHandler();
-  const { meeting, segment } = (await request(handler, {
-    method: 'POST',
-    url: '/api/meetings',
-    body: JSON.stringify({ liveSessionId: 'live-session-1' })
-  })).json();
-
-  const response = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/recover`,
-    body: JSON.stringify({
-      idempotencyKey: 'recover-failed-1',
-      checkpoint: checkpoint({
-        meetingId: meeting.id,
-        segmentId: segment.id,
-        durableChunks: [chunk({ meetingId: meeting.id, segmentId: segment.id, sequence: 1, text: 'hello' })]
-      }),
-      nextLiveSessionId: 'live-session-2',
-      failureReason: 'auth_failed',
-      failureCategory: 'token',
-      outcome: 'failed'
-    })
-  });
-  const segments = await request(handler, { method: 'GET', url: `/api/meetings/${meeting.id}/segments` });
-
-  assert.equal(response.status, 201);
-  assert.equal(response.json().failedSegment.status, 'failed');
-  assert.deepEqual(response.json().failedSegment.errorInfo, { reason: 'auth_failed', category: 'token' });
-  assert.deepEqual(segments.json().segments.map((stored) => stored.id), ['segment-1']);
-});
-
-test('POST recovery conflict returns HTTP 409', async () => {
-  const handler = createHandler();
-  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  const url = `/api/meetings/${meeting.id}/segments/${segment.id}/recover`;
-  const body = {
-    idempotencyKey: 'recover-1',
-    checkpoint: checkpoint({ meetingId: meeting.id, segmentId: segment.id }),
-    nextLiveSessionId: 'live-session-2',
-    failureReason: 'unexpected_close',
-    failureCategory: 'provider',
-    outcome: 'interrupted'
-  };
-
-  await request(handler, { method: 'POST', url, body: JSON.stringify(body) });
-  const response = await request(handler, {
-    method: 'POST',
-    url,
-    body: JSON.stringify({ ...body, nextLiveSessionId: 'live-session-3' })
-  });
-
-  assert.equal(response.status, 409);
-  assert.equal(response.json().error.code, 'checkpoint_conflict');
-});
-
 test('checkpoint routes enforce the Preview immutable Origin before auth/capability checks', async () => {
   const previous = {
     VERCEL_ENV: process.env.VERCEL_ENV,
@@ -1145,108 +471,55 @@ test('checkpoint routes enforce the Preview immutable Origin before auth/capabil
   }
 });
 
-test('missing meeting or segment returns HTTP 404', async () => {
-  const handler = createHandler();
-  const { meeting } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-
-  const missingMeeting = await request(handler, { method: 'GET', url: '/api/meetings/missing/segments' });
-  const missingMeetingDetail = await request(handler, { method: 'GET', url: '/api/meetings/missing' });
-  const missingSegment = await request(handler, { method: 'GET', url: `/api/meetings/${meeting.id}/segments/missing/checkpoint` });
-
-  assert.equal(missingMeeting.status, 404);
-  assert.equal(missingMeeting.json().error.code, 'meeting_not_found');
-  assert.equal(missingMeetingDetail.status, 404);
-  assert.equal(missingMeetingDetail.json().error.code, 'meeting_not_found');
-  assert.equal(missingSegment.status, 404);
-  assert.equal(missingSegment.json().error.code, 'meeting_segment_not_found');
-});
-
-test('GET checkpoint returns existing hydrated Cues with numeric offsets', async () => {
-  const repository = createMemoryMeetingRepository();
-  repository.createMeeting({ id: 'meeting-1', status: 'active', startedAt: 1000, createdAt: 1000 });
-  repository.createMeetingSegment({
-    id: 'segment-1', meetingId: 'meeting-1', sequence: 0, status: 'completed',
-    startedAt: 1000, endedAt: 3000, createdAt: 1000,
-    checkpoint: checkpoint({
-      meetingId: 'meeting-1',
-      segmentId: 'segment-1',
-      finalCues: [finalCue({ startTimeMs: 1200, endTimeMs: 2500 })]
-    })
-  });
-  const response = await request(createHandler({ meetingRepository: repository }), {
-    method: 'GET',
-    url: '/api/meetings/meeting-1/segments/segment-1/checkpoint'
-  });
-
-  assert.equal(response.status, 200);
-  assert.equal(response.json().checkpoint.finalCues[0].startTimeMs, 1200);
-  assert.equal(response.json().checkpoint.finalCues[0].sourceLanguageCode, 'zh-Hant');
-});
-
-test('checkpoint route accepts UUID paths and identifies invalid UUID fields', async () => {
-  const handler = createHandler({ strictCheckpointPathIds: true });
-  const valid = await request(handler, {
-    method: 'GET',
-    url: '/api/meetings/0897cdf1-4726-4362-81d4-75f0c695be30/segments/c5347c33-9eb1-4a2a-b562-892c9d8749db/checkpoint'
-  });
-  assert.notEqual(valid.status, 400);
-
-  const invalid = await request(handler, {
-    method: 'GET',
-    url: '/api/meetings/not-a-uuid/segments/c5347c33-9eb1-4a2a-b562-892c9d8749db/checkpoint'
-  });
-  assert.equal(invalid.status, 400);
-  assert.deepEqual(invalid.json().error.details, ['meetingId must be a valid UUID.']);
-});
-
-test('GET checkpoint identifies a segment without a stored checkpoint', async () => {
-  const handler = createHandler();
-  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  const response = await request(handler, {
-    method: 'GET',
-    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`
-  });
-
-  assert.equal(response.status, 200);
-  assert.equal(response.json().checkpoint, null);
-});
-
-test('completes an interrupted meeting through the HTTP API', async () => {
-  const handler = createHandler();
+test('metadata-only Viewer share route preserves token, code, and expiry checks without Cue reads', async () => {
+  const baseRepository = createMemoryMeetingRepository();
+  const repository = {
+    ...baseRepository,
+    listMeetingSegmentMetadata: baseRepository.listMeetingSegmentMetadata,
+    listMeetingSegments() { throw new Error('content read forbidden'); },
+    getMeetingViewerPage() { throw new Error('subtitle_cues forbidden'); }
+  };
+  let now = Date.now();
+  const shareService = createSessionShareService({ clock: () => now });
+  const handler = createHandler({ meetingRepository: repository, sessionShareService: shareService });
   const created = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
-  const recovered = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${created.meeting.id}/segments/${created.segment.id}/recover`,
-    body: JSON.stringify({
-      idempotencyKey: 'http-interrupt-1',
-      checkpoint: { idempotencyKey: 'http-checkpoint-1', durableChunks: [], pendingPartial: null },
-      nextLiveSessionId: null,
-      failureReason: 'unexpected_close',
-      failureCategory: 'provider',
-      outcome: 'interrupted'
-    })
-  });
-  assert.equal(recovered.status, 201);
-
-  const response = await request(handler, {
-    method: 'POST',
-    url: `/api/meetings/${created.meeting.id}/complete`
-  });
-
-  assert.equal(response.status, 200);
-  assert.equal(response.json().meeting.status, 'completed');
-});
-
-test('checkpoint route reports invalid segment UUID details and request id', async () => {
-  const handler = createHandler({ strictCheckpointPathIds: true });
-  const response = await request(handler, {
-    method: 'GET',
-    url: '/api/meetings/0897cdf1-4726-4362-81d4-75f0c695be30/segments/c5347c3-9eb1-4a2a-b562-892c9d8749db/checkpoint'
-  });
-  assert.equal(response.status, 400);
-  const body = response.json();
-  assert.deepEqual(body.error.details, ['segmentId must be a valid UUID.']);
-  assert.equal(body.error.requestId, response.headers['X-Request-Id']);
+  const share = shareService.createMeetingShare(created.meeting.id, { role: 'viewer', expiresAt: now + 60_000 });
+  const tokenPath = `/api/shared-meetings/${share.token}/metadata`;
+  const codePath = `/api/shared-meetings/code/${share.shortCode}/metadata`;
+  for (const url of [tokenPath, codePath]) {
+    const result = await request(handler, { url });
+    assert.equal(result.status, 200);
+    assert.equal(result.json().recordKind, 'meetingViewerMetadata');
+    assert.equal(result.json().capability.meetingId, created.meeting.id);
+    assert.equal(result.json().recordingState, 'waiting');
+    assert.deepEqual(result.json().segments, []);
+    assert.equal(Object.hasOwn(result.json(), 'cues'), false);
+  }
+  const recorderShare = shareService.createMeetingShare(created.meeting.id, { role: 'recorder' });
+  assert.equal((await request(handler, { url: `/api/shared-meetings/${recorderShare.token}/metadata` })).status, 404);
+  assert.equal((await request(handler, { url: `/api/shared-meetings/code/${recorderShare.shortCode}/metadata` })).status, 404);
+  assert.equal((await request(handler, { url: '/api/shared-meetings/invalid/metadata' })).status, 404);
+  const stored = baseRepository.getMeeting(created.meeting.id);
+  baseRepository.updateMeeting({ ...stored, status: 'completed', startedAt: stored.createdAt, endedAt: Date.now(), retentionPolicyVersion: 2, purgeAt: '2030-01-01T00:00:00.000Z', lifecycleVersion: stored.lifecycleVersion + 1 });
+  const ended = await request(handler, { url: tokenPath });
+  assert.equal(ended.status, 200);
+  assert.equal(ended.json().recordingState, 'ended');
+  assert.equal(ended.json().meeting.lifecycleVersion, stored.lifecycleVersion + 1);
+  baseRepository.updateMeeting({ ...baseRepository.getMeeting(created.meeting.id), purgeAt: '2000-01-01T00:00:00.000Z' });
+  const expiredContent = await request(handler, { url: tokenPath });
+  assert.equal(expiredContent.status, 410);
+  assert.equal(expiredContent.json().error.code, 'meeting_content_expired');
+  assert.equal(shareService.revokeShare(created.meeting.id, share.id), true);
+  assert.equal((await request(handler, { url: tokenPath })).status, 404);
+  assert.equal((await request(handler, { url: codePath })).status, 404);
+  baseRepository.updateMeeting({ ...baseRepository.getMeeting(created.meeting.id), purgeAt: '2030-01-01T00:00:00.000Z' });
+  const expiringShare = shareService.createMeetingShare(created.meeting.id, { role: 'viewer', expiresAt: now + 60_000 });
+  const expiringTokenPath = `/api/shared-meetings/${expiringShare.token}/metadata`;
+  const expiringCodePath = `/api/shared-meetings/code/${expiringShare.shortCode}/metadata`;
+  assert.equal((await request(handler, { url: expiringTokenPath })).status, 200);
+  now += 60_001;
+  assert.equal((await request(handler, { url: expiringTokenPath })).status, 404);
+  assert.equal((await request(handler, { url: expiringCodePath })).status, 404);
 });
 
 function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService, meetingRepository, meetingMembershipService, meetingDeletionService: injectedMeetingDeletionService, accessControl, profileService, strictCheckpointPathIds = false, requestLogger } = {}) {

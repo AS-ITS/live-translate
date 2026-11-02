@@ -28,6 +28,34 @@ function bundledLocalStorageSource() {
   return storageBundle;
 }
 
+let lifecycleRecoveryBundle;
+function bundledLifecycleRecoverySource() {
+  lifecycleRecoveryBundle ||= (async () => {
+    const bundle = await rolldown({ input: fileURLToPath(new URL('../../src/lib/lifecycleRecoveryController.js', import.meta.url)) });
+    try {
+      const { output } = await bundle.generate({ format: 'es' });
+      return output[0].code;
+    } finally {
+      await bundle.close();
+    }
+  })();
+  return lifecycleRecoveryBundle;
+}
+
+let localPersistenceBundle;
+function bundledLocalPersistenceSource() {
+  localPersistenceBundle ||= (async () => {
+    const bundle = await rolldown({ input: fileURLToPath(new URL('../../src/lib/localMeetingPersistence.js', import.meta.url)) });
+    try {
+      const { output } = await bundle.generate({ format: 'es' });
+      return output[0].code;
+    } finally {
+      await bundle.close();
+    }
+  })();
+  return localPersistenceBundle;
+}
+
 test('recording and operation persistence project secrets from writes and reads', async () => {
   const store = createInMemoryLocalMeetingManifestStore();
   const recording = {
@@ -120,6 +148,81 @@ test('local cue identity cannot move between sessions or sequences', async () =>
     store.saveCue({ ...input, sessionId: 'session-2' }),
     (error) => error.code === 'local_cue_identity_conflict'
   );
+});
+
+test('local Cue revisions preserve order and cannot move to a rollover Segment', async () => {
+  const store = createInMemoryLocalMeetingManifestStore();
+  const base = { meetingId: 'meeting-1', sessionId: 'session-1', segmentId: 'segment-1' };
+  await store.saveCue({ ...base, cue: { cueId: 'cue-1', sequence: 1, revision: 1,
+    sourceText: 'hello', translatedText: '你好', status: 'final' } });
+  await store.saveCue({ ...base, cue: { cueId: 'cue-1', sequence: 1, revision: 2,
+    sourceText: 'hello', translatedText: '您好', status: 'final' } });
+  await store.saveCue({ ...base, cue: { cueId: 'cue-2', sequence: 2, revision: 1,
+    sourceText: 'world', translatedText: '世界', status: 'final' } });
+  assert.deepEqual((await store.listCues('meeting-1')).map((row) =>
+    [row.segmentId, row.sequence, row.cue.revision, row.cue.translatedText]),
+  [['segment-1', 1, 2, '您好'], ['segment-1', 2, 1, '世界']]);
+  await assert.rejects(store.saveCue({ ...base, segmentId: 'segment-2',
+    cue: { cueId: 'cue-1', sequence: 1, revision: 3, status: 'final' } }),
+  { code: 'local_cue_segment_conflict' });
+  await assert.rejects(store.saveCue({ ...base, cue: { cueId: 'cue-1', sequence: 1,
+    revision: 1, status: 'final' } }), { code: 'local_cue_stale_revision' });
+});
+
+test('late unversioned Cue cannot overwrite newer source and translation versions', async () => {
+  const store = createInMemoryLocalMeetingManifestStore();
+  const base = { meetingId: 'meeting-1', sessionId: 'session-1', segmentId: 'segment-1' };
+  await store.saveCue({ ...base, cue: { cueId: 'cue-1', sequence: 1,
+    sourceVersion: 2, translationVersion: 2, sourceText: 'hello', translatedText: '您好' } });
+  await assert.rejects(store.saveCue({ ...base, cue: { cueId: 'cue-1', sequence: 1,
+    sourceVersion: 1, translationVersion: 2, sourceText: 'hello', translatedText: '你好' } }),
+  { code: 'local_cue_stale_revision' });
+  assert.equal((await store.listCues('meeting-1'))[0].cue.translatedText, '您好');
+});
+
+test('checkpoint confirms only Cue progress committed to local storage', async () => {
+  const store = createInMemoryLocalMeetingManifestStore();
+  const cue = { cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1',
+    sequence: 1, revision: 1, startTimeMs: 0, endTimeMs: 100,
+    sourceLanguageCode: 'en', targetLanguageCode: 'zh-Hant',
+    sourceText: 'hello', translatedText: '你好', status: 'final' };
+  const checkpoint = { meetingId: 'meeting-1', segmentId: 'segment-1',
+    checkpoint: { idempotencyKey: 'checkpoint-1', durableChunks: [], finalCues: [cue] } };
+  await assert.rejects(store.saveCheckpoint(checkpoint), { code: 'local_checkpoint_cue_not_durable' });
+  assert.equal(await store.getCheckpoint('meeting-1', 'segment-1'), null);
+  await store.saveCue({ meetingId: 'meeting-1', segmentId: 'segment-1',
+    sessionId: 'session-1', cue });
+  await store.saveCheckpoint(checkpoint);
+  assert.equal((await store.getCheckpoint('meeting-1', 'segment-1')).checkpoint.finalCues[0].cueId, 'cue-1');
+});
+
+test('local Transcript updates retain sequence and original Segment through reload snapshots', async () => {
+  const store = createInMemoryLocalMeetingManifestStore();
+  const base = { meetingId: 'meeting-1', sessionId: 'session-1' };
+  const partial = { id: 'source-1', stream: 'source', sequence: 1,
+    text: 'hello', status: 'partial', segmentId: 'segment-1' };
+  await store.saveTranscriptItem({ ...base, item: partial });
+  await store.saveTranscriptItem({ ...base, item: { ...partial, text: 'hello world', status: 'final' } });
+  await store.saveTranscriptItem({ ...base, item: { id: 'translation-2', stream: 'translation',
+    sequence: 2, text: '你好世界', status: 'final', segmentId: 'segment-1' } });
+  assert.deepEqual((await store.listTranscriptItems('meeting-1')).map((row) =>
+    [row.sequence, row.segmentId, row.revision, row.item.text]),
+  [[1, 'segment-1', 2, 'hello world'], [2, 'segment-1', 1, '你好世界']]);
+  await assert.rejects(store.saveTranscriptItem({ ...base, item: { ...partial,
+    text: 'late old cue', segmentId: 'segment-2' } }), { code: 'local_transcript_identity_conflict' });
+});
+
+test('meeting deletion removes local content and rejects late writes', async () => {
+  const store = createInMemoryLocalMeetingManifestStore();
+  const cue = { meetingId: 'meeting-1', segmentId: 'segment-1', sessionId: 'session-1',
+    cue: { cueId: 'cue-1', sequence: 1, revision: 1, status: 'final' } };
+  await store.saveCue(cue);
+  await store.clearMeetingContent('meeting-1');
+  assert.deepEqual(await store.listCues('meeting-1'), []);
+  await assert.rejects(store.saveCue(cue), { code: 'meeting_content_expired' });
+  await assert.rejects(store.saveCheckpoint({ meetingId: 'meeting-1', segmentId: 'segment-1',
+    checkpoint: { idempotencyKey: 'late', durableChunks: [], finalCues: [] } }),
+  { code: 'meeting_content_expired' });
 });
 
 test('chunk paths are deterministic and keep meeting identity in the path', () => {
@@ -259,6 +362,79 @@ test('browser IndexedDB restores local cues and checkpoints after reload', async
   assert.equal(restored.cues[0].cue.secret, undefined);
   assert.equal(restored.checkpoint.checkpoint.cueCheckpoint.nextSequence, 2);
   assert.equal(restored.checkpoint.checkpoint.accessToken, undefined);
+});
+
+test('browser IndexedDB retains translated audio manifest across reload and removes it at retention cleanup', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://local-audio-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://local-audio-reload.test/');
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalStorageSource()).toString('base64')}`;
+  const dbName = `local-audio-${Date.now()}`;
+  await page.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    await store.saveTranslatedAudioChunk({ meetingId: 'meeting-a', sessionId: 'session-a', sequence: 1,
+      byteSize: 4, checksum: 'sha256:test' });
+  }, { moduleUrl, dbName });
+  const otherProfile = await browser.newContext();
+  t.after(() => otherProfile.close());
+  const otherPage = await otherProfile.newPage();
+  await otherPage.route('https://local-audio-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await otherPage.goto('https://local-audio-reload.test/');
+  const otherProfileChunks = await otherPage.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    return createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName })
+      .listTranslatedAudioChunks('meeting-a');
+  }, { moduleUrl, dbName });
+  assert.deepEqual(otherProfileChunks, []);
+  await page.reload();
+  const result = await page.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const before = await store.listTranslatedAudioChunks('meeting-a');
+    const otherMeeting = await store.listTranslatedAudioChunks('meeting-b');
+    await store.clearMeetingContent('meeting-a');
+    return { before, otherMeeting, after: await store.listTranslatedAudioChunks('meeting-a') };
+  }, { moduleUrl, dbName });
+  assert.equal(result.before.length, 1);
+  assert.equal(result.before[0].sessionId, 'session-a');
+  assert.deepEqual(result.otherMeeting, []);
+  assert.deepEqual(result.after, []);
+});
+
+test('browser OPFS translated PCM reloads as Host-only WAV and expires with retention', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://local-translated-audio.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://local-translated-audio.test/');
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalPersistenceSource()).toString('base64')}`;
+  const storageUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalStorageSource()).toString('base64')}`;
+  const dbName = `local-translation-${Date.now()}`;
+  await page.evaluate(async ({ moduleUrl, storageUrl, dbName }) => {
+    const { createLocalMeetingPersistence } = await import(moduleUrl);
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const manifestStore = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const persistence = createLocalMeetingPersistence({ manifestStore, recordAudio: false });
+    await persistence.start({ meetingId: 'meeting-local', recordingId: 'session-local', segmentId: 'segment-local' });
+    await persistence.appendTranslatedAudioChunk({ meetingId: 'meeting-local', sessionId: 'session-local', bytes: new Uint8Array([1, 0, 2, 0]) });
+    await persistence.finalizeTranslatedAudio('meeting-local');
+  }, { moduleUrl, storageUrl, dbName });
+  await page.reload();
+  const restored = await page.evaluate(async ({ moduleUrl, storageUrl, dbName }) => {
+    const { createLocalMeetingPersistence } = await import(moduleUrl);
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const manifestStore = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const persistence = createLocalMeetingPersistence({ manifestStore, recordAudio: false });
+    const audio = await persistence.listFinalizedAudioArtifacts('meeting-local');
+    await manifestStore.saveRetention({ meetingId: 'meeting-local', expiresAt: '2000-01-01T00:00:00.000Z' });
+    let expiredCode = null;
+    try { await persistence.listFinalizedAudioArtifacts('meeting-local'); } catch (error) { expiredCode = error.code; }
+    return { kind: audio[0]?.kind, size: audio[0]?.blob.size, expiredCode };
+  }, { moduleUrl, storageUrl, dbName });
+  assert.deepEqual(restored, { kind: 'translation', size: 48, expiredCode: 'meeting_content_expired' });
 });
 
 test('browser IndexedDB reload replays lifecycle operations and OPFS refuses overwrite', async (t) => {
@@ -490,4 +666,154 @@ test('invalid state transitions do not silently rewrite sealed chunks', () => {
   assert.throws(() => markLocalChunk(sealed, 'writing'), (error) => error.code === 'local_chunk_state_conflict');
   assert.equal(sealLocalChunk(sealed, { byteSize: 1, checksum: 'sha256:one', endedAt: 1 }), sealed);
   assert.throws(() => sealLocalChunk(sealed, { byteSize: 2, checksum: 'sha256:other', endedAt: 1 }), (error) => error.code === 'local_chunk_seal_conflict');
+});
+test('browser IndexedDB restores metadata-only lifecycle intent after reload', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://lifecycle-intent-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://lifecycle-intent-reload.test/');
+  const source = await bundledLocalStorageSource();
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
+  const dbName = `lifecycle-intent-${Date.now()}`;
+  await page.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    await store.saveLifecycleIntent({
+      ownerUserId: 'owner-1', meetingId: 'meeting-1', sessionId: 'session-1',
+      segmentId: 'segment-1', originalOperationId: 'operation-1',
+      currentOperationId: 'operation-1', command: 'stop',
+      expectedLifecycleVersion: 3, leaseId: 'lease-1', fenceToken: 2,
+      leaseExpiresAt: '2030-01-01T00:00:00.000Z', payload: {},
+      status: 'unknown'
+    });
+  }, { moduleUrl, dbName });
+  await page.reload();
+  const result = await page.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const existing = (await store.listPendingLifecycleIntents('owner-1', 'meeting-1'))[0];
+    await store.saveLifecycleIntent(existing);
+    const identityErrors = [];
+    for (const change of [{ sessionId: 'session-2' }, { segmentId: 'segment-2' }]) {
+      try {
+        await store.saveLifecycleIntent({ ...existing, ...change });
+      } catch (error) {
+        identityErrors.push(error.code);
+      }
+    }
+    return {
+      pending: await store.listPendingLifecycleIntents('owner-1', 'meeting-1'),
+      otherOwner: await store.listPendingLifecycleIntents('owner-2', 'meeting-1'),
+      otherMeeting: await store.listPendingLifecycleIntents('owner-1', 'meeting-2'),
+      identityErrors
+    };
+  }, { moduleUrl, dbName });
+  assert.equal(result.pending.length, 1);
+  assert.equal(result.pending[0].originalOperationId, 'operation-1');
+  assert.equal(result.pending[0].status, 'unknown');
+  assert.deepEqual(result.pending[0].payload, {});
+  assert.deepEqual(result.otherOwner, []);
+  assert.deepEqual(result.otherMeeting, []);
+  assert.deepEqual(result.identityErrors, ['local_lifecycle_intent_conflict', 'local_lifecycle_intent_conflict']);
+});
+
+test('lifecycle intent identity is immutable across idempotent writes and absent IDs', () => {
+  const store = createInMemoryLocalMeetingManifestStore();
+  const intent = {
+    ownerUserId: 'owner-1', meetingId: 'meeting-1', sessionId: 'session-1',
+    segmentId: 'segment-1', originalOperationId: 'operation-1',
+    command: 'stop', expectedLifecycleVersion: 3, payload: {}, status: 'prepared'
+  };
+  store.saveLifecycleIntent(intent);
+  store.saveLifecycleIntent({ ...intent, status: 'submitted' });
+  for (const change of [
+    { sessionId: 'session-2' }, { segmentId: 'segment-2' },
+    { sessionId: null }, { segmentId: undefined }
+  ]) {
+    assert.throws(() => store.saveLifecycleIntent({ ...intent, ...change }),
+      (error) => error.code === 'local_lifecycle_intent_conflict');
+  }
+  const { key } = store.getLifecycleIntent('owner-1', 'meeting-1', 'operation-1');
+  for (const change of [
+    { ownerUserId: 'owner-2' }, { meetingId: 'meeting-2' },
+    { originalOperationId: 'operation-3' }
+  ]) {
+    assert.throws(() => store.saveLifecycleIntent({ ...intent, key, ...change }),
+      /key does not match its scope/u);
+  }
+  const pending = store.getLifecycleIntent('owner-1', 'meeting-1', 'operation-1');
+  assert.equal(pending.status, 'submitted');
+  assert.equal(pending.sessionId, 'session-1');
+  assert.equal(pending.segmentId, 'segment-1');
+
+  const unknown = { ...intent, originalOperationId: 'operation-2',
+    sessionId: null, segmentId: undefined };
+  store.saveLifecycleIntent(unknown);
+  assert.throws(() => store.saveLifecycleIntent({ ...unknown, sessionId: 'session-2' }),
+    (error) => error.code === 'local_lifecycle_intent_conflict');
+  assert.throws(() => store.saveLifecycleIntent({ ...unknown, segmentId: 'segment-2' }),
+    (error) => error.code === 'local_lifecycle_intent_conflict');
+  assert.equal(store.getLifecycleIntent('owner-1', 'meeting-1', 'operation-2').segmentId, null);
+});
+
+test('IndexedDB reload adopts committed Stop and Rollover without resubmitting', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://lifecycle-result-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://lifecycle-result-reload.test/');
+  const storageUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalStorageSource()).toString('base64')}`;
+  const recoveryUrl = `data:text/javascript;base64,${Buffer.from(await bundledLifecycleRecoverySource()).toString('base64')}`;
+  const dbName = `lifecycle-result-${Date.now()}`;
+  await page.evaluate(async ({ storageUrl, recoveryUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const { createLifecycleRecoveryController } = await import(recoveryUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const api = {
+      async executeRecordingCommand() { throw new Error('response lost'); },
+      async lookupRecordingOperation() { throw new Error('must not look up before reload'); },
+      async recoverRecordingLease() { throw new Error('must not recover lease'); }
+    };
+    const controller = createLifecycleRecoveryController({ store, api });
+    for (const command of ['stop', 'rollover']) {
+      try {
+        await controller.submit({ ownerUserId: 'owner-1', meetingId: `meeting-${command}`,
+          command, operationId: `operation-${command}`, expectedLifecycleVersion: 1,
+          sessionId: 'session-1', segmentId: 'segment-1', leaseId: 'lease-1',
+          fenceToken: 1, leaseExpiresAt: '2030-01-01T00:00:00.000Z',
+          payload: command === 'rollover' ? { nextLiveSessionId: 'live-next' } : {} });
+      } catch (error) {
+        if (error.message !== 'response lost') throw error;
+      }
+    }
+  }, { storageUrl, recoveryUrl, dbName });
+  await page.reload();
+  const result = await page.evaluate(async ({ storageUrl, recoveryUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const { createLifecycleRecoveryController } = await import(recoveryUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    let resubmissions = 0;
+    const api = {
+      async executeRecordingCommand() { resubmissions += 1; throw new Error('duplicate submit'); },
+      async lookupRecordingOperation({ operationId }) {
+        const stop = operationId === 'operation-stop';
+        return { status: 'committed', operationId, command: stop ? 'stop' : 'rollover',
+          resultingLifecycleVersion: 2, targetIdentityRecorded: true,
+          targetSessionId: 'session-1', targetSegmentId: 'segment-1',
+          sessionId: 'session-1', segmentId: stop ? null : 'segment-2' };
+      },
+      async recoverRecordingLease() { throw new Error('must not recover lease'); }
+    };
+    const controller = createLifecycleRecoveryController({ store, api });
+    const statuses = [];
+    for (const command of ['stop', 'rollover']) {
+      const meetingId = `meeting-${command}`;
+      statuses.push((await controller.recover({ ownerUserId: 'owner-1', meetingId })).status);
+      statuses.push((await store.getLifecycleIntent('owner-1', meetingId, `operation-${command}`)).status);
+    }
+    return { statuses, resubmissions };
+  }, { storageUrl, recoveryUrl, dbName });
+  assert.deepEqual(result.statuses, ['committed', 'committed', 'committed', 'committed']);
+  assert.equal(result.resubmissions, 0);
 });

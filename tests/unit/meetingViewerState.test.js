@@ -1,10 +1,38 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyMeetingCueEvent, meetingEventDuplicateDetected, meetingEventGapDetected, mergeMeetingCues, mergeMeetingViewerSnapshot } from '../../src/lib/meetingViewerState.js';
+import { hostViewerCuesFromLocalRecords } from '../../src/webrtc/useWebRtcDeviceSidecar.js';
+import { createSubtitleSource } from '../../src/webrtc/subtitleDataChannel.js';
 
 const cue = (cueId, segmentSequence, sequence, translatedText = cueId, refinement = 1) => ({
   cueId, segmentSequence, sequence, status: 'final', sourceText: cueId, translatedText,
   refinement: { version: refinement }
+});
+
+test('Host reload builds a scoped DataChannel snapshot from durable local Cues', () => {
+  const record = (meetingId, segmentId, cueId, sequence, extra = {}) => ({
+    meetingId, sessionId: 'session-1', segmentId, cueId, sequence,
+    cue: { cueId, sequence, status: 'final', sourceText: cueId,
+      translatedText: `${cueId}-translation`, sourceVersion: 1, translationVersion: 1, ...extra }
+  });
+  const records = [
+    record('meeting-1', 'segment-1', 'cue-1', 1),
+    record('meeting-1', 'segment-2', 'cue-2', 1, { segmentId: 'segment-2' }),
+    record('meeting-2', 'segment-1', 'other-meeting', 2),
+    record('meeting-1', 'segment-1', 'partial', 3, { status: 'partial' }),
+    record('meeting-1', 'segment-1', 'wrong-segment', 4, { segmentId: 'segment-3' })
+  ];
+  const restored = hostViewerCuesFromLocalRecords('meeting-1', records);
+  assert.deepEqual(restored.map(({ cueId, segmentId }) => [cueId, segmentId]),
+    [['cue-1', 'segment-1'], ['cue-2', 'segment-2']]);
+  const source = createSubtitleSource({ meetingId: 'meeting-1' });
+  restored.forEach((item) => source.append(item));
+  const snapshot = source.snapshot();
+  assert.deepEqual(snapshot.cues.map(({ cueId }) => cueId), ['cue-1', 'cue-2']);
+  assert.equal(snapshot.cues[0].translatedText, 'cue-1-translation');
+  const newer = { ...snapshot.cues[1], translatedText: 'late final', translationVersion: 2 };
+  const merged = mergeMeetingViewerSnapshot({ cues: [newer] }, { cues: snapshot.cues });
+  assert.equal(merged.cues.find((item) => item.cueId === 'cue-2').translatedText, 'late final');
 });
 
 test('Viewer snapshot and events merge by Cue ID and preserve order', () => {

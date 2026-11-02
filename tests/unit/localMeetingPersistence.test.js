@@ -46,11 +46,15 @@ test('production local persistence keeps audio, cues, and checkpoints together',
   await persistence.appendAudioChunk({ data: new Blob(['one'], { type: 'audio/webm' }), mimeType: 'audio/webm', receivedAt: 10 });
   await persistence.saveCue({
     meetingId: 'meeting-1', sessionId: 'session-1', segmentId: 'segment-1',
-    cue: { cueId: 'cue-1', sequence: 1, sourceText: 'hello' }, producedAt: 11
+    cue: { cueId: 'cue-1', sequence: 1, sourceText: 'hello', status: 'final' }, producedAt: 11
   });
+  await persistence.saveTranscriptItem({ meetingId: 'meeting-1', sessionId: 'session-1',
+    item: { id: 'source-1', sequence: 1, stream: 'source', text: 'hello',
+      status: 'final', segmentId: 'segment-1' } });
   await persistence.updateCheckpoint({
     meetingId: 'meeting-1', segmentId: 'segment-1', durableChunks: [],
-    finalCues: [{ cueId: 'cue-1', sequence: 1 }], cueCheckpoint: { nextSequence: 2 }
+    finalCues: [{ cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1', sequence: 1 }],
+    cueCheckpoint: { nextSequence: 2 }
   });
   await persistence.pause();
   await persistence.resume();
@@ -60,13 +64,67 @@ test('production local persistence keeps audio, cues, and checkpoints together',
 
   const audio = await persistence.finalizeAudio({ fileName: 'meeting-1.webm' });
   const restored = await persistence.restore('meeting-1');
+  const snapshot = await persistence.contentSnapshot('meeting-1');
   const checkpoint = await persistence.getCheckpoint({ meetingId: 'meeting-1', segmentId: 'segment-1' });
   assert.equal(audio.status, 'ready');
   assert.equal(await audio.blob.text(), 'onetwo');
   assert.equal(restored.recording.state, 'stopped_local');
   assert.equal(restored.recording.providerEpoch, 2);
   assert.equal(restored.cues[0].cue.sourceText, 'hello');
+  assert.equal(snapshot.cues[0].cue.sourceText, 'hello');
+  assert.equal(snapshot.transcripts[0].segmentId, 'segment-1');
+  assert.equal(snapshot.checkpoints[0].segmentId, 'segment-1');
   assert.equal(checkpoint.checkpoint.cueCheckpoint.nextSequence, 2);
+});
+
+test('translated PCM survives reload and corrupt chunks fail the local durability barrier', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const chunkStore = fakeChunkStore();
+  const makePersistence = () => createLocalMeetingPersistence({
+    manifestStore, chunkStore,
+    cryptoImpl: { subtle: { async digest(_algorithm, bytes) { return new Uint8Array(bytes).buffer; } } },
+    createOperationId: operationIds(),
+    composeAudioArtifact: concatenateTestArtifact
+  });
+  const first = makePersistence();
+  await first.start({ meetingId: 'meeting-1', recordingId: 'session-1', segmentId: 'segment-1' });
+  await first.appendTranslatedAudioChunk({ meetingId: 'meeting-1', sessionId: 'session-1', bytes: new Uint8Array([1, 0, 2, 0]) });
+  assert.equal((await first.finalizeTranslatedAudio()).status, 'ready');
+  const reloaded = makePersistence();
+  const artifacts = await reloaded.listFinalizedAudioArtifacts('meeting-1');
+  assert.equal(artifacts.length, 1);
+  assert.equal(artifacts[0].kind, 'translation');
+  assert.equal(artifacts[0].mimeType, 'audio/wav');
+  assert.equal(artifacts[0].blob.size, 48);
+  const [chunk] = await manifestStore.listTranslatedAudioChunks('meeting-1');
+  chunkStore.files.set(chunk.path, new Uint8Array([9, 0, 2, 0]));
+  await assert.rejects(first.finalizeTranslatedAudio(), /corrupt/u);
+});
+
+test('Segment seal waits for local audio and refuses a failed chunk', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const chunkStore = fakeChunkStore();
+  const originalWrite = chunkStore.write;
+  let releaseWrite;
+  const gate = new Promise((resolve) => { releaseWrite = resolve; });
+  chunkStore.write = async (path, bytes) => { await gate; return originalWrite(path, bytes); };
+  const persistence = createLocalMeetingPersistence({
+    manifestStore, chunkStore, cryptoImpl: fakeCrypto(), createOperationId: operationIds(),
+    composeAudioArtifact: concatenateTestArtifact
+  });
+  await persistence.start({ meetingId: 'meeting-1', recordingId: 'session-1', segmentId: 'segment-1' });
+  const append = persistence.appendAudioChunk({ data: new Blob(['audio']), receivedAt: 10 });
+  let sealed = false;
+  const seal = persistence.sealSegmentWrites('meeting-1').then(() => { sealed = true; });
+  await Promise.resolve();
+  assert.equal(sealed, false);
+  releaseWrite();
+  await append;
+  await seal;
+  assert.equal(sealed, true);
+  chunkStore.write = async () => { throw new Error('OPFS failed'); };
+  await assert.rejects(persistence.appendAudioChunk({ data: new Blob(['missing']), receivedAt: 11 }), /OPFS failed/u);
+  await assert.rejects(persistence.sealSegmentWrites('meeting-1'), /OPFS failed/u);
 });
 
 test('reload recovery resumes audio sequence without overwriting prior chunks', async () => {
@@ -252,6 +310,25 @@ test('rollover barrier assigns pending chunks to the old Segment and later chunk
   assert.equal(rolled.recordingId, started.recordingId);
   assert.equal(rolled.captureEpoch, started.captureEpoch);
   assert.equal(rolled.providerEpoch, started.providerEpoch + 1);
+});
+
+test('disabled local rollover blocks later chunks from the old Segment', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const persistence = createLocalMeetingPersistence({
+    manifestStore,
+    chunkStore: fakeChunkStore(),
+    cryptoImpl: fakeCrypto(),
+    createOperationId: operationIds(),
+    composeAudioArtifact: concatenateTestArtifact
+  });
+  await persistence.start({ meetingId: 'meeting-1', recordingId: 'recording-1', segmentId: 'segment-1' });
+  await persistence.appendAudioChunk({ data: new Blob(['old']), receivedAt: 10 });
+  persistence.setRecordingEnabled(false);
+  assert.equal((await persistence.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' })).state, 'disabled');
+  persistence.setRecordingEnabled(true);
+  await assert.rejects(persistence.appendAudioChunk({ data: new Blob(['new']), receivedAt: 20 }), /rollover is disabled/);
+  await assert.rejects(persistence.sealSegmentWrites('meeting-1'), /rollover is disabled/);
+  assert.deepEqual((await manifestStore.list('meeting-1')).map((chunk) => chunk.segmentId), ['segment-1']);
 });
 
 test('local persistence traces chunk receive and the serialized Segment scope switch', async () => {

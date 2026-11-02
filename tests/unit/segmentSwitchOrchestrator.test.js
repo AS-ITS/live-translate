@@ -4,6 +4,8 @@ import {
   createSegmentSwitchOrchestrator,
   normalizeSegmentIntervalMs
 } from '../../src/lib/segmentSwitchOrchestrator.js';
+import { LiveTranslateSession } from '../../src/lib/liveSession.js';
+import { createDurablePcmJournalClient } from '../../src/lib/durablePcmJournalClient.js';
 import {
   LONG_MEETING_SEGMENT_INTERVAL_MS,
   LONG_MEETING_SOAK_DURATION_MS,
@@ -100,6 +102,53 @@ test('segment switch orchestrator remains scheduled after a failed rollover', as
 test('normalizeSegmentIntervalMs caps the production interval at 15 minutes', () => {
   assert.equal(normalizeSegmentIntervalMs(20 * 60 * 1000), 15 * 60 * 1000);
   assert.equal(normalizeSegmentIntervalMs(1000), 1000);
+});
+
+test('Supabase rollover failure preserves capture and local PCM callback', async () => {
+  const journalCalls = [];
+  const worker = {
+    onmessage: null,
+    postMessage({ id, command, args }) {
+      journalCalls.push({ command, args });
+      queueMicrotask(() => this.onmessage({ data: { id, ok: true,
+        result: command === 'OPEN' ? { highestEpoch: 0, tailState: 'CLEAN' } : { state: 'COMMITTED' } } }));
+    },
+    terminate() {}
+  };
+  const journal = createDurablePcmJournalClient({ meetingId: 'meeting-1', recordingId: 'recording-1',
+    workerFactory: () => worker });
+  await journal.open();
+  const failures = [];
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en',
+    onInputAudioChunk: (pcm, metadata) => journal.offer(pcm, metadata) });
+  session.session = { sendRealtimeInput() {} };
+  session.providerReady = true;
+  session.inputSendingEnabled = true;
+  const orchestrator = createSegmentSwitchOrchestrator({
+    switchSegment: async () => {
+      try {
+        await session.beginProviderTransition({ maxWaitMs: 5, quietPeriodMs: 0, pollIntervalMs: 1 });
+        throw new Error('Supabase unavailable');
+      } catch (error) {
+        session.cancelProviderTransition();
+        throw error;
+      }
+    },
+    onError: (error) => failures.push(error.message),
+    setTimeoutFn: () => 1,
+    clearTimeoutFn: () => {}
+  });
+  orchestrator.start();
+  assert.equal(await orchestrator.triggerNow(), false);
+  session.sendInputAudioChunk(new Uint8Array([1, 2]), session.connectionEpoch, { force: true });
+  await journal.flush();
+  assert.deepEqual(failures, ['Supabase unavailable']);
+  assert.deepEqual(journalCalls.filter(({ command }) => command === 'APPEND')
+    .map(({ args }) => [args.captureEpoch, args.startSample, args.bytes.length]), [[1, 0, 2]]);
+  assert.equal(session.inputSendingEnabled, true);
+  assert.equal(session.closed, false);
+  orchestrator.cancel();
+  await journal.close();
 });
 
 test('segment switch orchestrator simulates a 130 minute meeting with eight fifteen-minute segments', async () => {

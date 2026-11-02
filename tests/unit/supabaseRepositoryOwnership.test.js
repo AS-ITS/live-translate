@@ -4,6 +4,26 @@ import { setRequestScope, setRequestUser } from '../../server/requestIdentity.js
 import { createSupabaseMeetingRepository } from '../../src/infrastructure/supabaseMeetingRepository.js';
 import { createSupabaseSessionRepository } from '../../src/infrastructure/supabaseSessionRepository.js';
 
+test('Session owner lookup uses a PostgREST equality filter', async () => {
+  const calls = [];
+  const repository = createSupabaseSessionRepository({
+    env: { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SECRET_KEY: 'service-key', VITE_SUPABASE_PUBLISHABLE_KEY: 'publishable-key' },
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return { ok: true, status: 200, async json() { return [{ meeting_id: 'meeting-a', owner_user_id: 'user-a' }]; } };
+    }
+  });
+  setRequestUser({ id: 'user-a' });
+  setRequestScope({ actorUserId: 'user-a', resourceOwnerUserId: 'user-a', accessToken: 'user-jwt', capability: 'user' });
+  try {
+    assert.deepEqual(await repository.getSessionOwner('session-a'), { meetingId: 'meeting-a', ownerUserId: 'user-a' });
+    assert.match(calls[0].url, /[?&]id=eq\.session-a(?:&|$)/u);
+    assert.equal(calls[0].init.headers.Authorization, 'Bearer user-jwt');
+  } finally {
+    setRequestUser(null);
+  }
+});
+
 test('Supabase meeting repository scopes reads and writes to request owner', async () => {
   const calls = [];
   const repository = createSupabaseMeetingRepository({

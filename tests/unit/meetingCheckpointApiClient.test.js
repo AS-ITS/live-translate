@@ -18,6 +18,18 @@ test('meeting checkpoint API client creates a meeting', async () => {
   assert.deepEqual(calls, [{ url: '/api/meetings', options: { method: 'POST', headers: {} } }]);
 });
 
+test('meeting checkpoint API client accepts v2 creation before its first Segment', async () => {
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async () => ok({
+      meeting: { id: 'meeting-v2', lifecycleContractVersion: 2, lifecycleVersion: 0, status: 'created' },
+      segment: null
+    })
+  });
+  const result = await client.createMeeting();
+  assert.equal(result.meeting.id, 'meeting-v2');
+  assert.equal(result.segment, null);
+});
+
 test('meeting checkpoint API client creates a meeting with live session association', async () => {
   const calls = [];
   const client = createMeetingCheckpointApiClient({

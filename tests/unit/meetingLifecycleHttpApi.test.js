@@ -36,126 +36,30 @@ test('recording start forwards authenticated principal to lifecycle service', as
   });
 });
 
-test('legacy resume route flushes checkpoint before RPC and binds latest glossary', async () => {
-  const calls = [];
-  const order = [];
-  const persistedCheckpoint = { meetingId: 'meeting-1', segmentId: 'segment-1', revision: 1, finalCues: [] };
-  const payload = {
-    meetingId: 'meeting-1', sourceSegmentId: 'segment-1', nextLiveSessionId: 'live-2',
-    expectedSessionId: 'session-1',
-    checkpoint: { lastFinalCueSequence: 0, finalCues: [], durableChunks: [], cueCheckpoint: null }
-  };
-  const payloadHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-  const handler = createHandler(undefined, {
-    meetingCheckpointService: {
-      async updateCheckpoint({ protocol }) {
-        assert.equal(protocol, 'legacy');
-        order.push('flush');
-        return { checkpoint: persistedCheckpoint };
-      }
-    },
-    legacyResumeService: {
-      async execute(input) {
-        order.push('resume');
-        calls.push(input);
-        return {
-          meeting: { id: 'meeting-1' },
-          interruptedSegment: { id: 'segment-1' },
-          segment: {
-            id: 'segment-2', sequence: 2, session_id: 'session-1',
-            settings_snapshot: {
-              sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
-              globalGlossaryEntries: input.globalGlossaryEntries,
-              glossaryEntries: [{ source: '你好', target: 'su3cl3' }],
-              privateGlossaryEntries: []
-            }
-          },
-          operation: { operationId: 'continue-1', payloadHash, sourceSegmentId: 'segment-1' }
-        };
-      }
-    },
-    meetingRepository: {
-      async getMeeting() { return { id: 'meeting-1', targetLanguageCode: 'en' }; }
-    },
-    glossaryController: {
-      async listEntries() { return [{ id: 'global-1', source: '你好', target: 'global', scope: 'live' }]; }
-    }
-  });
-  const response = await request(handler, {
-    url: '/api/meetings/meeting-1/recording/legacy-resume',
-    body: { ...payload, operationId: 'continue-1', payloadHash }
-  });
-  assert.equal(response.status, 201);
-  assert.equal(response.json().segment.id, 'segment-2');
-  assert.deepEqual(response.json().liveGlossaryEntries, [
-    { source: '你好', target: 'su3cl3', replacementAliases: [] }
-  ]);
-  assert.equal(calls[0].payloadHash, payloadHash);
-  assert.equal(calls[0].ownerUserId, 'owner-1');
-  assert.deepEqual(order, ['flush', 'resume']);
-  assert.strictEqual(calls[0].checkpoint, persistedCheckpoint);
+test('legacy lifecycle content routes reject before RPC and audio persistence', async () => {
+  let lifecycleCalls = 0;
+  let audioCalls = 0;
+  const handler = createHandler({
+    async execute() { lifecycleCalls += 1; return lifecycleResult(); }
+  }, { meetingAudioService: {
+    async startUpload() { audioCalls += 1; },
+    async completeArtifact() { audioCalls += 1; }
+  } });
+  const routes = [
+    ['/api/meetings/meeting-1/recording/legacy-resume', 'POST'],
+    ['/api/meetings/meeting-1/segments/segment-1/checkpoint', 'PUT'],
+    ['/api/meetings/meeting-1/segments/segment-1/audio-uploads', 'POST'],
+    ['/api/meetings/meeting-1/audio-artifacts/artifact-1/complete', 'POST']
+  ];
+  for (const [url, method] of routes) {
+    const response = await request(handler, { url, method, body: {} });
+    assert.equal(response.status, 410, `${method} ${url}`);
+    assert.equal(response.json().error.code, 'meeting_content_local_only');
+    assert.ok(response.json().error.requestId);
+  }
+  assert.equal(lifecycleCalls, 0);
+  assert.equal(audioCalls, 0);
 });
-
-test('legacy resume falls back to source Segment glossary when refresh fails before RPC', async () => {
-  const calls = [];
-  const logs = [];
-  const payload = {
-    meetingId: 'meeting-1', sourceSegmentId: 'segment-1', nextLiveSessionId: 'live-2',
-    expectedSessionId: 'session-1',
-    checkpoint: { lastFinalCueSequence: 0, finalCues: [], durableChunks: [], cueCheckpoint: null }
-  };
-  const payloadHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-  const fallbackEntries = [{ source: '你好', target: 'old-global', replacementAliases: [] }];
-  const handler = createHandler(undefined, {
-    legacyResumeService: {
-      async execute(input) {
-        calls.push(input);
-        return {
-          meeting: { id: 'meeting-1' },
-          interruptedSegment: { id: 'segment-1' },
-          segment: {
-            id: 'segment-2', sequence: 2, session_id: 'session-1',
-            settings_snapshot: {
-              sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
-              globalGlossaryEntries: input.globalGlossaryEntries,
-              glossaryEntries: [], privateGlossaryEntries: []
-            }
-          },
-          operation: { operationId: 'continue-1', payloadHash, sourceSegmentId: 'segment-1' }
-        };
-      }
-    },
-    meetingRepository: {
-      async getMeeting() { return { id: 'meeting-1', targetLanguageCode: 'en' }; },
-      async listMeetingSegments() {
-        return [{ id: 'segment-1', settingsSnapshot: { globalGlossaryEntries: fallbackEntries } }];
-      }
-    },
-    glossaryController: {
-      async listEntries() {
-        const error = new Error('temporary glossary read failure');
-        error.code = 'supabase_request_failed';
-        error.status = 503;
-        throw error;
-      }
-    },
-    requestLogger(event) { logs.push(event); }
-  });
-
-  const response = await request(handler, {
-    url: '/api/meetings/meeting-1/recording/legacy-resume',
-    body: { ...payload, operationId: 'continue-1', payloadHash }
-  });
-
-  assert.equal(response.status, 201);
-  assert.deepEqual(calls[0].globalGlossaryEntries, fallbackEntries);
-  const event = logs.find((entry) => entry.event === 'legacy_resume_command');
-  assert.equal(event.glossarySnapshotSource, 'source_segment_fallback');
-  assert.equal(event.glossaryRefreshErrorCode, 'supabase_request_failed');
-  assert.equal(event.rpcAttempted, true);
-  assert.equal(event.commitStatus, 'committed');
-});
-
 test('recording lifecycle conflict returns stable HTTP 409 code', async () => {
   const handler = createHandler({
     async execute() {
@@ -217,6 +121,31 @@ test('stale Meeting expiration invokes the bounded lifecycle RPC', async () => {
   assert.throws(() => service.expireStaleMeetings({ limit: 11 }), /limit must be an integer from 1 to 10/u);
 });
 
+test('lifecycle RPC response projects nested records to metadata only', async () => {
+  const service = createSupabaseMeetingLifecycleService({
+    env: { SUPABASE_URL: 'https://supabase.example', SUPABASE_SECRET_KEY: 'service-key' },
+    fetchImpl: async () => ({
+      ok: true, status: 200,
+      async json() { return [{
+        operationId: 'operation-1', targetSessionId: 'session-1', targetSegmentId: 'segment-1',
+        meeting: { id: 'meeting-1', status: 'active', lifecycle_version: 1, settings: { checkpoint: 'secret' } },
+        session: { id: 'session-1', meeting_id: 'meeting-1', status: 'active', current_segment_id: 'segment-1', payload: { transcript: 'secret' } },
+        segment: { id: 'segment-1', session_id: 'session-1', status: 'active', sequence: 0, checkpoint: { cue: 'secret' } },
+        lease: { leaseId: 'lease-1', fenceToken: 1, expiresAt: '2026-09-22T00:00:10Z', audio: 'secret' }
+      }]; }
+    })
+  });
+  const result = await service.execute({
+    ownerUserId: 'owner-1', meetingId: 'meeting-1', command: 'start', operationId: 'operation-1',
+    expectedLifecycleVersion: 0, principalType: 'user', principalId: 'owner-1'
+  });
+  assert.deepEqual(Object.keys(result.meeting).sort(), ['id', 'lifecycle_version', 'status']);
+  assert.deepEqual(Object.keys(result.session).sort(), ['current_segment_id', 'id', 'meeting_id', 'status']);
+  assert.deepEqual(Object.keys(result.segment).sort(), ['id', 'live_session_id', 'sequence', 'session_id', 'status']);
+  assert.deepEqual(Object.keys(result.lease).sort(), ['expiresAt', 'fenceToken', 'leaseId']);
+  assert.equal(JSON.stringify(result).includes('secret'), false);
+});
+
 test('recording lease heartbeat does not execute a lifecycle transition', async () => {
   const calls = [];
   const handler = createHandler({
@@ -235,189 +164,6 @@ test('recording lease heartbeat does not execute a lifecycle transition', async 
   assert.equal(response.status, 200);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].meetingId, 'meeting-1');
-});
-
-test('lifecycle v2 recording writes reject a stale fence before persistence', async () => {
-  const calls = [];
-  const handler = createHandler({
-    async validateWrite(input) {
-      calls.push(input);
-      const error = new Error('recorder_lease_invalid');
-      error.code = 'recorder_lease_invalid';
-      error.status = 409;
-      throw error;
-    }
-  });
-
-  const response = await request(handler, {
-    method: 'PUT',
-    url: '/api/meetings/meeting-1/segments/segment-1/checkpoint',
-    headers: {
-      'x-meeting-session-id': 'session-1',
-      'x-meeting-segment-id': 'segment-1',
-      'x-meeting-lease-id': 'stale-lease',
-      'x-meeting-fence-token': '1'
-    },
-    body: {}
-  });
-
-  assert.equal(response.status, 409);
-  assert.equal(response.json().error.code, 'recorder_lease_invalid');
-  assert.equal(calls[0].segmentId, 'segment-1');
-  assert.equal(calls[0].fenceToken, 1);
-});
-
-test('audio upload-start validates the lifecycle fence before creating an artifact', async () => {
-  const validations = [];
-  const uploads = [];
-  const handler = createHandler({
-    async validateWrite(input) {
-      validations.push(input);
-    }
-  }, {
-    meetingAudioService: {
-      async beginUpload(input) {
-        uploads.push(input);
-        return { id: 'artifact-1', status: 'uploading' };
-      }
-    }
-  });
-
-  const response = await request(handler, {
-    url: '/api/meetings/meeting-1/segments/segment-1/audio-uploads',
-    headers: {
-      'x-meeting-session-id': 'session-1',
-      'x-meeting-segment-id': 'segment-1',
-      'x-meeting-lease-id': 'lease-1',
-      'x-meeting-fence-token': '2'
-    },
-    body: { mimeType: 'audio/webm', byteSize: 64 }
-  });
-
-  assert.equal(response.status, 201);
-  assert.deepEqual(validations, [{
-    meetingId: 'meeting-1',
-    sessionId: 'session-1',
-    segmentId: 'segment-1',
-    leaseId: 'lease-1',
-    fenceToken: 2
-  }]);
-  assert.deepEqual(uploads, [{
-    meetingId: 'meeting-1',
-    segmentId: 'segment-1',
-    mimeType: 'audio/webm',
-    byteSize: 64
-  }]);
-});
-
-test('audio artifact completion bypasses an expired recorder lease', async () => {
-  const handler = createHandler({
-    async validateWrite() {
-      throw new Error('must not validate terminal artifact completion');
-    }
-  }, {
-    meetingAudioService: {
-      async completeUpload({ meetingId, artifactId }) {
-        return { id: artifactId, meetingId, status: 'ready' };
-      }
-    }
-  });
-
-  const response = await request(handler, {
-    url: '/api/meetings/meeting-1/audio-artifacts/artifact-1/complete',
-    body: {}
-  });
-
-  assert.equal(response.status, 200);
-  assert.equal(response.json().status, 'ready');
-});
-
-test('legacy resume route logs safe RPC failure stage and SQLSTATE', async () => {
-  const logs = [];
-  const payload = {
-    meetingId: 'meeting-1',
-    sourceSegmentId: 'segment-1',
-    nextLiveSessionId: 'live-2',
-    expectedSessionId: 'session-1',
-    checkpoint: {
-      lastFinalCueSequence: 0,
-      finalCues: [],
-      durableChunks: [],
-      cueCheckpoint: null
-    }
-  };
-  const payloadHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-  const handler = createHandler(undefined, {
-    requestLogger(event) {
-      logs.push(event);
-    },
-    legacyResumeService: {
-      async execute() {
-        const error = new Error('private provider message');
-        error.code = 'supabase_request_failed';
-        error.status = 503;
-        error.supabaseStatus = 503;
-        error.supabaseCode = '57014';
-        error.supabaseResource = 'resume_legacy_meeting_segment';
-        error.supabaseOperation = 'RPC';
-        throw error;
-      }
-    },
-    meetingRepository: {
-      async getMeeting() {
-        return { id: 'meeting-1', targetLanguageCode: 'en', lifecycleVersion: 7 };
-      }
-    },
-    glossaryController: {
-      async listEntries() {
-        return [];
-      }
-    }
-  });
-
-  const response = await request(handler, {
-    url: '/api/meetings/meeting-1/recording/legacy-resume',
-    body: { ...payload, operationId: 'continue-1', payloadHash }
-  });
-
-  assert.equal(response.status, 503);
-  assert.equal(response.json().error.code, 'supabase_request_failed');
-  const event = logs.find((entry) => entry.event === 'legacy_resume_command');
-  assert.equal(event.requestId, response.json().error.requestId);
-  assert.equal(event.operationId, 'continue-1');
-  assert.equal(event.sourceSegmentId, 'segment-1');
-  assert.equal(event.nextLiveSessionId, 'live-2');
-  assert.equal(event.sessionId, 'session-1');
-  assert.equal(event.lifecycleVersion, 7);
-  assert.equal(event.rpcName, 'resume_legacy_meeting_segment');
-  assert.equal(event.rpcAttempted, true);
-  assert.equal(event.failureStage, 'resume_rpc');
-  assert.equal(event.commitStatus, 'unknown');
-  assert.equal(event.supabaseStatus, 503);
-  assert.equal(event.supabaseCode, '57014');
-  assert.doesNotMatch(JSON.stringify(event), /private provider message/u);
-});
-
-test('legacy resume reports unavailable server capability before any RPC', async () => {
-  const logs = [];
-  const handler = createHandler(undefined, {
-    legacyResumeService: null,
-    requestLogger(event) { logs.push(event); }
-  });
-
-  const response = await request(handler, {
-    url: '/api/meetings/meeting-1/recording/legacy-resume',
-    body: { sourceSegmentId: 'segment-1' }
-  });
-
-  assert.equal(response.status, 503);
-  assert.equal(response.json().error.code, 'cloud_capability_unavailable');
-  const event = logs.find((entry) => entry.event === 'legacy_resume_command');
-  assert.equal(event.failureStage, 'capability_composition');
-  assert.equal(event.cloudCapabilitySource, 'legacy_resume_service');
-  assert.equal(event.rpcName, null);
-  assert.equal(event.rpcAttempted, false);
-  assert.equal(event.commitStatus, 'not_started');
 });
 
 function createHandler(meetingLifecycleService, { meetingAudioService, ...extra } = {}) {
@@ -472,3 +218,50 @@ async function request(handler, { url, body, method = 'POST', headers = {} }) {
   const raw = Buffer.concat(chunks).toString('utf8');
   return { status: res.statusCode, json: () => JSON.parse(raw) };
 }
+
+test('operation lookup returns only authorized metadata and derives owner scope', async () => {
+  const calls = [];
+  const handler = createHandler({
+    async lookupOperation(input) {
+      calls.push(input);
+      return { status: 'committed', command: 'stop', operationId: input.operationId,
+        resultingLifecycleVersion: 2, sessionId: 'session-1', segmentId: null };
+    }
+  });
+  const response = await request(handler, {
+    method: 'GET', url: '/api/meetings/meeting-1/recording/operations/operation-1'
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls[0], {
+    ownerUserId: 'owner-1', principalType: 'user', principalId: 'member-1',
+    forceAllowed: false, meetingId: 'meeting-1', operationId: 'operation-1'
+  });
+  assert.deepEqual(Object.keys(response.json()).sort(),
+    ['command', 'operationId', 'resultingLifecycleVersion', 'segmentId', 'sessionId', 'status'].sort());
+});
+
+test('lease recovery rejects content payload before RPC and preserves principal scope', async () => {
+  const calls = [];
+  const handler = createHandler({
+    async recoverLease(input) {
+      calls.push(input);
+      return { status: 'ready', attemptOperationId: 'attempt-1', leaseId: 'lease-2', fenceToken: 2 };
+    }
+  });
+  const url = '/api/meetings/meeting-1/recording/lease/recover';
+  const body = {
+    originalOperationId: 'operation-1', recoveryOperationId: 'recovery-1',
+    command: 'stop', expectedLifecycleVersion: 1,
+    sessionId: 'session-1', segmentId: 'segment-1',
+    priorLeaseId: 'lease-1', priorFenceToken: 1
+  };
+  const rejected = await request(handler, { url, body: { ...body, checkpoint: { finalCues: [] } } });
+  assert.equal(rejected.status, 400);
+  assert.equal(calls.length, 0);
+  const response = await request(handler, { url, body });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls[0], {
+    ownerUserId: 'owner-1', principalType: 'user', principalId: 'member-1',
+    forceAllowed: false, meetingId: 'meeting-1', ...body
+  });
+});

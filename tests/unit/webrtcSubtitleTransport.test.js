@@ -554,11 +554,54 @@ test('stale reconnect timer cannot close an already connected replacement genera
   configureLivePipelineTrace(false);
 });
 
+test('Viewer replay cursor acknowledges only validated delivery', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  let accept = false;
+  const transport = createViewerTransport({ timers, onEnvelope: (packet) => (
+    accept ? { sourceId: packet.sourceId, sequence: packet.sequence } : null
+  ) });
+  const snapshot = { protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-1',
+    sourceId: 'source-1', sequence: 1, cues: [{ cueId: 'cue-1', sourceText: 'one' }] };
+  const open = async () => {
+    await flush(); await flush();
+    const peer = FakePeerConnection.instances.at(-1);
+    const channel = new FakeDataChannel(peer);
+    peer.ondatachannel({ channel });
+    channel.open();
+    return channel;
+  };
+  const reconnect = async (channel) => {
+    channel.remoteClose();
+    const timer = timers.find((item) => item.ms === 1_000 && !item.cleared);
+    assert.ok(timer);
+    timer.cleared = true;
+    await timer.fn();
+    return open();
+  };
+  transport.start();
+  try {
+    let channel = await open();
+    channel.receive(snapshot);
+    channel = await reconnect(channel);
+    assert.equal(channel.sent.at(-1).afterSequence, 0);
+    accept = true;
+    channel.receive(snapshot);
+    channel = await reconnect(channel);
+    assert.equal(channel.sent.at(-1).afterSequence, 1);
+  } finally {
+    await transport.stop();
+  }
+});
+
 test('Viewer recovery replays missing cues before continuing live delivery', async () => {
   FakePeerConnection.instances = [];
   const timers = [];
   const received = [];
-  const transport = createViewerTransport({ timers, onEnvelope: (packet) => received.push(packet) });
+  const transport = createViewerTransport({ timers, onEnvelope: (packet) => {
+    received.push(packet);
+    return { sourceId: packet.sourceId, sequence: packet.toSequence ?? packet.sequence };
+  } });
   transport.start(); await flush(); await flush();
   const firstPeer = FakePeerConnection.instances[0];
   const firstChannel = new FakeDataChannel(firstPeer);
@@ -1174,15 +1217,18 @@ test('offline recovery pauses retry counting and resumes immediately on online',
     onStatus: (status) => statuses.push(status),
   });
   transport.start();
-  await flush();
-  assert.equal(statuses.at(-1).reason, 'network_offline');
-  assert.equal(statuses.at(-1).attempt, 0);
-  online = true;
-  listeners.get('online')();
-  await flush(); await flush();
-  assert.equal(joins, 2);
-  assert.equal(FakePeerConnection.instances.length, 1);
-  await transport.stop();
+  try {
+    await flush();
+    assert.equal(statuses.at(-1).reason, 'network_offline');
+    assert.equal(statuses.at(-1).attempt, 0);
+    online = true;
+    listeners.get('online')();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(joins, 2);
+    assert.equal(FakePeerConnection.instances.length, 1);
+  } finally {
+    await transport.stop();
+  }
 });
 
 test('failed Device signaling schedules reconnect without rejecting recording startup', async () => {

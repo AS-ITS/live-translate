@@ -8,6 +8,7 @@ function fixture(initialNow = 0) {
   const recordings = new Map();
   const active = new Map();
   const removed = [];
+  const gapsCleared = [];
   let failRemoval = false;
   const manifestStore = {
     getRetention: async (id) => records.get(id) || null,
@@ -47,10 +48,12 @@ function fixture(initialNow = 0) {
       if (failRemoval) { failRemoval = false; throw new Error('OPFS failed'); }
       removed.push(`opfs:${id}`);
     } },
+    gapStore: { clearMeeting: async (id) => { gapsCleared.push(id); } },
     locks,
     now: () => now
   });
-  return { retention, records, recordings, active, removed, setNow: (value) => { now = value; }, failOnce: () => { failRemoval = true; } };
+  return { retention, records, recordings, active, removed, gapsCleared,
+    setNow: (value) => { now = value; }, failOnce: () => { failRemoval = true; } };
 }
 
 test('cross-computer completion keeps one durable deadline and clears only after expiry', async () => {
@@ -66,6 +69,7 @@ test('cross-computer completion keeps one durable deadline and clears only after
   f.setNow(200);
   assert.equal((await f.retention.check()).cleared, 1);
   assert.deepEqual(f.removed, ['opfs:meeting-a', 'idb:meeting-a']);
+  assert.deepEqual(f.gapsCleared, ['meeting-a']);
   await assert.rejects(f.retention.assertReadable('meeting-a'), { code: 'meeting_content_expired', status: 410 });
 });
 

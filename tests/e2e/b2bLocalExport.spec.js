@@ -50,6 +50,11 @@ async function exportedText(page) {
 test('IndexedDB unassigned final Cues survive an A/B switch and reject failed reads', async ({ page }) => {
   await installE2EAuth(page);
   let conflictingB = false;
+  let cloudExportCalls = 0;
+  await page.route(/\/api\/meetings\/[^/]+\/exports(?:\/|$)/u, async (route) => {
+    cloudExportCalls += 1;
+    await route.fulfill({ status: 500 });
+  });
   await page.route(/\/api\/meetings\/(A|B|C)$/, async (route) => {
     const id = new URL(route.request().url()).pathname.split('/').at(-1);
     const detail = meetingDetail(id);
@@ -128,14 +133,16 @@ test('IndexedDB unassigned final Cues survive an A/B switch and reject failed re
   await page.evaluate(() => new Promise(requestAnimationFrame));
   await expect(page.getByRole('button', { name: '開始匯出' })).toBeEnabled();
   const bText = await exportedText(page);
-  expect(bText.match(/Translation B/g)).toHaveLength(2);
+  expect(bText.match(/Local translation B/g)).toHaveLength(1);
   expect(bText).toContain('Local translation B');
+  expect(bText).not.toContain('Cloud changed B');
   expect(bText).not.toContain('Translation A');
   expect(bText).not.toContain('Partial B');
   expect(bText).not.toContain('Dismissed B');
 
   await openExport(page, 'C');
-  await expect(page.getByRole('region', { name: '雲端字幕匯出' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '開始匯出' })).toBeDisabled();
+  await expect(page.getByText('選擇的字幕內容尚無可匯出文字。')).toBeVisible();
   await expect(page.getByRole('alert')).toHaveCount(0);
 
   conflictingB = true;
@@ -165,4 +172,5 @@ test('IndexedDB unassigned final Cues survive an A/B switch and reject failed re
   await page.getByRole('navigation', { name: '會議內容目錄' }).getByRole('button', { name: '匯出' }).click();
   await expect(page.getByRole('button', { name: '開始匯出' })).toBeEnabled();
   expect(await exportedText(page)).toContain('Translation B');
+  expect(cloudExportCalls).toBe(0);
 });

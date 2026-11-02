@@ -1,32 +1,18 @@
 import { expect, test } from '@playwright/test';
+import { installHostViewerHarness } from './hostViewerHarness.js';
 
 test('Viewer keeps receiving and following cues when earlier live cues lack segment order', async ({ page }) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(window, 'RTCPeerConnection', { configurable: true, value: undefined });
-    class MockEventSource extends EventTarget {
-      static instances = [];
-      constructor() {
-        super();
-        MockEventSource.instances.push(this);
-        queueMicrotask(() => this.onopen?.(new Event('open')));
-      }
-      close() { this.readyState = 2; }
-    }
-    window.EventSource = MockEventSource;
-    window.__emitCue = (payload) => MockEventSource.instances.at(-1)?.dispatchEvent(
-      new MessageEvent('cue.append', { data: JSON.stringify(payload) })
-    );
-    window.__disconnectViewer = () => MockEventSource.instances.at(-1)?.onerror?.(new Event('error'));
-  });
-
   const snapshotCues = Array.from({ length: 25 }, (_, index) => ({
     cueId: `old-${index + 1}`, segmentId: 'segment-1',
     sequence: index + 1, sourceText: `歷史字幕 ${index + 1}`, sourceVersion: 1,
   }));
-  await page.route(/\/api\/shared-meetings\/code\/LIVEORDER(?:\?.*)?$/, (route) => route.fulfill({
-    json: { meeting: { id: 'meeting-1', name: '即時字幕測試', status: 'active' },
-      cues: snapshotCues, cursor: { eventId: 25, cueSequence: 25 } },
-  }));
+  const segments = [
+    { id: 'segment-1', sessionId: 'session-1', sequence: 1 },
+    { id: 'segment-2', sessionId: 'session-2', sequence: 2 },
+  ];
+  const state = await installHostViewerHarness(page, {
+    code: 'LIVEORDER', meetingId: 'meeting-1', meetingName: '即時字幕測試', cues: snapshotCues, segments,
+  });
   await page.goto('/#viewer?code=LIVEORDER');
   const viewport = page.getByTestId('meeting-viewer-cue-viewport');
   const viewerHeader = page.getByTestId('viewer-share-header');
@@ -37,8 +23,10 @@ test('Viewer keeps receiving and following cues when earlier live cues lack segm
   await expect(viewport.locator('[data-cue-id="old-25"]')).toBeVisible();
 
   async function publish(eventId, cueId, segmentId, segmentSequence, sequence, sourceText, extra = {}) {
-    await page.evaluate((payload) => window.__emitCue(payload), {
-      eventId, type: 'cue.append', cue: { cueId, segmentId, ...(segmentSequence ? { segmentSequence } : {}),
+    await page.evaluate(({ cue, type }) => window.__hostPublish(cue, type), {
+      type: extra.translationVersion ? 'cue.update' : 'cue.append',
+      cue: { cueId, meetingId: 'meeting-1', sessionId: segmentId === 'segment-1' ? 'session-1' : 'session-2',
+        segmentId, ...(segmentSequence ? { segmentSequence } : {}),
         sequence, sourceText, sourceVersion: 1, status: 'final', ...extra },
     });
   }
@@ -79,9 +67,12 @@ test('Viewer keeps receiving and following cues when earlier live cues lack segm
     .toBe('25');
 
   // A fresh snapshot fills the offline gap; the new subscription must still receive live cues.
-  snapshotCues.push({ cueId: 'new-F', segmentId: 'segment-2', segmentSequence: 2,
-    sequence: 6, sourceText: '斷線期間字幕 F', sourceVersion: 1 });
-  await page.evaluate(() => window.__disconnectViewer());
+  await page.evaluate(() => {
+    window.__hostClose();
+    window.__hostPublish({ cueId: 'new-F', meetingId: 'meeting-1', sessionId: 'session-2',
+      segmentId: 'segment-2', segmentSequence: 2, sequence: 6,
+      sourceText: '斷線期間字幕 F', sourceVersion: 1 });
+  });
   await expect(viewerHeader).toBeVisible();
   await expect(viewerHeader).toHaveAttribute('data-reconnect-marker', 'stable');
   await expect(viewerHeader.getByRole('link', { name: 'Viewer 分享連結' })).toHaveText(initialShareUrl);
@@ -92,6 +83,7 @@ test('Viewer keeps receiving and following cues when earlier live cues lack segm
   await expect.poll(() => viewport.evaluate((node) =>
     [...node.querySelectorAll('.viewer-cue-row')].at(-1)?.dataset.cueId)).toBe('new-G');
   await expect(viewerHeader).toHaveAttribute('data-reconnect-marker', 'stable');
+  expect(state.cloudContentReads).toBe(0);
 });
 
 test('Viewer waits for a late Recorder then receives snapshot and live Cue updates', async ({ page }) => {
@@ -156,10 +148,16 @@ test('Viewer waits for a late Recorder then receives snapshot and live Cue updat
   });
 
   const signaling = { readyCount: 0, participantId: '', negotiationId: '', sequence: 0, offered: false };
-  await page.route(/\/api\/shared-meetings\/code\/LATE-RECORDER(?:\?.*)?$/, (route) => route.fulfill({
+  let cloudContentReads = 0;
+  await page.route(/\/api\/shared-meetings\/code\/LATE-RECORDER(?:\/events)?(?:\?.*)?$/, (route) => {
+    cloudContentReads += 1;
+    return route.fulfill({ status: 599, json: { error: { code: 'cloud_cue_forbidden' } } });
+  });
+  await page.route(/\/api\/shared-meetings\/code\/LATE-RECORDER\/metadata(?:\?.*)?$/, (route) => route.fulfill({
     json: {
-      meeting: { id: 'meeting-late-recorder', name: 'Late Recorder', status: 'active' },
-      recordingState: 'recording', cues: [], cursor: { eventId: 0, cueSequence: 0 },
+      meeting: { id: 'meeting-late-recorder', name: 'Late Recorder', status: 'active', lifecycleVersion: 1 },
+      recordingState: 'recording',
+      segments: [{ id: 'segment-1', sessionId: 'session-1', sequence: 1 }],
     },
   }));
   await page.route('**/api/webrtc/meeting-late-recorder/**', async (route) => {
@@ -204,19 +202,19 @@ test('Viewer waits for a late Recorder then receives snapshot and live Cue updat
   await page.evaluate(() => window.__receiveLateJoinPacket({
     protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-late-recorder',
     sourceId: 'recorder-source', sequence: 1,
-    cues: [{ cueId: 'cue-1', segmentId: 'segment-1', sequence: 1, revision: 1,
+    cues: [{ cueId: 'cue-1', meetingId: 'meeting-late-recorder', sessionId: 'session-1', segmentId: 'segment-1', sequence: 1, revision: 1,
       sourceText: '初始字幕', translatedText: 'Initial subtitle', sourceVersion: 1, translationVersion: 1 }],
   }));
   await page.evaluate(() => window.__receiveLateJoinPacket({
     protocol: 'subtitle-webrtc/v1', type: 'cue.update', meetingId: 'meeting-late-recorder',
     sourceId: 'recorder-source', sequence: 2,
-    cue: { cueId: 'cue-1', segmentId: 'segment-1', sequence: 1, revision: 2,
+    cue: { cueId: 'cue-1', meetingId: 'meeting-late-recorder', sessionId: 'session-1', segmentId: 'segment-1', sequence: 1, revision: 2,
       sourceText: '修正字幕', translatedText: 'Corrected subtitle', sourceVersion: 2, translationVersion: 2 },
   }));
   await page.evaluate(() => window.__receiveLateJoinPacket({
     protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-late-recorder',
     sourceId: 'recorder-source', sequence: 3,
-    cue: { cueId: 'cue-2', segmentId: 'segment-1', sequence: 2, revision: 1,
+    cue: { cueId: 'cue-2', meetingId: 'meeting-late-recorder', sessionId: 'session-1', segmentId: 'segment-1', sequence: 2, revision: 1,
       sourceText: '後續字幕', translatedText: 'Following subtitle', sourceVersion: 1, translationVersion: 1 },
   }));
 
@@ -230,7 +228,7 @@ test('Viewer waits for a late Recorder then receives snapshot and live Cue updat
         protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-late-recorder',
         sourceId: 'recorder-source', sequence: sequence + 1,
         cue: {
-          cueId: `cue-${sequence}`, segmentId: 'segment-1', sequence, revision: 1,
+          cueId: `cue-${sequence}`, meetingId: 'meeting-late-recorder', sessionId: 'session-1', segmentId: 'segment-1', sequence, revision: 1,
           sourceText: `持續字幕 ${sequence}`, translatedText: `Continuous subtitle ${sequence}`,
           sourceVersion: 1, translationVersion: 1
         },
@@ -240,6 +238,7 @@ test('Viewer waits for a late Recorder then receives snapshot and live Cue updat
 
   await expect(viewport.locator('[data-cue-id="cue-20"]')).toContainText('Continuous subtitle 20');
   await expect(page.getByRole('status')).toContainText('已連線');
+  expect(cloudContentReads).toBe(0);
 });
 
 test('Viewer keeps fullscreen presentation state across DataChannel generation recovery', async ({ page }) => {
@@ -270,7 +269,19 @@ test('Viewer keeps fullscreen presentation state across DataChannel generation r
         this.readyState = 'open';
         this.emit('open');
       }
-      send(value) { this.sent.push(JSON.parse(value)); }
+      send(value) {
+        const packet = JSON.parse(value);
+        this.sent.push(packet);
+        if (packet.type === 'replay.request' && window.__viewerChannels.length === 1) {
+          queueMicrotask(() => this.receive({
+            protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-fullscreen',
+            sourceId: 'recorder-source', sequence: 1,
+            cues: [{ cueId: 'cue-1', meetingId: 'meeting-fullscreen', sessionId: 'session-1',
+              segmentId: 'segment-1', sequence: 1, sourceText: '初始原文',
+              translatedText: 'Initial translation', sourceVersion: 1, translationVersion: 1 }],
+          }));
+        }
+      }
       receive(value) {
         this.emit('message', new MessageEvent('message', { data: JSON.stringify(value) }));
       }
@@ -311,12 +322,16 @@ test('Viewer keeps fullscreen presentation state across DataChannel generation r
   });
 
   const signaling = { participantId: '', negotiationId: '', offeredNegotiations: new Set(), sequence: 0 };
-  await page.route(/\/api\/shared-meetings\/code\/FULLSCREEN(?:\?.*)?$/, (route) => route.fulfill({
+  let cloudContentReads = 0;
+  await page.route(/\/api\/shared-meetings\/code\/FULLSCREEN(?:\/events)?(?:\?.*)?$/, (route) => {
+    cloudContentReads += 1;
+    return route.fulfill({ status: 599, json: { error: { code: 'cloud_cue_forbidden' } } });
+  });
+  await page.route(/\/api\/shared-meetings\/code\/FULLSCREEN\/metadata(?:\?.*)?$/, (route) => route.fulfill({
     json: {
-      meeting: { id: 'meeting-fullscreen', name: '全螢幕重連測試', status: 'active' },
-      cues: [{ cueId: 'cue-1', segmentId: 'segment-1', segmentSequence: 1, sequence: 1,
-        sourceText: '初始原文', translatedText: 'Initial translation', sourceVersion: 1, translationVersion: 1 }],
-      cursor: { eventId: 1, cueSequence: 1 },
+      meeting: { id: 'meeting-fullscreen', name: '全螢幕重連測試', status: 'active', lifecycleVersion: 1 },
+      recordingState: 'active',
+      segments: [{ id: 'segment-1', sessionId: 'session-1', sequence: 1 }],
     },
   }));
   await page.route('**/api/webrtc/meeting-fullscreen/**', async (route) => {
@@ -373,13 +388,13 @@ test('Viewer keeps fullscreen presentation state across DataChannel generation r
     protocol: 'subtitle-webrtc/v1', type: 'replay.response', meetingId: 'meeting-fullscreen',
     sourceId: 'recorder-source', requestId: 'replay-2', fromSequence: 1, toSequence: 2,
     events: [{ protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-fullscreen',
-      sourceId: 'recorder-source', sequence: 2, cue: { cueId: 'cue-2', segmentId: 'segment-1',
+      sourceId: 'recorder-source', sequence: 2, cue: { cueId: 'cue-2', meetingId: 'meeting-fullscreen', sessionId: 'session-1', segmentId: 'segment-1',
         segmentSequence: 1, sequence: 2, sourceText: '重連原文', translatedText: 'Recovered translation',
         sourceVersion: 1, translationVersion: 1 } }],
   }));
   await page.evaluate(() => window.__receiveViewerPacket({
     protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-fullscreen',
-    sourceId: 'recorder-source', sequence: 3, cue: { cueId: 'cue-3', segmentId: 'segment-1',
+    sourceId: 'recorder-source', sequence: 3, cue: { cueId: 'cue-3', meetingId: 'meeting-fullscreen', sessionId: 'session-1', segmentId: 'segment-1',
       segmentSequence: 1, sequence: 3, sourceText: '最新原文', translatedText: 'Latest translation',
       sourceVersion: 1, translationVersion: 1 },
   }));
@@ -391,49 +406,22 @@ test('Viewer keeps fullscreen presentation state across DataChannel generation r
   await expect(page.getByTestId('viewer-translation-toggle')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('img', { name: 'Viewer 分享連結 QR Code' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Viewer 分享連結' })).toHaveAttribute('href', /#viewer\?code=FULLSCREEN$/);
+  expect(cloudContentReads).toBe(0);
 });
 
 test('Viewer shows recovery failure in fullscreen and reloads only after the user clicks', async ({ page }) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(window, 'RTCPeerConnection', { configurable: true, value: undefined });
-    const nativeSetTimeout = window.setTimeout.bind(window);
-    window.setTimeout = (callback, delay = 0, ...args) => nativeSetTimeout(callback, delay >= 1_000 ? 0 : delay, ...args);
-    class MockEventSource extends EventTarget {
-      static instances = [];
-      constructor() {
-        super();
-        MockEventSource.instances.push(this);
-        queueMicrotask(() => this.onopen?.(new Event('open')));
-      }
-      close() { this.readyState = 2; }
-    }
-    window.EventSource = MockEventSource;
-    window.__failViewerTransport = () => MockEventSource.instances.at(-1)?.onerror?.(new Event('error'));
-    window.__recoverViewerTransport = () => MockEventSource.instances.at(-1)?.onopen?.(new Event('open'));
-  });
-
-  let snapshotRequests = 0;
   let navigationRequests = 0;
   page.on('request', (request) => {
     if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigationRequests += 1;
   });
-  await page.route(/\/api\/shared-meetings\/code\/RECOVERY-FAILED(?:\?.*)?$/, async (route) => {
-    snapshotRequests += 1;
-    if (snapshotRequests > 1) {
-      await route.fulfill({ status: 503, json: { error: { code: 'cloud_capability_unavailable' } } });
-      return;
-    }
-    await route.fulfill({ json: {
-      meeting: { id: 'meeting-recovery-failed', name: 'Recovery failure regression' },
-      cues: [{
-        cueId: 'cue-preserved', segmentId: 'segment-1', segmentSequence: 1, sequence: 1,
-        sourceText: '保留的舊字幕', translatedText: 'Preserved subtitle', sourceVersion: 1, translationVersion: 1,
-      }],
-      cursor: { eventId: 1, cueSequence: 1 },
-      pagination: { hasMore: false, nextCursor: null },
-    } });
+  const state = await installHostViewerHarness(page, {
+    code: 'RECOVERY-FAILED', meetingId: 'meeting-recovery-failed',
+    meetingName: 'Recovery failure regression',
+    segments: [{ id: 'segment-1', sessionId: 'session-1', sequence: 1 }],
+    cues: [{ cueId: 'cue-preserved', segmentId: 'segment-1', sessionId: 'session-1',
+      sequence: 1, sourceText: '保留的舊字幕', translatedText: 'Preserved subtitle',
+      sourceVersion: 1, translationVersion: 1 }],
   });
-
   await page.goto('/#viewer?code=RECOVERY-FAILED');
   const shell = page.getByTestId('viewer-fullscreen-shell');
   const preservedCue = page.locator('[data-cue-id="cue-preserved"]');
@@ -442,7 +430,9 @@ test('Viewer shows recovery failure in fullscreen and reloads only after the use
   await page.getByTestId('viewer-fullscreen-toggle').click();
   await expect(shell).toHaveAttribute('data-fullscreen-mode', /^(native|css)$/);
 
-  await page.evaluate(() => window.__failViewerTransport());
+  state.joinFailure = true;
+  state.hostAvailable = false;
+  await page.evaluate(() => window.__hostClose());
   const failurePanel = page.getByTestId('viewer-recovery-failed');
   await expect(failurePanel).toContainText('即時字幕連線異常');
   await expect(failurePanel).toContainText('無法自動恢復即時字幕連線，請重新整理頁面後重新連線。');
@@ -453,16 +443,25 @@ test('Viewer shows recovery failure in fullscreen and reloads only after the use
   await expect(shell).toBeVisible();
   await expect(shell).toHaveAttribute('data-fullscreen-mode', /^(native|css)$/);
   expect(navigationRequests).toBe(1);
+  expect(state.joins).toBe(7);
 
-  await page.evaluate(() => window.__recoverViewerTransport());
-  await expect(page.getByTestId('viewer-recovery-failed')).toHaveCount(0);
-  await expect(page.getByRole('status')).toContainText('已連線');
-  await page.evaluate(() => window.__failViewerTransport());
+  state.joinFailure = false;
+  state.hostAvailable = true;
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('pageshow'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.waitForTimeout(100);
   await expect(failurePanel).toBeVisible();
+  expect(state.joins).toBe(7);
 
   await Promise.all([
     page.waitForNavigation(),
     reloadButton.click(),
   ]);
   expect(navigationRequests).toBe(2);
+  await expect(page.getByRole('status')).toContainText('已連線');
+  await expect(page.locator('[data-cue-id="cue-preserved"]')).toContainText('Preserved subtitle');
+  expect(state.cloudContentReads).toBe(0);
 });

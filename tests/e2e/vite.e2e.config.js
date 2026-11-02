@@ -5,9 +5,15 @@ import baseConfig from '../../vite.config.js';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export default mergeConfig(baseConfig, {
+const config = mergeConfig(baseConfig, {
   server: {
     proxy: {
+      ...(process.env.ISSUE41_SIGNALING_URL ? {
+        '/api/webrtc': {
+          target: process.env.ISSUE41_SIGNALING_URL,
+          changeOrigin: true
+        }
+      } : {}),
       '/api': {
         target: 'http://127.0.0.1:3000',
         changeOrigin: true
@@ -21,3 +27,10 @@ export default mergeConfig(baseConfig, {
     }
   }
 });
+
+if (process.env.ISSUE41_SIGNALING_URL) {
+  const { '/api/webrtc': signalingProxy, '/api': apiProxy, ...otherProxies } = config.server.proxy;
+  config.server.proxy = { '/api/webrtc': signalingProxy, ...otherProxies, '/api': apiProxy };
+}
+
+export default config;

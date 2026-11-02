@@ -29,6 +29,13 @@ export default defineConfig({
       stdout: localSession ? 'pipe' : 'ignore',
       timeout: 30_000
     },
+    ...(process.env.ISSUE41_SIGNALING_URL ? [{
+      command: 'node ../../scripts/issue41-webrtc-signaling-harness.mjs',
+      url: `${process.env.ISSUE41_SIGNALING_URL}/healthz`,
+      reuseExistingServer: false,
+      stdout: 'pipe',
+      timeout: 30_000
+    }] : []),
     {
       command: localSession
         ? 'npm run dev -- --config tests/e2e/vite.e2e.config.js --port 5174'

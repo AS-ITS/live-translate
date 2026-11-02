@@ -506,6 +506,16 @@ export function createWebRtcSubtitleTransport({
   function wireChannel(context, nextChannel) {
     if (!isCurrent(context)) return;
     context.channel = nextChannel;
+    let pendingViewerDelivery = null;
+    const deliverViewerEnvelope = (envelope, meta) => {
+      if (!isCurrent(context)) return;
+      const finish = (ack) => rememberViewerCursor(context, envelope, ack);
+      try {
+        const result = onEnvelope?.(envelope, meta);
+        if (result && typeof result.then === 'function') return result.then(finish);
+        finish(result);
+      } catch (error) { handleAsyncError(error); }
+    };
     context.adapter = createSubtitleDataChannelAdapter(nextChannel, {
       onEnvelope: (envelope) => {
         if (!isCurrent(context)) return;
@@ -543,19 +553,26 @@ export function createWebRtcSubtitleTransport({
           return;
         }
         if (role === 'viewer') {
-          rememberViewerCursor(context, envelope);
           if (envelope.type === SUBTITLE_ENVELOPE_TYPES.snapshot) {
             recoveryTrace('SNAPSHOT_RECEIVED', context, { reason: 'recovery_payload', sequence: envelope.sequence });
           } else if (envelope.type === SUBTITLE_ENVELOPE_TYPES.replayResponse) {
             recoveryTrace('REPLAY_COMPLETED', context, { reason: 'recovery_payload', sequence: envelope.toSequence });
           }
-          onEnvelope?.(envelope, Object.freeze({
+          const meta = Object.freeze({
             transportGeneration: context.epoch,
             receivedAt: Date.now(),
             cueDeliverySource: envelope.type === SUBTITLE_ENVELOPE_TYPES.snapshot
               ? 'snapshot'
               : (envelope.type === SUBTITLE_ENVELOPE_TYPES.replayResponse ? 'replay' : 'live'),
-          }));
+          });
+          const result = pendingViewerDelivery
+            ? pendingViewerDelivery.then(() => deliverViewerEnvelope(envelope, meta))
+            : deliverViewerEnvelope(envelope, meta);
+          if (result && typeof result.then === 'function') {
+            const pending = result.catch(handleAsyncError);
+            pendingViewerDelivery = pending;
+            void pending.finally(() => { if (pendingViewerDelivery === pending) pendingViewerDelivery = null; });
+          }
         }
       },
       onError: (error) => { if (isCurrent(context)) handleAsyncError(error); },
@@ -1040,24 +1057,26 @@ export function createWebRtcSubtitleTransport({
     detachLifecycleListeners();
   }
 
-  function rememberViewerCursor(context, envelope) {
+  function rememberViewerCursor(context, envelope, ack) {
     if (!isCurrent(context)) return;
-    if (typeof envelope?.sourceId === 'string' && envelope.sourceId.length > 0) {
-      if (lastSourceId !== envelope.sourceId) lastSourceSequence = 0;
-      lastSourceId = envelope.sourceId;
+    // The Viewer returns the cursor it actually committed after identity and
+    // sequence validation. Merely receiving a packet does not acknowledge it.
+    if (ack?.sourceId !== envelope?.sourceId || !Number.isSafeInteger(ack?.sequence)
+      || ack.sequence < 0 || ack.sequence > (envelope.toSequence ?? envelope.sequence)) return;
+    if (lastSourceId !== ack.sourceId) {
+      lastSourceId = ack.sourceId;
+      lastSourceSequence = 0;
     }
-    if (lastSourceId && envelope?.sourceId === lastSourceId) {
-      lastSourceSequence = Math.max(lastSourceSequence, Number(envelope.sequence) || 0, Number(envelope.toSequence) || 0);
-    }
+    lastSourceSequence = Math.max(lastSourceSequence, ack.sequence);
   }
 
   function resumeFromLifecycle() {
     if (stopped || !isOnline() || documentRef?.visibilityState === 'hidden') return;
     if (!waitingForOnline && !hadOutage && (role === 'device' ? joined : active?.connected)) return;
     waitingForOnline = false;
-    clearReconnect();
-    hadOutage = true;
-    void connect({ reconnecting: true });
+    // Browser lifecycle events must use the same recovery budget as transport failures.
+    if (reconnectTimer || retryAttempt >= MAX_RECOVERY_ATTEMPTS) return;
+    scheduleReconnect('browser_resumed', { immediate: true });
   }
 
   function handleVisibilityChange() {

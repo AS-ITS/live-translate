@@ -3,7 +3,21 @@ import { authenticatedFetch } from '../lib/accessToken.js';
 import { mergeMeetingCues } from '../lib/meetingViewerState.js';
 import { createWebRtcSubtitleTransport } from './subtitleTransport.js';
 
-export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = 'idle', cues = [], segmentId = null, segmentSequence = null, segments = [] } = {}) {
+export function hostViewerCuesFromLocalRecords(meetingId, records = []) {
+  if (!meetingId || !Array.isArray(records)) return [];
+  return mergeMeetingCues([], records.filter((record) => record?.meetingId === meetingId
+    && record?.segmentId && record?.sessionId && record?.cue?.status === 'final'
+    && (!record.cue.meetingId || record.cue.meetingId === meetingId)
+    && (!record.cue.segmentId || record.cue.segmentId === record.segmentId)
+    && (!record.cue.sessionId || record.cue.sessionId === record.sessionId)
+    && record.cue.cueId === record.cueId
+    && record.cue.sequence === record.sequence)
+    .map((record) => ({ ...record.cue, meetingId,
+      sessionId: record.sessionId, segmentId: record.segmentId, sequence: record.sequence })));
+}
+
+export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = 'idle', cues = [],
+  segmentId = null, segmentSequence = null, segments = [], loadLocalCues } = {}) {
   const [connection, setConnection] = useState({ value: 'idle' });
   const [retryVersion, setRetryVersion] = useState(0);
   const transportRef = useRef(null);
@@ -11,9 +25,11 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
   const cuesRef = useRef(cues);
   const segmentMetaRef = useRef({ segmentId, segmentSequence, segments });
   const lifecycleStatusRef = useRef(lifecycleStatus);
+  const loadLocalCuesRef = useRef(loadLocalCues);
   cuesRef.current = cues;
   segmentMetaRef.current = { segmentId, segmentSequence, segments };
   lifecycleStatusRef.current = lifecycleStatus;
+  loadLocalCuesRef.current = loadLocalCues;
 
   function rememberCues(nextCues, meta) {
     if (cueHistoryRef.current.meetingId !== meetingId) {
@@ -42,20 +58,33 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
       return undefined;
     }
     let disposed = false;
-    const transport = createWebRtcSubtitleTransport({
-      meetingId,
-      role: 'device',
-      fetchImpl: authenticatedFetch(),
-      initialCues: cueHistoryRef.current.cues,
-      onStatus: (next) => { if (!disposed) setConnection(next); },
-      onError: () => {},
-    });
-    transportRef.current = transport;
-    const getStats = () => transport.getStats();
-    const publishTestCue = (cue) => transport.publishCue(cue);
-    globalThis.__liveTranslateWebRtcGetStats = getStats;
-    if (import.meta.env.DEV) globalThis.__liveTranslateWebRtcPublishTestCue = publishTestCue;
-    transport.start();
+    let transport = null;
+    let getStats = null;
+    let publishTestCue = null;
+    void (async () => {
+      try {
+        const records = await loadLocalCuesRef.current?.(meetingId) || [];
+        if (disposed) return;
+        rememberCues(hostViewerCuesFromLocalRecords(meetingId, records), segmentMetaRef.current);
+        rememberCues(cuesRef.current, segmentMetaRef.current);
+        transport = createWebRtcSubtitleTransport({
+          meetingId,
+          role: 'device',
+          fetchImpl: authenticatedFetch(),
+          initialCues: cueHistoryRef.current.cues,
+          onStatus: (next) => { if (!disposed) setConnection(next); },
+          onError: () => {},
+        });
+        transportRef.current = transport;
+        getStats = () => transport.getStats();
+        publishTestCue = (cue) => transport.publishCue(cue);
+        globalThis.__liveTranslateWebRtcGetStats = getStats;
+        if (import.meta.env.DEV) globalThis.__liveTranslateWebRtcPublishTestCue = publishTestCue;
+        transport.start();
+      } catch {
+        if (!disposed) setConnection({ value: 'failed' });
+      }
+    })();
     return () => {
       disposed = true;
       if (globalThis.__liveTranslateWebRtcGetStats === getStats) delete globalThis.__liveTranslateWebRtcGetStats;

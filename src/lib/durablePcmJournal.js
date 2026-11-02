@@ -195,7 +195,8 @@ export function createDurablePcmJournal({ store, recordingId, maxBytes = PCM_JOU
       return { state: 'COMMITTED', duplicate: false };
     },
 
-    async endEpoch(captureEpoch, endSample) {
+    async endEpoch(captureEpoch, endSample, diagnostic = {}) {
+      console.info('ISSUE41_PCM_END', JSON.stringify({ stage: 'JOURNAL_END_ENTER', recordingId, captureEpoch, requestId: diagnostic.requestId ?? null, clientId: diagnostic.clientId ?? null, ledgerOffset }));
       if (!ledger || tailState !== 'CLEAN') throw journalError('JOURNAL_UNAVAILABLE');
       if (!Number.isSafeInteger(captureEpoch) || captureEpoch < 1
         || !Number.isSafeInteger(endSample) || endSample < 0) throw journalError('INVALID_EPOCH_END');
@@ -208,6 +209,7 @@ export function createDurablePcmJournal({ store, recordingId, maxBytes = PCM_JOU
         .reduce((maximum, item) => Math.max(maximum, item.endSample), 0);
       if (endSample < lastCommitted) throw journalError('EPOCH_END_BEFORE_DATA');
       await appendLedger({ version: 1, type: 'end', recordingId, captureEpoch, endSample });
+      console.info('ISSUE41_PCM_END', JSON.stringify({ stage: 'JOURNAL_END_VERIFIED', recordingId, captureEpoch, requestId: diagnostic.requestId ?? null, clientId: diagnostic.clientId ?? null, ledgerOffset }));
       closedEpochs.set(captureEpoch, endSample);
       highestEpoch = Math.max(highestEpoch, captureEpoch);
       return { state: 'COMMITTED', duplicate: false };

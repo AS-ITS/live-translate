@@ -5,6 +5,7 @@ import { LiveTranslateSession } from '../../src/lib/liveSession.js';
 
 function fixture() {
   const calls = [];
+  const gapRecords = [];
   let terminated = false;
   const worker = {
     onmessage: null,
@@ -16,8 +17,9 @@ function fixture() {
     terminate() { terminated = true; }
   };
   const client = createDurablePcmJournalClient({ meetingId: 'meeting-a', recordingId: 'recording-a',
-    workerFactory: () => worker, commitIntervalMs: 60_000 });
-  return { client, calls, get terminated() { return terminated; } };
+    workerFactory: () => worker, gapStore: { append: async (gap) => gapRecords.push(gap) },
+    commitIntervalMs: 60_000 });
+  return { client, calls, gapRecords, get terminated() { return terminated; } };
 }
 
 test('meeting identity is required and is sent to the worker', async () => {
@@ -47,6 +49,7 @@ test('provider metadata keeps one capture range; pause starts a new epoch', asyn
 test('Journal backpressure does not delay or duplicate Live provider sends', async () => {
   const calls = [];
   const statuses = [];
+  const gapRecords = [];
   const worker = {
     onmessage: null,
     postMessage(message) {
@@ -60,6 +63,8 @@ test('Journal backpressure does not delay or duplicate Live provider sends', asy
   };
   const client = createDurablePcmJournalClient({ meetingId: 'meeting-a', recordingId: 'recording-a',
     workerFactory: () => worker, maxPendingBytes: 6400,
+    gapStore: { append: async (gap) => { gapRecords.push(gap); },
+      list: async () => gapRecords },
     onStatus: (status) => statuses.push(status) });
   await client.open();
   const providerPayloads = [];
@@ -74,6 +79,10 @@ test('Journal backpressure does not delay or duplicate Live provider sends', asy
   assert.equal(providerPayloads.length, 10); // before the delayed APPEND completes
   assert.equal(new Set(providerPayloads).size, 10);
   assert.ok(statuses.some(({ state }) => state === 'BACKPRESSURE_GAP'));
+  assert.ok(client.gapLedger().length > 0);
+  assert.equal(client.gapLedger()[0].code, 'BACKPRESSURE_GAP');
+  assert.ok((await client.whenGapsPersisted()).every((gap) => gap.persistenceState === 'durable'));
+  assert.equal((await client.readPersistedGaps()).length, client.gapLedger().length);
   await client.flush({ endEpoch: true });
   assert.equal(client.status().pendingBytes, 0);
   session.sendInputAudioChunk(new Uint8Array(3200).fill(11), session.connectionEpoch, { force: true });
@@ -100,7 +109,8 @@ test('Journal worker failure stays observable without resending captured PCM', a
     terminate() {}
   };
   const client = createDurablePcmJournalClient({ meetingId: 'meeting-a', recordingId: 'recording-a',
-    workerFactory: () => worker, onStatus: (status) => statuses.push(status) });
+    workerFactory: () => worker, gapStore: { append: async () => {} },
+    onStatus: (status) => statuses.push(status) });
   await client.open();
   const providerPayloads = [];
   const session = new LiveTranslateSession({ targetLanguageCode: 'en',
@@ -111,8 +121,60 @@ test('Journal worker failure stays observable without resending captured PCM', a
   session.sendInputAudioChunk(new Uint8Array(3200).fill(1), session.connectionEpoch, { force: true });
   await assert.rejects(client.flush({ endEpoch: true }), { code: 'DISK_FAIL' });
   assert.ok(statuses.some(({ state, code }) => state === 'DEGRADED' && code === 'DISK_FAIL'));
+  assert.deepEqual(client.gapLedger().map(({ startSample, endSample, code }) =>
+    [startSample, endSample, code]), [[0, 1600, 'DISK_FAIL']]);
+  assert.equal((await client.whenGapsPersisted())[0].persistenceState, 'durable');
   session.sendInputAudioChunk(new Uint8Array(3200).fill(2), session.connectionEpoch, { force: true });
   assert.equal(providerPayloads.length, 2);
   assert.equal(new Set(providerPayloads).size, 2);
   await assert.rejects(client.close(), { code: 'DISK_FAIL' });
+});
+
+test('provider send failure preserves capture and Journal commits while reconnecting', async () => {
+  const f = fixture();
+  await f.client.open();
+  const failures = [];
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en',
+    onInputAudioChunk: (pcm, metadata) => f.client.offer(pcm, metadata),
+    onConnectionFailure: (failure) => failures.push(failure) });
+  let cleanupCalls = 0;
+  let reconnectCalls = 0;
+  session.cleanup = async () => { cleanupCalls += 1; };
+  session.reconnectProvider = async () => { reconnectCalls += 1; return false; };
+  session.session = { sendRealtimeInput: () => { throw new Error('provider offline'); } };
+  session.providerReady = true;
+  session.inputSendingEnabled = true;
+  session.sendInputAudioChunk(new Uint8Array(3200), session.connectionEpoch, { force: true });
+  session.sendInputAudioChunk(new Uint8Array(3200), session.connectionEpoch, { force: true });
+  await f.client.flush();
+  assert.equal(cleanupCalls, 0);
+  assert.equal(reconnectCalls, 1);
+  assert.equal(failures.length, 0);
+  assert.equal(session.providerReady, false);
+  assert.deepEqual(f.calls.filter(({ command }) => command === 'APPEND')
+    .map(({ args }) => [args.startSample, args.bytes.length]), [[0, 6400]]);
+  await f.client.close();
+});
+
+test('gap ledger failure remains visible and never becomes a durable gap claim', async () => {
+  const statuses = [];
+  const worker = {
+    onmessage: null,
+    postMessage({ id, command }) {
+      queueMicrotask(() => this.onmessage({ data: { id, ok: true,
+        result: command === 'OPEN' ? { highestEpoch: 0, tailState: 'CLEAN' } : {} } }));
+    },
+    terminate() {}
+  };
+  const client = createDurablePcmJournalClient({ meetingId: 'meeting-a', recordingId: 'recording-a',
+    workerFactory: () => worker, maxPendingBytes: 2,
+    gapStore: { append: async () => { throw new Error('IndexedDB unavailable'); } },
+    onStatus: (status) => statuses.push(status) });
+  await client.open();
+  assert.equal(client.offer(new Uint8Array(4)).state, 'REJECTED');
+  const [gap] = await client.whenGapsPersisted();
+  assert.equal(gap.persistenceState, 'failed');
+  assert.ok(statuses.some(({ state }) => state === 'GAP_LEDGER_ERROR'));
+  assert.equal(client.status().gaps[0].persistenceState, 'failed');
+  await client.close();
 });

@@ -49,6 +49,7 @@ async function opfsStore(meetingId) {
 }
 
 let journal;
+let activeRecordingId = null;
 let releaseMeetingLock;
 let queue = Promise.resolve();
 
@@ -71,7 +72,7 @@ async function holdMeetingLock(meetingId) {
 
 self.onmessage = ({ data }) => {
   queue = queue.then(async () => {
-    const { id, command, args = {} } = data;
+    const { id, command, args = {}, diagnosticClientId = null } = data;
     try {
       let result;
       if (command === 'OPEN') {
@@ -84,6 +85,7 @@ self.onmessage = ({ data }) => {
         try {
           journal = createDurablePcmJournal({ store: await opfsStore(meetingId), recordingId });
           result = await journal.open();
+        activeRecordingId = recordingId;
         } catch (error) {
           await releaseMeetingLock();
           releaseMeetingLock = null;
@@ -93,13 +95,19 @@ self.onmessage = ({ data }) => {
         if (!journal) throw new Error('JOURNAL_NOT_OPEN');
         if (command === 'BEGIN') result = await journal.beginEpoch(args.captureEpoch);
         else if (command === 'APPEND') result = await journal.append(args);
-        else if (command === 'END') result = await journal.endEpoch(args.captureEpoch, args.endSample);
+      else if (command === 'END') {
+        console.info('ISSUE41_PCM_END', JSON.stringify({ stage: 'WORKER_END_RECEIVED', recordingId: activeRecordingId, clientId: diagnosticClientId, requestId: id, captureEpoch: args.captureEpoch, endSample: args.endSample }));
+        result = await journal.endEpoch(args.captureEpoch, args.endSample, { clientId: diagnosticClientId, requestId: id });
+        console.info('ISSUE41_PCM_END', JSON.stringify({ stage: 'WORKER_END_AWAITED', recordingId: activeRecordingId, clientId: diagnosticClientId, requestId: id, captureEpoch: args.captureEpoch, state: result?.state ?? null }));
+      }
         else if (command === 'COVERAGE') result = journal.coverage(args.captureEpoch, args.startSample, args.endSample);
         else if (command === 'READ') result = await journal.readRange(args.captureEpoch, args.startSample, args.endSample);
         else if (command === 'STATUS') result = journal.status();
         else if (command === 'CLOSE') {
           journal.close(); journal = null;
           await releaseMeetingLock?.(); releaseMeetingLock = null;
+        console.info('ISSUE41_PCM_END', JSON.stringify({ stage: 'WORKER_CLOSE', recordingId: activeRecordingId, clientId: diagnosticClientId, requestId: id }));
+        activeRecordingId = null;
           result = { state: 'CLOSED' };
         }
         else throw new Error('UNKNOWN_JOURNAL_COMMAND');
@@ -107,6 +115,7 @@ self.onmessage = ({ data }) => {
       if (result instanceof Uint8Array) self.postMessage({ id, ok: true, result }, [result.buffer]);
       else self.postMessage({ id, ok: true, result });
     } catch (error) {
+      if (command === 'END') console.info('ISSUE41_PCM_END', JSON.stringify({ stage: 'WORKER_END_ERROR', recordingId: activeRecordingId, clientId: diagnosticClientId, requestId: id, captureEpoch: args.captureEpoch, code: error?.code ?? error?.name ?? 'unknown' }));
       self.postMessage({ id, ok: false, error: { code: error?.code || error?.name || 'JOURNAL_ERROR',
         message: error?.message || String(error) } });
     }

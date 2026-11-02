@@ -1,4 +1,7 @@
+import { createLocalPcmGapLedger } from './localPcmGapLedger.js';
+
 const DEFAULT_PENDING_BYTES = 512 * 1024;
+let nextDiagnosticClientId = 0;
 const BATCH_BYTES = 32_000; // one second of 16 kHz mono PCM16
 
 function deferred() {
@@ -10,7 +13,8 @@ function deferred() {
 
 export function createDurablePcmJournalClient({ meetingId, recordingId, workerFactory = () => new Worker(
   new URL('./durablePcmJournal.worker.js', import.meta.url), { type: 'module' }
-), onStatus = () => {}, maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
+), onStatus = () => {}, gapStore = createLocalPcmGapLedger(),
+maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
   if (typeof meetingId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(meetingId)) {
     throw new TypeError('valid meetingId required');
   }
@@ -21,6 +25,8 @@ export function createDurablePcmJournalClient({ meetingId, recordingId, workerFa
   const requests = new Map();
   const tasks = [];
   let requestId = 0;
+  const diagnosticClientId = ++nextDiagnosticClientId;
+  const endDiagnostic = (stage, details = {}) => console.info('ISSUE41_PCM_END', JSON.stringify({ stage, recordingId, clientId: diagnosticClientId, ...details }));
   let opening;
   let ready = false;
   let baseEpoch = 0;
@@ -39,6 +45,30 @@ export function createDurablePcmJournalClient({ meetingId, recordingId, workerFa
   let state = 'OPENING';
   let persisted = null;
   let estimatedRemainingBytes = null;
+  const gaps = [];
+  const gapWrites = new Set();
+  const gapSessionId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+
+  function recordGap(range, code) {
+    const captureEpoch = ready ? baseEpoch + range.localEpoch : null;
+    const id = `${recordingId}:${captureEpoch ?? gapSessionId}:${range.startSample}:${range.endSample}:${code}`;
+    if (gaps.some((gap) => gap.id === id)) return;
+    const gap = { id, meetingId, recordingId,
+      captureEpoch,
+      localEpoch: range.localEpoch, startSample: range.startSample,
+      endSample: range.endSample, code, createdAt: new Date().toISOString(),
+      persistenceState: 'pending' };
+    gaps.push(gap);
+    onStatus({ state: 'GAP_RECORDED', meetingId, recordingId, pendingBytes, gap: { ...gap } });
+    const write = Promise.resolve().then(() => gapStore.append({ ...gap, persistenceState: 'durable' }))
+      .then(() => { gap.persistenceState = 'durable'; })
+      .catch((error) => {
+        gap.persistenceState = 'failed';
+        onStatus({ state: 'GAP_LEDGER_ERROR', meetingId, recordingId, gap: { ...gap },
+          code: error?.code || 'GAP_LEDGER_WRITE_FAILED' });
+      }).finally(() => gapWrites.delete(write));
+    gapWrites.add(write);
+  }
 
   function emit(next, detail = {}) {
     state = next;
@@ -47,6 +77,11 @@ export function createDurablePcmJournalClient({ meetingId, recordingId, workerFa
 
   function fail(error) {
     failure = error instanceof Error ? error : new Error(String(error));
+    for (const task of tasks) {
+      if (task.kind === 'pcm') recordGap(task, failure.code || failure.name || 'JOURNAL_ERROR');
+    }
+    if (batch.length) recordGap({ localEpoch, startSample: batchStart,
+      endSample: batchStart + batchBytes / 2 }, failure.code || failure.name || 'JOURNAL_ERROR');
     emit('DEGRADED', { code: failure.code || failure.name || 'JOURNAL_ERROR', message: failure.message });
     for (const request of requests.values()) { clearTimeout(request.timer); request.reject(failure); }
     requests.clear();
@@ -60,6 +95,7 @@ export function createDurablePcmJournalClient({ meetingId, recordingId, workerFa
   worker.onmessage = ({ data }) => {
     const request = requests.get(data.id);
     if (!request) return;
+    if (request.command === 'END' || request.command === 'CLOSE') endDiagnostic('WORKER_REPLY', { command: request.command, requestId: data.id, captureEpoch: request.captureEpoch ?? null, ok: data.ok, code: data.error?.code ?? null });
     clearTimeout(request.timer);
     requests.delete(data.id);
     if (data.ok) request.resolve(data.result);
@@ -74,6 +110,7 @@ export function createDurablePcmJournalClient({ meetingId, recordingId, workerFa
   function rpc(command, args = {}, transfer = []) {
     if (failure) return Promise.reject(failure);
     const id = ++requestId;
+    if (command === 'END' || command === 'CLOSE' || command === 'OPEN') endDiagnostic('WORKER_REQUEST', { command, requestId: id, captureEpoch: args.captureEpoch ?? null });
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         requests.delete(id);
@@ -82,8 +119,8 @@ export function createDurablePcmJournalClient({ meetingId, recordingId, workerFa
         reject(error);
       }, 10_000);
       timeout.unref?.();
-      requests.set(id, { resolve, reject, timer: timeout });
-      try { worker.postMessage({ id, command, args }, transfer); }
+      requests.set(id, { resolve, reject, timer: timeout, command, captureEpoch: args.captureEpoch });
+      try { worker.postMessage({ id, command, args, diagnosticClientId }, transfer); }
       catch (error) { clearTimeout(timeout); requests.delete(id); reject(error); }
     });
   }
@@ -140,8 +177,10 @@ export function createDurablePcmJournalClient({ meetingId, recordingId, workerFa
 
   function rotate() {
     flushBatch();
-    if (startedEpoch === baseEpoch + localEpoch
-      || tasks.some((task) => task.localEpoch === localEpoch && task.kind === 'pcm')) {
+    const endScheduled = startedEpoch === baseEpoch + localEpoch
+      || tasks.some((task) => task.localEpoch === localEpoch && task.kind === 'pcm');
+    endDiagnostic('ROTATE', { captureEpoch: baseEpoch + localEpoch, localEpoch, startedEpoch, endScheduled, pendingTasks: tasks.length, endSample: cursor });
+    if (endScheduled) {
       schedule({ kind: 'end', localEpoch, endSample: cursor });
     }
     localEpoch += 1;
@@ -195,6 +234,7 @@ export function createDurablePcmJournalClient({ meetingId, recordingId, workerFa
       cursor = range.endSample;
       if (failure || recoveryTailState || pendingBytes + bytes.length > maxPendingBytes) {
         flushBatch();
+        recordGap(range, failure?.code || recoveryTailState || 'BACKPRESSURE_GAP');
         emit(failure || recoveryTailState ? 'DEGRADED' : 'BACKPRESSURE_GAP', { range });
         return { state: 'REJECTED', code: failure?.code || recoveryTailState || 'BACKPRESSURE_GAP', range };
       }
@@ -211,6 +251,7 @@ export function createDurablePcmJournalClient({ meetingId, recordingId, workerFa
       return { state: 'QUEUED', range };
     },
     async flush({ endEpoch = false } = {}) {
+      if (endEpoch) endDiagnostic('FLUSH_ENTER', { captureEpoch: baseEpoch + localEpoch, localEpoch, startedEpoch, pendingTasks: tasks.length });
       if (recoveryTailState) return this.status();
       flushBatch();
       if (endEpoch) { rotate(); connectionKey = undefined; }
@@ -220,6 +261,7 @@ export function createDurablePcmJournalClient({ meetingId, recordingId, workerFa
         await task.result.promise;
       }
       if (failure) throw failure;
+      if (endEpoch) endDiagnostic('FLUSH_AWAITED', { captureEpoch: baseEpoch + localEpoch - 1, pendingTasks: tasks.length, code: this.status().code ?? null });
       return this.status();
     },
     async coverage(captureEpoch, startSample, endSample) {
@@ -240,13 +282,23 @@ export function createDurablePcmJournalClient({ meetingId, recordingId, workerFa
       return rpc('READ', { captureEpoch, startSample, endSample });
     },
     async recover() { await this.open(); return rpc('STATUS'); },
+    gapLedger() { return gaps.map((gap) => ({ ...gap })); },
+    async whenGapsPersisted() { await Promise.all([...gapWrites]); return this.gapLedger(); },
+    async readPersistedGaps() { return gapStore.list(recordingId); },
+    async reconcileGaps() { return gapStore.reconcile(recordingId); },
     status() { return { state, recordingId, pendingBytes, captureEpoch: baseEpoch + localEpoch,
-      nextSample: cursor, code: failure?.code || recoveryTailState, persisted, estimatedRemainingBytes }; },
+      nextSample: cursor, code: failure?.code || recoveryTailState, persisted, estimatedRemainingBytes,
+      gaps: this.gapLedger() }; },
     async close() {
+      endDiagnostic('CLIENT_CLOSE_ENTER', { captureEpoch: baseEpoch + localEpoch, localEpoch, startedEpoch, recoveryTailState, pendingTasks: tasks.length });
       try {
         if (!recoveryTailState) await this.flush({ endEpoch: true });
         await rpc('CLOSE');
-      } finally { worker.terminate(); }
+        endDiagnostic('CLIENT_CLOSE_AWAITED', { captureEpoch: baseEpoch + localEpoch - 1, pendingTasks: tasks.length, code: this.status().code ?? null });
+      } finally {
+        worker.terminate();
+        await this.whenGapsPersisted();
+      }
     }
   });
 }

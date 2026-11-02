@@ -1,5 +1,9 @@
 # Live Translate API and Events
 
+## Issue #41 Local-only Cutover contract (pending isolated acceptance)
+
+Meeting Cue, Checkpoint, transcript, translated output, audio upload, and Cloud Export content endpoints return `410 meeting_content_local_only`. Legacy shared Session content endpoints are closed. Meeting settings, glossary, sharing, lifecycle metadata, operation lookup/recovery, and Viewer WebRTC signaling remain available. Meeting detail and Segment list responses omit historical content; Host local IndexedDB/OPFS supplies transcript and audio exports after Reload. The isolated Cutover Migration also rejects direct table/RPC/Storage writes, while preserving existing historical rows for separate controlled cleanup. No Production Migration has run.
+
 ## Current Meeting expiry policy (2026-10-07)
 
 Successful completion freezes the existing database-generated `ended_at` and
@@ -126,6 +130,19 @@ fail before `purge_at`; completion and failure at or after that deadline return
 `409 meeting_terminal`.
 
 ## Meeting Viewer snapshot pagination
+
+`GET /api/shared-meetings/:token/metadata` and
+`GET /api/shared-meetings/code/:shortCode/metadata` use the existing Viewer
+share authorization and expiry checks. They return Meeting identity,
+configuration labels, lifecycle status/version, recording state, ordered
+Segment and Session identity, and share capability. Completed Meetings whose
+version-2 retention has expired return `410 meeting_content_expired`.
+This route reads only Meeting and Segment metadata; its DTO has no Cue,
+transcript, translation, checkpoint, or event payload. Existing Viewer Cue
+snapshot and SSE routes remain in use until Host recovery cutover.
+In non-cloud development/file mode, the file repository parses its complete
+local JSON store before projecting metadata; the response still excludes
+Checkpoint content. Cloud mode uses narrow Supabase Meeting and Segment selects.
 
 `GET /api/shared-meetings/:token` and
 `GET /api/shared-meetings/code/:shortCode` return the newest 100 finalized Cues
@@ -1721,3 +1738,26 @@ may use an isolated environment key through their own provider composition; it
 is not shared with recorder requests. Logs, metrics, telemetry, and audit
 records must not contain API keys, ephemeral tokens, stored credentials,
 request keys, or secret-bearing payloads.
+
+### Lifecycle operation recovery (Issue #41)
+
+`GET /api/meetings/:meetingId/recording/operations/:operationId` requires the
+existing meeting recording authorization. It returns only operation status,
+command, resulting lifecycle version, authoritative pre-transition
+`targetSessionId`/`targetSegmentId`, and resulting Session/Segment IDs. New
+records set `targetIdentityRecorded: true`, including when a target is
+legitimately null; older records missing either target key set it to `false`
+and omit both target IDs. It never returns the stored request payload or
+Segment JSON. `unknown` is not proof that an
+in-flight write did not commit; the database lookup takes a Meeting share lock
+to order the read after concurrent lifecycle writes.
+
+`POST /api/meetings/:meetingId/recording/lease/recover` accepts the original
+operation ID, recovery operation ID, command, expected lifecycle version,
+Session/Segment IDs, and prior lease/fence metadata. In one database transaction
+it locks the Meeting, checks the original operation and its attempts, verifies
+current identity/version/ownership, and only then issues a new lease and a
+server-generated attempt operation ID. A committed operation returns its
+existing metadata result. Expired retention or revoked authorization blocks
+recovery. Lifecycle write payloads reject Cue, Checkpoint, Transcript, Audio,
+and unknown fields.

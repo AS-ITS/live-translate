@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Issue #41 Local-only Cutover（開發分支、隔離驗證中）：Stop／End 以 Host 本機內容持久化為前提；翻譯 PCM 以 OPFS chunk 與 IndexedDB manifest 保存並可 Reload 匯出。舊雲端 Cue／Checkpoint／音訊／匯出寫入由 Server、資料庫與 Storage 拒絕，歷史內容讀取收窄；未部署或執行正式 Migration。
+
+- Issue #41 lifecycle target identity: persist pre-transition Session/Segment
+  metadata in operation results and expose it through content-free lookup for
+  safe Stop/Rollover recovery; legacy rows remain evidence-insufficient.
+
+- Issue #41 lifecycle recovery: metadata-only operation lookup, atomic expired
+  lease recovery, durable IndexedDB intent, and isolated PostgreSQL/Chromium
+  regression coverage. No production migration or deployment performed.
+
 - Issue #41 B2-B: local Meeting export includes durable unassigned final Cues from IndexedDB, rejects conflicting Cue identities, and blocks incomplete export on local read failure. Meeting switches ignore stale detail loads.
 
 - Hardened Issue #41 checkpoint writes with a restricted SQL writer, service authorized Cue and checkpoint RPCs, an old browser cursor bridge, and a durability barrier before terminal recording transitions. Direct authenticated Cue mutation and checkpoint overwrite are denied.

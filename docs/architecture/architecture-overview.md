@@ -1,5 +1,19 @@
 # Architecture Overview
 
+## Issue #41 implementation 1A: PCM failure boundary
+
+After capture starts, a Gemini PCM send or provider connection failure leaves the
+microphone capture graph and local PCM Journal running. Provider reconnect changes
+only the provider connection. A cloud rollover failure before commit resumes the
+old provider transition while capture continues. Explicit Stop, microphone loss, and
+audio capture failure still release capture resources.
+
+Rejected PCM ranges and failed Journal writes are recorded separately in a host
+IndexedDB Gap Ledger (`live-translate-pcm-gaps-v1`). A gap is marked durable only
+after its IndexedDB transaction completes; if that write fails, the live status
+reports the failure. A queued PCM range is never presented as an OPFS durable
+claim until the Journal worker confirms its commit.
+
 ## Phase 0 contract delta, 2026-10-01
 
 The browser is the only owner of page storage. It writes immutable audio

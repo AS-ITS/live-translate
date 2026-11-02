@@ -1,5 +1,9 @@
 # Session Lifecycle Management
 
+## Issue #41 Local-only Cutover (isolated branch)
+
+Stop and End wait for Host PCM Journal, input audio, enabled translated audio, Cue, transcript, and Checkpoint local writes before lifecycle metadata is submitted. A failed local write stops completion. Unknown metadata outcomes retain the IndexedDB lifecycle intent and use the owner/Meeting/principal-scoped operation lookup and fenced lease recovery after Reload. Rollover retains the old Segment's local data and adopts only an authoritative new Segment identity; legacy content-bearing rollover and checkpoint routes are rejected. Cloud content writing is disabled by the Cutover Migration; existing historical rows are retained for controlled cleanup.
+
 ## Feature Overview
 
 Session Lifecycle Management is a Phase 2 foundation feature that organizes the
@@ -233,3 +237,23 @@ Tests should be deterministic and should not call the real Gemini API.
 - Cleanup policy documented.
 - Connection Resilience dependency documented.
 - No production code changed.
+
+## Issue #41 unknown outcome recovery
+
+The host writes a metadata-only intent to the existing IndexedDB operations
+store before submitting Start, Pause, Resume, Recover, Stop, or Rollover. Intent states distinguish
+prepared, submitted, committed, unknown, rejected, and expired. After reload,
+the host first looks up the original operation ID and known attempts. It adopts
+a committed result only when the persisted Session and target Segment identity
+can be verified; otherwise it keeps the pending intent and reports insufficient
+evidence without a second lifecycle write. New operation results record the
+pre-transition target Session and Segment under the Meeting lock, so committed
+Stop and Rollover can be adopted even when Stop clears the current Segment or
+Rollover creates a successor. Older records without both target fields remain
+evidence-insufficient. While the original lease
+is valid, it may resubmit the identical operation ID and payload. Once the
+lease expires, it requests atomic Meeting-locked recovery; only a matching
+Meeting, Session, Segment, lifecycle version, owner, and authorized principal
+may receive a new lease and attempt ID. Identity/version conflicts and missing
+authorization stop automatic retry. Retention expiry removes the local intent
+and does not restore meeting content.

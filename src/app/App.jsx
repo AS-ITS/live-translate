@@ -116,13 +116,13 @@ function mergeMeetingDetailWithLocalAudio(detail, localArtifacts = [], localAudi
   const displayStatus = !input && localAudioStatus === 'idle' && detail.meeting?.shouldRecordInputAudio === false
     ? 'disabled'
     : localAudioStatus;
-  if (!input && !['processing', 'disabled'].includes(displayStatus)) return detail;
+  if (!input && !['processing', 'disabled', 'sealed'].includes(displayStatus)) return detail;
   return {
     ...detail,
     audioArtifacts: {
       ...(detail.audioArtifacts || {}),
       input: input
-        ? { ...(detail.audioArtifacts?.input || {}), ...input, status: 'ready' }
+        ? { ...(detail.audioArtifacts?.input || {}), ...input, status: input.status }
         : { ...(detail.audioArtifacts?.input || {}), kind: 'input', status: displayStatus }
     }
   };
@@ -947,6 +947,7 @@ const activeMeetingCheckpointRef = useRef(null);
     }
     if (status !== 'idle') return;
 
+    let verifiedMeeting = null;
     void meetingReadApiClientRef.current.getMeetingDetail(meetingId)
       .then((detail) => {
         const meeting = detail?.meeting;
@@ -958,6 +959,7 @@ const activeMeetingCheckpointRef = useRef(null);
           redirectToMeetingWithError();
           return;
         }
+        verifiedMeeting = meeting;
         const nextTargetLanguageCode = meeting.targetLanguageCode || 'en';
         setSessionName(meeting.name || '');
         setSourceLanguageCode(meeting.sourceLanguageCode || DEFAULT_SOURCE_LANGUAGE_CODE);
@@ -975,7 +977,7 @@ const activeMeetingCheckpointRef = useRef(null);
       .catch(() => {})
       .finally(() => {
         if (pageFromLocation() === 'live-recording' && pageInfoFromLocation().meetingId === meetingId) {
-          loadMeetingResumeDraft(meetingId);
+          loadMeetingResumeDraft(meetingId, verifiedMeeting);
         }
       });
   }, [page, status, locationVersion]);
@@ -1709,7 +1711,9 @@ const activeMeetingCheckpointRef = useRef(null);
             if (flushed === false) throw new Error('Unable to flush meeting checkpoint before completion.');
           },
           flushCuePublishes: () => flushMeetingCuePublishes(activeSessionRecordIdRef.current),
-          completeMeeting: () => meetingCheckpointApiClientRef.current.completeMeeting({ meetingId })
+          completeMeeting: () => getLocalMeetingPersistence().endLifecycle({
+            operationId: `end:${meetingId}`
+          })
         });
         applyCloudSaveSnapshot(cloudSaveCoordinatorRef.current.snapshot());
         setNavigationNotice('會議已結束。');
@@ -2088,7 +2092,7 @@ const activeMeetingCheckpointRef = useRef(null);
     });
   }
 
-  async function loadMeetingResumeDraft(meetingId) {
+  async function loadMeetingResumeDraft(meetingId, verifiedMeeting = null) {
     if (sessionRef.current || activeSessionRecordIdRef.current || runtimeMeetingIdsRef.current.has(meetingId)) {
       return;
     }
@@ -2107,6 +2111,7 @@ const activeMeetingCheckpointRef = useRef(null);
       const resumableSegment = [...segments].reverse().find((segment) => ['active', 'created'].includes(segment.status));
       if (!resumableSegment) {
         const unstartedV2Meeting = [
+          verifiedMeeting,
           selectedMeetingDetail?.meeting,
           meetingRecords.find((meeting) => meeting.id === meetingId)
         ].some((meeting) => meeting?.id === meetingId && meeting.status === 'created'
@@ -2406,7 +2411,7 @@ const activeMeetingCheckpointRef = useRef(null);
       mergeCuesById(detail.cues || [], finalLocalCues);
       const merged = mergeMeetingDetailWithLocalCues(detail, finalLocalCues);
       const [localAudio, localAudioStatus] = await Promise.all([
-        persistence.listFinalizedAudioArtifacts?.(id),
+        persistence.listFinalizedAudioArtifactMetadata?.(id),
         persistence.getLocalAudioStatus?.(id)
       ]);
       return mergeMeetingDetailWithLocalAudio({
@@ -2424,6 +2429,19 @@ const activeMeetingCheckpointRef = useRef(null);
         : 'local_transcript_read_failed';
       throw wrapped;
     }
+  }
+
+  async function downloadLocalMeetingAudio(kind) {
+    const meeting = selectedMeetingDetail?.meeting;
+    if (!meeting?.id || meeting.contentState === 'expired') {
+      const error = new Error('錄製資料已到期');
+      error.status = 410;
+      throw error;
+    }
+    const artifacts = await getLocalMeetingPersistence().listFinalizedAudioArtifacts(meeting.id, { kind });
+    const artifact = artifacts.find((item) => item.kind === kind);
+    if (!artifact?.blob?.size) throw new Error('本機語音匯出無法使用。');
+    return artifact;
   }
 
   function closeMeetingDetail() {
@@ -2600,7 +2618,10 @@ const activeMeetingCheckpointRef = useRef(null);
   const liveMeetingStartReady = isLiveMeetingStartReady({
     meetingId: routeMeetingId,
     resumeDraft: liveController.resumeDraft
-  });
+  }) && (hasSelectedResumableMeeting || (
+    selectedMeetingDetail?.meeting?.id === routeMeetingId
+    && ['created', 'active', 'interrupted'].includes(selectedMeetingDetail.meeting.status)
+  ));
   const startLiveRecording = async () => {
     if (!liveMeetingStartReady) {
       setError('會議資料仍在準備中，請稍候。');
@@ -2768,6 +2789,7 @@ const activeMeetingCheckpointRef = useRef(null);
         returnPage={meetingDetailReturnPage()}
         onBack={returnFromMeetingDetail}
         onRetry={() => refreshSelectedMeetingDetail(routeMeetingId)}
+        onDownloadLocalAudio={downloadLocalMeetingAudio}
       /> : null}
       {isLiveSurface ? <LiveRecordingPage
         error={liveController.error || meetingDetailError}

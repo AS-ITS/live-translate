@@ -32,6 +32,9 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
   let segmentNumber = 0;
   let captureEpoch = 0;
   let providerEpoch = 0;
+  let integrityVersion = null;
+  let pcmEnabled = null;
+  let pauseBoundary = null;
   const operations = new Map();
   let stopBarrier = null;
 
@@ -47,13 +50,17 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       segmentNumber = durable.segmentNumber;
       captureEpoch = durable.captureEpoch;
       providerEpoch = durable.providerEpoch;
+      integrityVersion = durable.integrityVersion;
+      pcmEnabled = durable.pcmEnabled;
+      pauseBoundary = durable.pauseBoundary;
       finalSequence = durable.finalSequence;
       state = durable.state;
       stopError = null;
       return snapshot();
     },
 
-    async start(nextMeetingId, { operationId, recordingId: requestedRecordingId, segmentId: requestedSegmentId } = {}) {
+    async start(nextMeetingId, { operationId, recordingId: requestedRecordingId, segmentId: requestedSegmentId,
+      pcmEnabled: requestedPcmEnabled = false } = {}) {
       if (!nextMeetingId) throw invalid('meetingId is required.');
       if (meetingId !== nextMeetingId) await this.restore(nextMeetingId);
       const replayed = await replay(operationId, 'start');
@@ -69,16 +76,23 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       segmentNumber = 1;
       captureEpoch += 1;
       providerEpoch = 0;
+      integrityVersion = 2;
+      pcmEnabled = requestedPcmEnabled === true;
+    pauseBoundary = null;
       finalSequence = null;
       stopError = null;
       state = 'capturing';
       return persist(operationId, 'start');
     },
 
-    async pause({ operationId } = {}) {
+  async pause({ operationId, boundaryReceipt = null } = {}) {
       const replayed = await replay(operationId, 'pause');
       if (replayed) return replayed;
       if (state === 'capturing') {
+      if (integrityVersion === 2 && pcmEnabled && (boundaryReceipt?.recordingId !== recordingId
+        || boundaryReceipt.transitionOperationId !== operationId
+        || boundaryReceipt.captureEpoch !== captureEpoch)) throw conflict('local_segment_pause_boundary_conflict');
+      pauseBoundary = boundaryReceipt;
         state = 'paused';
         captureEpoch += 1;
       }
@@ -86,6 +100,7 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
     },
 
     async resume({ operationId } = {}) {
+    if (integrityVersion === 2 && pcmEnabled) throw conflict('local_segment_transition_required');
       const replayed = await replay(operationId, 'resume');
       if (replayed) return replayed;
       continueRecording();
@@ -93,6 +108,7 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
     },
 
     async recover({ operationId } = {}) {
+    if (integrityVersion === 2 && pcmEnabled) throw conflict('local_segment_transition_required');
       const replayed = await replay(operationId, 'recover');
       if (replayed) return replayed;
       continueRecording();
@@ -107,18 +123,91 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       return advanceProviderEpoch(operationId, 'provider_rollover');
     },
 
-    async rolloverLocalSegment({ operationId, nextSegmentId } = {}) {
+    async prepareSegmentRollover({ operationId, nextSegmentId } = {}) {
+      assertActiveRecording();
+      if (integrityVersion !== 2) return null;
+      const requestedSuccessor = requiredIdentity(nextSegmentId, 'nextSegmentId');
+      const existing = await manifestStore.getSegmentTransition(meetingId, operationId);
+      if (existing) {
+        if (existing.recordingId !== recordingId || existing.successorId !== requestedSuccessor) {
+          throw conflict('local_segment_transition_conflict');
+        }
+        return existing;
+      }
+      return manifestStore.prepareSegmentTransition({ meetingId, recordingId, operationId,
+        predecessorId: segmentId, predecessorSequence: segmentNumber,
+        successorId: requestedSuccessor, successorSequence: segmentNumber + 1 });
+    },
+  async preparePausedContinue({ operationId, nextSegmentId, boundaryOperationId } = {}) {
+    if (state !== 'paused' || integrityVersion !== 2 || (pcmEnabled
+      && (!pauseBoundary || pauseBoundary.transitionOperationId !== boundaryOperationId))) {
+      throw conflict('local_segment_pause_boundary_conflict');
+    }
+    const existing = await manifestStore.getSegmentTransition(meetingId, operationId);
+    if (existing) return existing;
+    return manifestStore.prepareSegmentTransition({ meetingId, recordingId, operationId,
+      predecessorId: segmentId, predecessorSequence: segmentNumber,
+      successorId: requiredIdentity(nextSegmentId, 'nextSegmentId'), successorSequence: segmentNumber + 1,
+      boundaryOperationId });
+  },
+
+    async abortSegmentRollover({ operationId, nextSegmentId, boundaryReceipt = null } = {}) {
+      if (integrityVersion !== 2) return null;
+      return manifestStore.abortSegmentTransition({ meetingId, recordingId, operationId,
+        predecessorId: segmentId, predecessorSequence: segmentNumber,
+        successorId: requiredIdentity(nextSegmentId, 'nextSegmentId'), successorSequence: segmentNumber + 1,
+        boundary: boundaryReceipt });
+    },
+
+    async rolloverLocalSegment({ operationId, nextSegmentId, boundaryReceipt = null } = {}) {
+      const normalizedSegmentId = requiredIdentity(nextSegmentId, 'nextSegmentId');
+      if (integrityVersion === 2) {
+        const existing = await manifestStore.getSegmentTransition(meetingId, operationId);
+        if (existing && (existing.successorId !== normalizedSegmentId || existing.recordingId !== recordingId)) {
+          throw conflict('local_segment_transition_conflict');
+        }
+        if (existing?.phase === 'COMMITTED') {
+          segmentId = existing.result.segmentId;
+          segmentNumber = existing.result.segmentNumber;
+          captureEpoch = existing.result.captureEpoch;
+          providerEpoch = existing.result.providerEpoch;
+          state = existing.result.state;
+          pauseBoundary = existing.result.pauseBoundary;
+          return existing.result;
+        }
+        if (existing?.phase === 'ABORTED') throw conflict('local_segment_transition_aborted');
+        const prepared = existing || await this.prepareSegmentRollover({ operationId, nextSegmentId: normalizedSegmentId });
+        const result = await manifestStore.commitSegmentTransition({ ...prepared, boundary: boundaryReceipt });
+        segmentId = result.segmentId;
+        segmentNumber = result.segmentNumber;
+        captureEpoch = result.captureEpoch;
+        providerEpoch = result.providerEpoch;
+        state = result.state;
+        pauseBoundary = result.pauseBoundary;
+        trace('LOCAL_SEGMENT_SCOPE_SWITCHED', { operationId, oldSegmentId: prepared.predecessorId,
+          newSegmentId: segmentId, meetingId, recordingId, captureEpoch, providerEpoch });
+        return result;
+      }
       const replayed = await replay(operationId, 'local_segment_rollover');
       if (replayed) return replayed;
       assertActiveRecording();
-      const normalizedSegmentId = requiredIdentity(nextSegmentId, 'nextSegmentId');
       const oldSegmentId = segmentId;
+      const oldSegmentNumber = segmentNumber;
+      const oldProviderEpoch = providerEpoch;
       if (segmentId !== normalizedSegmentId) {
         segmentId = normalizedSegmentId;
         segmentNumber += 1;
         providerEpoch += 1;
       }
-      const result = await persist(operationId, 'local_segment_rollover');
+      let result;
+      try {
+        result = await persist(operationId, 'local_segment_rollover');
+      } catch (error) {
+        segmentId = oldSegmentId;
+        segmentNumber = oldSegmentNumber;
+        providerEpoch = oldProviderEpoch;
+        throw error;
+      }
       trace('LOCAL_SEGMENT_SCOPE_SWITCHED', {
         operationId,
         oldSegmentId,
@@ -347,6 +436,9 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
     return {
       ...snapshot(),
       segmentNumber,
+      integrityVersion,
+      pcmEnabled,
+    pauseBoundary,
       terminal: state === 'stopped_local',
       finalized: state === 'stopped_local'
     };

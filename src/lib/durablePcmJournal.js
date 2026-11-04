@@ -38,10 +38,12 @@ export function createDurablePcmJournal({ store, recordingId, maxBytes = PCM_JOU
   let ledgerOffset = 0;
   let highestEpoch = 0;
   let tailState = 'CLEAN';
+  let unclaimedTailBytes = 0;
   const claims = [];
   const operations = new Map();
   const closedEpochs = new Map();
   const begunEpochs = new Set();
+  const transitionReceipts = new Map();
 
   async function file(number) {
     if (openSegmentNumber !== number || !segment) {
@@ -82,7 +84,9 @@ export function createDurablePcmJournal({ store, recordingId, maxBytes = PCM_JOU
     await ledger.flush();
     const verified = await readLedgerRecord(ledgerOffset, await ledger.getSize());
     if (!verified || JSON.stringify(verified.value) !== JSON.stringify(value)) throw journalError('LEDGER_COMMIT_UNKNOWN');
+    const offset = ledgerOffset;
     ledgerOffset = verified.next;
+    return { offset, sha256: await digest(payload) };
   }
 
   return Object.freeze({
@@ -132,6 +136,17 @@ export function createDurablePcmJournal({ store, recordingId, maxBytes = PCM_JOU
           && value.endSample >= claims.filter((item) => item.captureEpoch === value.captureEpoch)
             .reduce((maximum, item) => Math.max(maximum, item.endSample), 0)) {
           closedEpochs.set(value.captureEpoch, value.endSample);
+          if (value.transitionOperationId != null) {
+            if (!validPart(value.transitionOperationId) || transitionReceipts.has(value.transitionOperationId)) {
+              tailState = 'CORRUPT_OR_INCOMPLETE_LEDGER';
+              break;
+            }
+            transitionReceipts.set(value.transitionOperationId, {
+              recordingId, transitionOperationId: value.transitionOperationId,
+              captureEpoch: value.captureEpoch, endSample: value.endSample,
+              offset: cursor, sha256: await digest(encoder.encode(JSON.stringify(value)))
+            });
+          }
         } else {
           tailState = 'CORRUPT_OR_INCOMPLETE_LEDGER';
           break;
@@ -140,6 +155,14 @@ export function createDurablePcmJournal({ store, recordingId, maxBytes = PCM_JOU
         cursor = entry.next;
       }
       ledgerOffset = cursor;
+      if (tailState === 'CLEAN') {
+        unclaimedTailBytes = segmentNumber > 0
+          ? Math.max(0, await (await file(segmentNumber)).getSize() - segmentOffset)
+          : await store.segmentSizeIfExists?.(recordingId, 1) || 0;
+        if (unclaimedTailBytes === 0) {
+          unclaimedTailBytes = await store.segmentSizeIfExists?.(recordingId, (segmentNumber || 1) + 1) || 0;
+        }
+      }
       return this.status();
     },
 
@@ -180,6 +203,7 @@ export function createDurablePcmJournal({ store, recordingId, maxBytes = PCM_JOU
       committedBytes += bytes.length;
       segmentNumber = target;
       segmentOffset = offset + bytes.length;
+      unclaimedTailBytes = 0;
       highestEpoch = Math.max(highestEpoch, captureEpoch);
       return { state: 'COMMITTED', duplicate: false, claim: durable };
     },
@@ -200,19 +224,39 @@ export function createDurablePcmJournal({ store, recordingId, maxBytes = PCM_JOU
       if (!ledger || tailState !== 'CLEAN') throw journalError('JOURNAL_UNAVAILABLE');
       if (!Number.isSafeInteger(captureEpoch) || captureEpoch < 1
         || !Number.isSafeInteger(endSample) || endSample < 0) throw journalError('INVALID_EPOCH_END');
+      const transitionOperationId = diagnostic.transitionOperationId ?? null;
+      if (transitionOperationId !== null && !validPart(transitionOperationId)) throw journalError('INVALID_TRANSITION_OPERATION');
+      if (transitionOperationId && transitionReceipts.has(transitionOperationId)
+        && transitionReceipts.get(transitionOperationId).captureEpoch !== captureEpoch) {
+        throw journalError('EPOCH_END_CONFLICT');
+      }
       const prior = closedEpochs.get(captureEpoch);
       if (prior !== undefined) {
         if (prior !== endSample) throw journalError('EPOCH_END_CONFLICT');
-        return { state: 'COMMITTED', duplicate: true };
+        const receipt = transitionOperationId === null ? null : transitionReceipts.get(transitionOperationId);
+        if (transitionOperationId !== null && (!receipt || receipt.captureEpoch !== captureEpoch)) {
+          throw journalError('EPOCH_END_CONFLICT');
+        }
+        return { state: 'COMMITTED', duplicate: true, receipt };
       }
       const lastCommitted = claims.filter((item) => item.captureEpoch === captureEpoch)
         .reduce((maximum, item) => Math.max(maximum, item.endSample), 0);
       if (endSample < lastCommitted) throw journalError('EPOCH_END_BEFORE_DATA');
-      await appendLedger({ version: 1, type: 'end', recordingId, captureEpoch, endSample });
+      const value = { version: 1, type: 'end', recordingId, captureEpoch, endSample,
+        ...(transitionOperationId ? { transitionOperationId } : {}) };
+      const committed = await appendLedger(value);
+      const receipt = transitionOperationId ? { recordingId, transitionOperationId, captureEpoch, endSample,
+        offset: committed.offset, sha256: committed.sha256 } : null;
+      if (receipt) transitionReceipts.set(transitionOperationId, receipt);
       console.info('ISSUE41_PCM_END', JSON.stringify({ stage: 'JOURNAL_END_VERIFIED', recordingId, captureEpoch, requestId: diagnostic.requestId ?? null, clientId: diagnostic.clientId ?? null, ledgerOffset }));
       closedEpochs.set(captureEpoch, endSample);
       highestEpoch = Math.max(highestEpoch, captureEpoch);
-      return { state: 'COMMITTED', duplicate: false };
+      return { state: 'COMMITTED', duplicate: false, receipt };
+    },
+
+    transitionReceipt(operationId) {
+      if (!validPart(operationId)) throw journalError('INVALID_TRANSITION_OPERATION');
+      return transitionReceipts.get(operationId) || null;
     },
 
     coverage(captureEpoch, startSample, endSample) {
@@ -227,7 +271,8 @@ export function createDurablePcmJournal({ store, recordingId, maxBytes = PCM_JOU
       }
       if (cursor < endSample) gaps.push([cursor, endSample]);
       return { ranges, gaps, complete: gaps.length === 0,
-        epochClosed: closedEpochs.has(captureEpoch), tailState };
+        epochBegun: begunEpochs.has(captureEpoch), epochClosed: closedEpochs.has(captureEpoch),
+        endSample: closedEpochs.get(captureEpoch) ?? null, tailState };
     },
 
     async readRange(captureEpoch, startSample, endSample) {
@@ -251,6 +296,7 @@ export function createDurablePcmJournal({ store, recordingId, maxBytes = PCM_JOU
 
     status() {
       return { recordingId, committedBytes, claimCount: claims.length, highestEpoch,
+        unclaimedTailBytes,
         nextCaptureEpoch: highestEpoch + 1, tailState, openEpochs: [...new Set([...begunEpochs, ...claims.map((claim) => claim.captureEpoch)])]
           .filter((epoch) => !closedEpochs.has(epoch)) };
     },

@@ -2,8 +2,8 @@ import { mergeCheckpoint } from '../application/meetingCheckpointService.js';
 import { checkCheckpointOperation, checkpointConflict, recordCheckpointOperation } from './checkpointOperation.js';
 import { lifecycleIntentKey, projectLifecycleOperationIntent, sameLifecycleIntentIdentity } from './lifecycleOperationIntent.js';
 
-export const LOCAL_MEETING_SCHEMA_VERSION = 5;
-export const LOCAL_MEETING_DATABASE_VERSION = 8;
+export const LOCAL_MEETING_SCHEMA_VERSION = 6;
+export const LOCAL_MEETING_DATABASE_VERSION = 9;
 const UNASSIGNED_CUE_SCHEMA_VERSION = 1;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
@@ -140,6 +140,7 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
   const records = new Map();
   const recordings = new Map();
   const operations = new Map();
+  const segments = new Map();
   const cues = new Map();
   const unassignedCues = new Map();
   const checkpoints = new Map();
@@ -165,7 +166,77 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     getOperation(meetingId, operationId) {
       const value = operations.get(operationKey(meetingId, operationId));
-      return value ? projectLocalOperation(value) : null;
+      return value ? projectStoredRecordingOperation(value) : null;
+    },
+    getSegmentTransition(meetingId, operationId) {
+      const value = operations.get(operationKey(meetingId, operationId));
+      return value?.type === 'local_segment_transition' ? projectSegmentTransition(value) : null;
+    },
+    listPendingSegmentTransitions(meetingId) {
+      return [...operations.values()].filter((value) => value.meetingId === meetingId
+        && value.type === 'local_segment_transition' && value.phase === 'PREPARED').map(projectSegmentTransition);
+    },
+    listSegments(meetingId) {
+      return [...segments.values()].filter((value) => value.meetingId === meetingId)
+        .sort((left, right) => left.sequence - right.sequence);
+    },
+    prepareSegmentTransition(input) {
+      const transition = projectSegmentTransition({ ...input, phase: 'PREPARED' });
+      const existing = operations.get(transition.key);
+      if (existing) return sameSegmentTransitionIdentity(existing, transition)
+        ? projectSegmentTransition(existing) : conflictThrow('local_segment_transition_conflict');
+      const recording = recordings.get(transition.meetingId);
+      assertSegmentTransitionSource(recording, transition, segments.get(segmentKey(transition.meetingId, transition.predecessorId)));
+      if ([...operations.values()].some((value) => value.meetingId === transition.meetingId
+        && value.type === 'local_segment_transition' && value.phase === 'PREPARED')) {
+        throw conflict('local_segment_transition_pending');
+      }
+      operations.set(transition.key, transition);
+      return transition;
+    },
+    commitSegmentTransition(input) {
+      const transition = projectSegmentTransition({ ...input, phase: 'PREPARED' });
+      const existing = operations.get(transition.key);
+      if (!existing || !sameSegmentTransitionIdentity(existing, transition)) throw conflict('local_segment_transition_conflict');
+      if (existing.phase === 'COMMITTED') {
+        if (!sameBoundary(existing.boundary, input.boundary)) throw conflict('local_segment_transition_conflict');
+        return existing.result;
+      }
+      if (existing.phase !== 'PREPARED') throw conflict('local_segment_transition_aborted');
+      const recording = recordings.get(transition.meetingId);
+      const predecessor = segments.get(segmentKey(transition.meetingId, transition.predecessorId));
+      assertSegmentTransitionSource(recording, transition, predecessor);
+    const boundary = projectSegmentBoundary(input.boundary, transition, recording.pcmEnabled);
+    assertTransitionBoundary(recording, transition, boundary);
+      const successorKey = segmentKey(transition.meetingId, transition.successorId);
+      if (segments.has(successorKey)) throw conflict('local_segment_successor_conflict');
+      const result = { ...recording, segmentId: transition.successorId,
+    segmentNumber: transition.successorSequence, providerEpoch: recording.providerEpoch + 1,
+    state: recording.state === 'paused' ? 'capturing' : recording.state,
+    captureEpoch: boundary ? boundary.captureEpoch + 1
+      : recording.captureEpoch + (recording.state === 'paused' && !recording.pcmEnabled ? 1 : 0),
+    pauseBoundary: null };
+      segments.set(predecessor.key, projectLocalSegment({ ...predecessor, status: 'ENDED', activeMeetingId: null,
+        lastJournalEpoch: boundary?.captureEpoch ?? null, endedByOperationId: transition.operationId }));
+      segments.set(successorKey, projectLocalSegment({ meetingId: transition.meetingId,
+        recordingId: transition.recordingId, segmentId: transition.successorId,
+        sequence: transition.successorSequence, status: 'ACTIVE', activeMeetingId: transition.meetingId,
+        firstJournalEpoch: boundary ? boundary.captureEpoch + 1 : null, provenance: 'native' }));
+      recordings.set(recording.meetingId, projectLocalRecording(result));
+      operations.set(transition.key, projectSegmentTransition({ ...transition, phase: 'COMMITTED', boundary, result }));
+      return result;
+    },
+    abortSegmentTransition(input) {
+      const transition = projectSegmentTransition({ ...input, phase: 'PREPARED' });
+      const existing = operations.get(transition.key);
+      if (!existing || !sameSegmentTransitionIdentity(existing, transition)) throw conflict('local_segment_transition_conflict');
+      if (existing.phase === 'COMMITTED') return existing;
+      if (existing.phase === 'ABORTED') return existing;
+      const boundary = input.boundary ? projectSegmentBoundary(input.boundary, transition, recordings.get(transition.meetingId)?.pcmEnabled) : null;
+      const aborted = projectSegmentTransition({ ...transition, phase: 'ABORTED', boundary,
+        resolutionSegmentId: transition.predecessorId });
+      operations.set(transition.key, aborted);
+      return aborted;
     },
     saveContinueOperation(input) {
       const operation = projectContinueOperation(input);
@@ -209,6 +280,35 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
       const key = operationKey(operation.meetingId, operation.operationId);
       const existing = operations.get(key);
       if (existing && !sameProjection(existing, operation)) throw conflict('local_recorder_operation_conflict');
+      if (operation.type === 'start' && recording.integrityVersion === 2
+        && !segments.has(segmentKey(recording.meetingId, recording.segmentId))) {
+        const segment = initialLocalSegment(recording);
+        if ([...segments.values()].some((item) => item.activeMeetingId === recording.meetingId)) {
+          throw conflict('local_segment_active_conflict');
+        }
+        segments.set(segment.key, segment);
+      }
+      if (['resume', 'recover'].includes(operation.type) && recording.integrityVersion === 2) {
+        const previous = recordings.get(recording.meetingId);
+        if (previous && previous.segmentId !== recording.segmentId) {
+          const oldKey = segmentKey(recording.meetingId, previous.segmentId);
+          const oldSegment = segments.get(oldKey);
+          if (oldSegment?.status !== 'ACTIVE') throw conflict('local_segment_active_conflict');
+          segments.set(oldKey, projectLocalSegment({ ...oldSegment, status: 'ENDED',
+            activeMeetingId: null, provenance: 'legacy-unverified', endedByOperationId: operation.operationId }));
+          const next = projectLocalSegment({ meetingId: recording.meetingId, recordingId: recording.recordingId,
+            segmentId: recording.segmentId, sequence: recording.segmentNumber, status: 'ACTIVE',
+            provenance: 'legacy-unverified' });
+          if (segments.has(next.key)) throw conflict('local_segment_successor_conflict');
+          segments.set(next.key, next);
+        }
+      }
+      if (operation.type === 'finalize' && recording.integrityVersion === 2) {
+        const key = segmentKey(recording.meetingId, recording.segmentId);
+        const active = segments.get(key);
+        if (active?.status === 'ACTIVE') segments.set(key, projectLocalSegment({ ...active, status: 'ENDED',
+          activeMeetingId: null, endedByOperationId: operation.operationId }));
+      }
       recordings.set(recording.meetingId, recording);
       operations.set(key, operation);
       return operation.result;
@@ -295,7 +395,7 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     async clearMeetingContent(meetingId) {
       deletedMeetings.add(meetingId);
-      for (const collection of [records, recordings, operations, cues, unassignedCues, checkpoints, transcripts, translatedAudioChunks]) {
+      for (const collection of [records, recordings, operations, segments, cues, unassignedCues, checkpoints, transcripts, translatedAudioChunks]) {
         for (const [key, value] of collection) {
           if (value.meetingId === meetingId) collection.delete(key);
         }
@@ -394,8 +494,8 @@ export function createIndexedDbLocalMeetingManifestStore({
     },
     async listLocalMeetingIds() {
       const database = await openDatabase();
-      return runNamedTransaction(database, ['recordings', 'chunks', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readonly', async (transaction) => {
-        const records = await Promise.all(['recordings', 'chunks', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']
+      return runNamedTransaction(database, ['recordings', 'segments', 'chunks', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readonly', async (transaction) => {
+        const records = await Promise.all(['recordings', 'segments', 'chunks', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']
           .map((name) => request(transaction.objectStore(name).getAll())));
         return [...new Set(records.flat().map((row) => row.meetingId).filter(Boolean))];
       });
@@ -403,9 +503,9 @@ export function createIndexedDbLocalMeetingManifestStore({
     async clearMeetingContent(meetingId) {
       const database = await openDatabase();
       return runNamedTransaction(database,
-        ['recordings', 'chunks', 'operations', 'cues', 'checkpoints', 'retentions', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readwrite',
+        ['recordings', 'segments', 'chunks', 'operations', 'cues', 'checkpoints', 'retentions', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readwrite',
         async (transaction) => {
-          for (const name of ['recordings', 'chunks', 'operations', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']) {
+          for (const name of ['recordings', 'segments', 'chunks', 'operations', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']) {
             const store = transaction.objectStore(name);
             const records = await request(store.getAll());
             for (const row of records) {
@@ -444,9 +544,108 @@ export function createIndexedDbLocalMeetingManifestStore({
         const store = transaction.objectStore('operations');
         const raw = await request(store.get(operationKey(meetingId, operationId)));
         if (!raw) return null;
-        const projected = projectLocalOperation(raw);
+        const projected = projectStoredRecordingOperation(raw);
         if (!sameProjection(raw, projected)) await request(store.put(projected));
         return projected;
+      });
+    },
+    async getSegmentTransition(meetingId, operationId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'operations', 'readonly', async (transaction) => {
+        const value = await request(transaction.objectStore('operations').get(operationKey(meetingId, operationId)));
+        return value?.type === 'local_segment_transition' ? projectSegmentTransition(value) : null;
+      });
+    },
+    async listPendingSegmentTransitions(meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'operations', 'readonly', async (transaction) =>
+        (await request(transaction.objectStore('operations').getAll()))
+          .filter((value) => value.meetingId === meetingId && value.type === 'local_segment_transition'
+            && value.phase === 'PREPARED').map(projectSegmentTransition));
+    },
+    async listSegments(meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'segments', 'readonly', async (transaction) =>
+        (await request(transaction.objectStore('segments').getAll()))
+          .filter((value) => value.meetingId === meetingId).map(projectLocalSegment)
+          .sort((left, right) => left.sequence - right.sequence));
+    },
+    async prepareSegmentTransition(input) {
+      const transition = projectSegmentTransition({ ...input, phase: 'PREPARED' });
+      const database = await openDatabase();
+      return runNamedTransaction(database, ['recordings', 'operations', 'segments', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(transition.meetingId)));
+        const operations = transaction.objectStore('operations');
+        const existing = await request(operations.get(transition.key));
+        if (existing) {
+          if (!sameSegmentTransitionIdentity(existing, transition)) throw conflict('local_segment_transition_conflict');
+          return projectSegmentTransition(existing);
+        }
+        const recording = await request(transaction.objectStore('recordings').get(transition.meetingId));
+        const predecessor = await request(transaction.objectStore('segments').get(segmentKey(transition.meetingId, transition.predecessorId)));
+        assertSegmentTransitionSource(recording, transition, predecessor);
+        const pending = (await request(operations.getAll())).some((value) => value.meetingId === transition.meetingId
+          && value.type === 'local_segment_transition' && value.phase === 'PREPARED');
+        if (pending) throw conflict('local_segment_transition_pending');
+        await request(operations.add(transition));
+        return transition;
+      });
+    },
+    async commitSegmentTransition(input) {
+      const transition = projectSegmentTransition({ ...input, phase: 'PREPARED' });
+      const database = await openDatabase();
+      return runNamedTransaction(database, ['recordings', 'operations', 'segments', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(transition.meetingId)));
+        const operations = transaction.objectStore('operations');
+        const existing = await request(operations.get(transition.key));
+        if (!existing || !sameSegmentTransitionIdentity(existing, transition)) throw conflict('local_segment_transition_conflict');
+        if (existing.phase === 'COMMITTED') {
+          if (!sameBoundary(existing.boundary, input.boundary)) throw conflict('local_segment_transition_conflict');
+          return existing.result;
+        }
+        if (existing.phase !== 'PREPARED') throw conflict('local_segment_transition_aborted');
+        const recordings = transaction.objectStore('recordings');
+        const segments = transaction.objectStore('segments');
+        const recording = await request(recordings.get(transition.meetingId));
+        const predecessor = await request(segments.get(segmentKey(transition.meetingId, transition.predecessorId)));
+        assertSegmentTransitionSource(recording, transition, predecessor);
+      const boundary = projectSegmentBoundary(input.boundary, transition, recording.pcmEnabled);
+      assertTransitionBoundary(recording, transition, boundary);
+        const successorKey = segmentKey(transition.meetingId, transition.successorId);
+        if (await request(segments.get(successorKey))) throw conflict('local_segment_successor_conflict');
+        const result = projectLocalRecording({ ...recording, segmentId: transition.successorId,
+        segmentNumber: transition.successorSequence, providerEpoch: recording.providerEpoch + 1,
+        state: recording.state === 'paused' ? 'capturing' : recording.state,
+        captureEpoch: boundary ? boundary.captureEpoch + 1
+          : recording.captureEpoch + (recording.state === 'paused' && !recording.pcmEnabled ? 1 : 0),
+        pauseBoundary: null });
+        await request(segments.put(projectLocalSegment({ ...predecessor, status: 'ENDED', activeMeetingId: null,
+          lastJournalEpoch: boundary?.captureEpoch ?? null, endedByOperationId: transition.operationId })));
+        await request(segments.add(projectLocalSegment({ meetingId: transition.meetingId,
+          recordingId: transition.recordingId, segmentId: transition.successorId,
+          sequence: transition.successorSequence, status: 'ACTIVE', activeMeetingId: transition.meetingId,
+          firstJournalEpoch: boundary ? boundary.captureEpoch + 1 : null, provenance: 'native' })));
+        await request(recordings.put(result));
+        await request(operations.put(projectSegmentTransition({ ...transition, phase: 'COMMITTED', boundary, result })));
+        return result;
+      });
+    },
+    async abortSegmentTransition(input) {
+      const transition = projectSegmentTransition({ ...input, phase: 'PREPARED' });
+      const database = await openDatabase();
+      return runNamedTransaction(database, ['operations', 'recordings', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(transition.meetingId)));
+        const operations = transaction.objectStore('operations');
+        const existing = await request(operations.get(transition.key));
+        if (!existing || !sameSegmentTransitionIdentity(existing, transition)) throw conflict('local_segment_transition_conflict');
+        if (existing.phase !== 'PREPARED') return projectSegmentTransition(existing);
+        const recording = await request(transaction.objectStore('recordings').get(transition.meetingId));
+        if (recording?.segmentId !== transition.predecessorId) throw conflict('local_segment_transition_conflict');
+        const boundary = input.boundary ? projectSegmentBoundary(input.boundary, transition, recording.pcmEnabled) : null;
+        const aborted = projectSegmentTransition({ ...transition, phase: 'ABORTED', boundary,
+          resolutionSegmentId: transition.predecessorId });
+        await request(operations.put(aborted));
+        return aborted;
       });
     },
     async saveContinueOperation(input) {
@@ -509,12 +708,38 @@ export function createIndexedDbLocalMeetingManifestStore({
       const operation = projectLocalOperation(operationInput);
       if (recording.meetingId !== operation.meetingId) throw conflict('local_recorder_operation_conflict');
       const database = await openDatabase();
-      return runNamedTransaction(database, ['recordings', 'operations', 'retentions'], 'readwrite', async (transaction) => {
+      return runNamedTransaction(database, ['recordings', 'operations', 'segments', 'retentions'], 'readwrite', async (transaction) => {
         assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(recording.meetingId)));
         const operationStore = transaction.objectStore('operations');
         const existing = await request(operationStore.get(operation.key));
         if (existing && !sameProjection(projectLocalOperation(existing), operation)) {
           throw conflict('local_recorder_operation_conflict');
+        }
+        const segments = transaction.objectStore('segments');
+        if (operation.type === 'start' && recording.integrityVersion === 2) {
+          const key = segmentKey(recording.meetingId, recording.segmentId);
+          if (!await request(segments.get(key))) await request(segments.add(initialLocalSegment(recording)));
+        }
+        if (['resume', 'recover'].includes(operation.type) && recording.integrityVersion === 2) {
+          const previous = await request(transaction.objectStore('recordings').get(recording.meetingId));
+          if (previous && previous.segmentId !== recording.segmentId) {
+            const oldKey = segmentKey(recording.meetingId, previous.segmentId);
+            const oldSegment = await request(segments.get(oldKey));
+            if (oldSegment?.status !== 'ACTIVE') throw conflict('local_segment_active_conflict');
+            await request(segments.put(projectLocalSegment({ ...oldSegment, status: 'ENDED',
+              activeMeetingId: null, provenance: 'legacy-unverified', endedByOperationId: operation.operationId })));
+            const next = projectLocalSegment({ meetingId: recording.meetingId, recordingId: recording.recordingId,
+              segmentId: recording.segmentId, sequence: recording.segmentNumber, status: 'ACTIVE',
+              provenance: 'legacy-unverified' });
+            if (await request(segments.get(next.key))) throw conflict('local_segment_successor_conflict');
+            await request(segments.add(next));
+          }
+        }
+        if (operation.type === 'finalize' && recording.integrityVersion === 2) {
+          const key = segmentKey(recording.meetingId, recording.segmentId);
+          const active = await request(segments.get(key));
+          if (active?.status === 'ACTIVE') await request(segments.put(projectLocalSegment({ ...active,
+            status: 'ENDED', activeMeetingId: null, endedByOperationId: operation.operationId })));
         }
         await request(transaction.objectStore('recordings').put(recording));
         if (!existing) await request(operationStore.add(operation));
@@ -760,6 +985,10 @@ export function createIndexedDbLocalMeetingManifestStore({
           if (!database.objectStoreNames.contains('operations')) {
             database.createObjectStore('operations', { keyPath: 'key' });
           }
+          if (!database.objectStoreNames.contains('segments')) {
+            const store = database.createObjectStore('segments', { keyPath: 'key' });
+            store.createIndex('activeMeetingId', 'activeMeetingId', { unique: true });
+          }
           if (!database.objectStoreNames.contains('cues')) {
             const store = database.createObjectStore('cues', { keyPath: 'key' });
             store.createIndex('meeting-segment-sequence', ['meetingId', 'segmentId', 'sequence'], { unique: true });
@@ -891,11 +1120,14 @@ function projectLocalChunk(value) {
 
 function projectLocalRecording(value = {}) {
   return Object.freeze({
-    schemaVersion: LOCAL_MEETING_SCHEMA_VERSION,
+    schemaVersion: value.integrityVersion === 2 ? LOCAL_MEETING_SCHEMA_VERSION : (value.schemaVersion || 5),
     meetingId: value.meetingId,
     recordingId: value.recordingId,
     segmentId: value.segmentId,
     segmentNumber: normalizeSegmentNumber(value.segmentNumber, value.segmentId),
+    integrityVersion: value.integrityVersion === 2 ? 2 : null,
+    pcmEnabled: value.integrityVersion === 2 ? value.pcmEnabled === true : null,
+    pauseBoundary: value.integrityVersion === 2 ? (value.pauseBoundary ?? null) : null,
     captureEpoch: value.captureEpoch,
     providerEpoch: value.providerEpoch,
     state: value.state,
@@ -903,6 +1135,103 @@ function projectLocalRecording(value = {}) {
     terminal: value.terminal === true,
     finalized: value.finalized === true
   });
+}
+
+function segmentKey(meetingId, segmentId) {
+  return `${normalizeRequiredString(meetingId, 'meetingId')}\u0000${normalizeRequiredString(segmentId, 'segmentId')}`;
+}
+
+function projectLocalSegment(value = {}) {
+  const meetingId = normalizeRequiredString(value.meetingId, 'meetingId');
+  const segmentId = normalizeRequiredString(value.segmentId, 'segmentId');
+  const status = value.status;
+  if (!['ACTIVE', 'ENDED'].includes(status)) throw conflict('local_segment_status_invalid');
+  const sequence = normalizePositiveInteger(value.sequence, 'sequence');
+  return Object.freeze({ schemaVersion: 1, key: segmentKey(meetingId, segmentId), meetingId,
+    recordingId: normalizeRequiredString(value.recordingId, 'recordingId'), segmentId, sequence,
+    status, ...(status === 'ACTIVE' ? { activeMeetingId: meetingId } : {}),
+    firstJournalEpoch: value.firstJournalEpoch ?? null,
+    lastJournalEpoch: value.lastJournalEpoch ?? null,
+    endedByOperationId: value.endedByOperationId ?? null,
+    provenance: value.provenance === 'native' ? 'native' : 'legacy-unverified' });
+}
+
+function initialLocalSegment(recording) {
+  return projectLocalSegment({ meetingId: recording.meetingId, recordingId: recording.recordingId,
+    segmentId: recording.segmentId, sequence: recording.segmentNumber, status: 'ACTIVE',
+    firstJournalEpoch: recording.pcmEnabled ? 1 : null, provenance: 'native' });
+}
+
+function projectSegmentTransition(value = {}) {
+  const meetingId = normalizeRequiredString(value.meetingId, 'meetingId');
+  const operationId = normalizeRequiredString(value.operationId, 'operationId');
+  if (!['PREPARED', 'COMMITTED', 'ABORTED'].includes(value.phase)) throw conflict('local_segment_transition_phase_invalid');
+  return Object.freeze({ schemaVersion: 2, key: operationKey(meetingId, operationId),
+    type: 'local_segment_transition', meetingId, operationId,
+    recordingId: normalizeRequiredString(value.recordingId, 'recordingId'),
+    predecessorId: normalizeRequiredString(value.predecessorId, 'predecessorId'),
+    predecessorSequence: normalizePositiveInteger(value.predecessorSequence, 'predecessorSequence'),
+    successorId: normalizeRequiredString(value.successorId, 'successorId'),
+    successorSequence: normalizePositiveInteger(value.successorSequence, 'successorSequence'),
+    phase: value.phase, boundary: value.boundary ?? null, result: value.result ?? null,
+    boundaryOperationId: value.boundaryOperationId ?? null,
+    resolutionSegmentId: value.resolutionSegmentId ?? null });
+}
+
+function sameSegmentTransitionIdentity(left, right) {
+  return left.type === 'local_segment_transition' && left.meetingId === right.meetingId
+    && left.operationId === right.operationId && left.recordingId === right.recordingId
+    && left.predecessorId === right.predecessorId && left.predecessorSequence === right.predecessorSequence
+    && left.successorId === right.successorId && left.successorSequence === right.successorSequence
+    && (left.boundaryOperationId ?? null) === (right.boundaryOperationId ?? null);
+}
+
+function assertSegmentTransitionSource(recording, transition, predecessor) {
+  if (recording?.integrityVersion !== 2 || recording.recordingId !== transition.recordingId
+    || recording.segmentId !== transition.predecessorId
+    || recording.segmentNumber !== transition.predecessorSequence
+    || predecessor?.status !== 'ACTIVE' || predecessor.recordingId !== transition.recordingId
+    || predecessor.sequence !== transition.predecessorSequence
+    || transition.successorId === transition.predecessorId
+    || transition.successorSequence !== transition.predecessorSequence + 1) {
+    throw conflict('local_segment_transition_conflict');
+  }
+  if (transition.boundaryOperationId && (recording.state !== 'paused'
+    || recording.pauseBoundary?.transitionOperationId !== transition.boundaryOperationId)) {
+    throw conflict('local_segment_pause_boundary_conflict');
+  }
+}
+function assertTransitionBoundary(recording, transition, boundary) {
+  if (transition.boundaryOperationId && !sameBoundary(recording.pauseBoundary, boundary)) {
+    throw conflict('local_segment_pause_boundary_conflict');
+  }
+}
+
+function projectSegmentBoundary(value, transition, pcmEnabled) {
+  if (value == null) {
+    if (pcmEnabled) throw conflict('local_segment_boundary_missing');
+    return null;
+  }
+  if (value.recordingId !== transition.recordingId
+    || value.transitionOperationId !== (transition.boundaryOperationId || transition.operationId)
+    || !Number.isSafeInteger(value.captureEpoch) || value.captureEpoch < 1
+    || !Number.isSafeInteger(value.endSample) || value.endSample < 0
+    || !Number.isSafeInteger(value.offset) || value.offset < 0
+    || typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(value.sha256)) {
+    throw conflict('local_segment_boundary_invalid');
+  }
+  return Object.freeze({ recordingId: value.recordingId, transitionOperationId: value.transitionOperationId,
+    captureEpoch: value.captureEpoch, endSample: value.endSample, offset: value.offset, sha256: value.sha256 });
+}
+
+function sameBoundary(left, right) {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function conflictThrow(code) { throw conflict(code); }
+
+function projectStoredRecordingOperation(value) {
+  return value.type === 'local_segment_transition' ? projectSegmentTransition(value) : projectLocalOperation(value);
 }
 
 function projectContinueOperation(value = {}) {

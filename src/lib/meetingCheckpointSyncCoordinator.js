@@ -4,6 +4,7 @@ import { checkpointOperationKey, checkpointConflict } from './checkpointOperatio
 const DEFAULT_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_CHECKPOINT_RETRY_DELAY_MS = 5000;
 const MAX_CONFLICT_RETRIES = 3;
+const MAX_BARRIER_FLUSH_PASSES = 3;
 
 export function createMeetingCheckpointSyncCoordinator({
   updateCheckpoint,
@@ -91,7 +92,22 @@ export function createMeetingCheckpointSyncCoordinator({
     flush() {
       clearTimer();
       if (context) clearRetryTimer(context);
-      return enqueueFlush(context ? { ...context } : null);
+      const flushContext = context ? { ...context } : null;
+      queue = queue.then(async () => {
+        if (!flushContext) {
+          return pendingChunks.size === 0 && pendingCues.size === 0 && pendingCueCheckpoints.size === 0;
+        }
+        for (let pass = 0; pass < MAX_BARRIER_FLUSH_PASSES; pass += 1) {
+          if (!await flushPending(flushContext)) return false;
+          if (!isActiveContext(flushContext)) return false;
+          if (!hasPendingFor(flushContext)) return isActiveContext(flushContext);
+          clearTimer();
+          clearRetryTimer(flushContext);
+        }
+        if (isActiveContext(flushContext)) scheduleRetry(flushContext);
+        return false;
+      });
+      return queue;
     },
 
     cancel() {
@@ -263,7 +279,8 @@ export function createMeetingCheckpointSyncCoordinator({
   }
 
   function isActiveContext(candidate) {
-    return context?.meetingId === candidate.meetingId && context?.segmentId === candidate.segmentId;
+    return context?.meetingId === candidate.meetingId && context?.segmentId === candidate.segmentId &&
+      context?.generation === candidate.generation;
   }
 
   function hasPendingFor(candidate) {
@@ -385,8 +402,8 @@ function cueCovers(persisted, pending) {
     remote = validateFinalCue(persisted);
     local = validateFinalCue(pending);
   } catch {
-    // Invalid legacy shapes cannot establish a newer-version durability proof.
-    return sameValue(persisted, pending);
+    // Legacy shapes can only prove an identical Cue or completion of the same refinement.
+    return sameValue(persisted, pending) || legacyCompletedRefinementCovers(persisted, pending);
   }
 
   const identity = ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs',
@@ -418,6 +435,19 @@ function cueCovers(persisted, pending) {
   if (local.refinedSource !== null && remote.refinedSource === null) return false;
   if (local.refinedTranslation !== null && remote.refinedTranslation === null) return false;
   return true;
+}
+
+function legacyCompletedRefinementCovers(persisted, pending) {
+  if (persisted?.cueId !== pending?.cueId || persisted?.sessionId !== pending?.sessionId ||
+      persisted?.segmentId !== pending?.segmentId ||
+      persisted?.refinement?.status !== 'completed' || pending?.refinement?.status !== 'pending' ||
+      persisted.refinement.version !== pending.refinement.version) return false;
+  const { refinement: remoteRefinement, refinedSource: remoteSource, refinedTranslation: remoteTranslation, ...remoteBase } = persisted;
+  const { refinement: localRefinement, refinedSource: localSource, refinedTranslation: localTranslation, ...localBase } = pending;
+  return sameValue(remoteBase, localBase) &&
+    sameValue({ ...remoteRefinement, status: null }, { ...localRefinement, status: null }) &&
+    (localSource == null || localSource === remoteSource) &&
+    (localTranslation == null || localTranslation === remoteTranslation);
 }
 
 function sideCovers(remote, local, side) {

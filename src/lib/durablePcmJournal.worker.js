@@ -28,23 +28,33 @@ function validIdentity(value, field) {
   return value;
 }
 
-async function opfsStore(meetingId) {
+async function opfsStore(meetingId, { existingOnly = false } = {}) {
   const owner = validIdentity(meetingId, 'meetingId');
   const root = await navigator.storage.getDirectory();
-  const base = await root.getDirectoryHandle('pcm-journals', { create: true });
-  const version = await base.getDirectoryHandle('v1', { create: true });
-  const meeting = await version.getDirectoryHandle(owner, { create: true });
+  const base = await root.getDirectoryHandle('pcm-journals', { create: !existingOnly });
+  const version = await base.getDirectoryHandle('v1', { create: !existingOnly });
+  const meeting = await version.getDirectoryHandle(owner, { create: !existingOnly });
   async function directory(recordingId) {
-    return meeting.getDirectoryHandle(validIdentity(recordingId, 'recordingId'), { create: true });
+    return meeting.getDirectoryHandle(validIdentity(recordingId, 'recordingId'), { create: !existingOnly });
   }
-  async function open(recordingId, name) {
+  async function open(recordingId, name, create = true) {
     const parent = await directory(recordingId);
-    const file = await parent.getFileHandle(name, { create: true });
+    const file = await parent.getFileHandle(name, { create });
     return wrap(await file.createSyncAccessHandle());
   }
   return {
-    ledger: (recordingId) => open(recordingId, 'claims.bin'),
-    segment: (recordingId, number) => open(recordingId, `pcm-${String(number).padStart(6, '0')}.bin`)
+    ledger: (recordingId) => open(recordingId, 'claims.bin', !existingOnly),
+    segment: (recordingId, number) => open(recordingId, `pcm-${String(number).padStart(6, '0')}.bin`),
+    async segmentSizeIfExists(recordingId, number) {
+      try {
+        const parent = await directory(recordingId);
+        const file = await parent.getFileHandle(`pcm-${String(number).padStart(6, '0')}.bin`);
+        return (await file.getFile()).size;
+      } catch (error) {
+        if (error?.name === 'NotFoundError') return 0;
+        throw error;
+      }
+    }
   };
 }
 
@@ -83,7 +93,7 @@ self.onmessage = ({ data }) => {
         await releaseMeetingLock?.();
         releaseMeetingLock = await holdMeetingLock(meetingId);
         try {
-          journal = createDurablePcmJournal({ store: await opfsStore(meetingId), recordingId });
+          journal = createDurablePcmJournal({ store: await opfsStore(meetingId, { existingOnly: args.existingOnly }), recordingId });
           result = await journal.open();
         activeRecordingId = recordingId;
         } catch (error) {
@@ -97,10 +107,13 @@ self.onmessage = ({ data }) => {
         else if (command === 'APPEND') result = await journal.append(args);
       else if (command === 'END') {
         console.info('ISSUE41_PCM_END', JSON.stringify({ stage: 'WORKER_END_RECEIVED', recordingId: activeRecordingId, clientId: diagnosticClientId, requestId: id, captureEpoch: args.captureEpoch, endSample: args.endSample }));
-        result = await journal.endEpoch(args.captureEpoch, args.endSample, { clientId: diagnosticClientId, requestId: id });
+        result = await journal.endEpoch(args.captureEpoch, args.endSample, {
+          clientId: diagnosticClientId, requestId: id, transitionOperationId: args.transitionOperationId
+        });
         console.info('ISSUE41_PCM_END', JSON.stringify({ stage: 'WORKER_END_AWAITED', recordingId: activeRecordingId, clientId: diagnosticClientId, requestId: id, captureEpoch: args.captureEpoch, state: result?.state ?? null }));
       }
         else if (command === 'COVERAGE') result = journal.coverage(args.captureEpoch, args.startSample, args.endSample);
+        else if (command === 'TRANSITION_RECEIPT') result = journal.transitionReceipt(args.operationId);
         else if (command === 'READ') result = await journal.readRange(args.captureEpoch, args.startSample, args.endSample);
         else if (command === 'STATUS') result = journal.status();
         else if (command === 'CLOSE') {

@@ -40,6 +40,9 @@ import { createStructuredLogger } from '../src/infrastructure/structuredLogger.j
 import { createExportController } from './exportController.js';
 import { isMeetingContentExpired, meetingContentExpiredError } from '../src/lib/meetingRetention.js';
 import { createPublicRuntimeConfig } from './publicRuntimeConfig.js';
+import { createDefaultWebRtcDeviceAuthorizer, createDefaultWebRtcShareResolver, createVercelWebRtcSignalingHandler, parseWebRtcIceServersJson } from '../api/webrtc/[...path].js';
+import { createRedisRestAdapter } from './webrtc/signalingRoute.js';
+import Redis from 'ioredis';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -626,7 +629,15 @@ export function getDefaultApplicationDependencies() {
 }
 
 export function selectDefaultApplicationDependenciesFactory({ env = process.env } = {}) {
-  return env.NODE_ENV === 'production' || hasConfiguredGeminiApiKey(env)
+  let localSupabase = false;
+  if (env.LOCAL_SUPABASE_MODE === 'true') {
+    try {
+      const url = new URL(env.SUPABASE_URL);
+      localSupabase = url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+        && Boolean(env.SUPABASE_SECRET_KEY);
+    } catch { /* Fail closed to the regular development composition. */ }
+  }
+  return env.NODE_ENV === 'production' || hasConfiguredGeminiApiKey(env) || localSupabase
     ? createProductionApplicationDependencies
     : createApplicationDependencies;
 }
@@ -3300,19 +3311,25 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     if (typeof body?.meetingId !== 'string' || !body.meetingId.trim() || typeof body?.sessionId !== 'string' || !body.sessionId.trim()) {
       throw createHttpError('recorder_forbidden');
     }
+    const hostLocalOnly = req.headers?.['x-host-local-recording'] === '1';
+    if (hostLocalOnly && (typeof body.segmentId !== 'string' || !body.segmentId.trim()
+      || req.headers?.['x-meeting-session-id'] !== body.sessionId
+      || req.headers?.['x-meeting-segment-id'] !== body.segmentId)) {
+      throw createHttpError('recorder_session_mismatch');
+    }
     liveTokenFailureStage = 'session_lookup';
-    const detail = typeof sessionRepository?.getSessionRecord === 'function'
+    const detail = hostLocalOnly ? null : typeof sessionRepository?.getSessionRecord === 'function'
       ? await sessionRepository.getSessionRecord(body.sessionId)
       : await sessionReadController?.getSession?.(body.sessionId);
     const session = detail?.sessionRecord || detail?.session;
     liveTokenSessionFound = Boolean(session);
     liveTokenSessionMeetingId = session?.meetingId || null;
     liveTokenSessionSegmentId = session?.segmentId || null;
-    if (!session) {
+    if (!hostLocalOnly && !session) {
       liveTokenFailureStage = 'session_not_found';
       throw createHttpError('recorder_forbidden');
     }
-    if (session.meetingId !== body.meetingId) {
+    if (!hostLocalOnly && session.meetingId !== body.meetingId) {
       liveTokenFailureStage = 'session_meeting_mismatch';
       throw createHttpError('recorder_forbidden');
     }
@@ -3332,7 +3349,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     let tokenRequest = body;
     let authoritativeSegment = null;
     let authoritativeBinding = null;
-    if (hasRecorderHeaders(req)) {
+    if (hasRecorderHeaders(req) && !hostLocalOnly) {
       const sessionId = body?.sessionId;
       const auth = await authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
       if (body.targetLanguageCode && body.targetLanguageCode !== session.targetLanguageCode) throw createHttpError('recorder_session_mismatch');
@@ -3341,7 +3358,18 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       void auth;
     }
     const meeting = await meetingRepository?.getMeeting?.(body.meetingId);
-    if (meeting?.lifecycleContractVersion === 2) {
+    if (hostLocalOnly) {
+      if (!meeting || ['completed', 'deleted'].includes(meeting.status)) throw createHttpError('recorder_forbidden');
+      if (meeting.targetLanguageCode && body.targetLanguageCode !== meeting.targetLanguageCode) throw createHttpError('recorder_session_mismatch');
+      if (meeting.sourceLanguageCode && body.sourceLanguageCode !== meeting.sourceLanguageCode) throw createHttpError('recorder_session_mismatch');
+      tokenRequest = {
+        ...body,
+        targetLanguageCode: meeting.targetLanguageCode || body.targetLanguageCode,
+        sourceLanguageCode: meeting.sourceLanguageCode || body.sourceLanguageCode
+      };
+      authoritativeSegment = { settingsSnapshot: meeting };
+    }
+    if (!hostLocalOnly && meeting?.lifecycleContractVersion === 2) {
       const headerSessionId = req.headers?.['x-meeting-session-id'];
       const headerSegmentId = req.headers?.['x-meeting-segment-id'];
       const headerLeaseId = req.headers?.['x-meeting-lease-id'];
@@ -5010,7 +5038,21 @@ function publicMeetingViewerDetail(detail) {
 if (IS_MAIN) {
   const defaultApplicationDependencies = getDefaultApplicationDependencies();
   await ensureDataDirectory();
-  const server = http.createServer(handleRequest);
+  const signalingUrl = process.env.WEBRTC_SIGNALING_REDIS_URL;
+  const redis = /^redis:\/\//u.test(signalingUrl || '')
+    ? new Redis(signalingUrl, { lazyConnect: true, enableOfflineQueue: false, maxRetriesPerRequest: 1, retryStrategy: () => null })
+    : createRedisRestAdapter({ url: signalingUrl, token: process.env.WEBRTC_SIGNALING_REDIS_TOKEN });
+  if (redis instanceof Redis) {
+    redis.on('error', () => {});
+    await redis.connect();
+  }
+  const webRtcHandler = createVercelWebRtcSignalingHandler({
+    redis,
+    resolveShareToken: createDefaultWebRtcShareResolver(),
+    authorizeDevice: createDefaultWebRtcDeviceAuthorizer(),
+    iceServers: parseWebRtcIceServersJson(process.env.WEBRTC_ICE_SERVERS_JSON)
+  });
+  const server = http.createServer((req, res) => routeNodeRequest(req, res, { webRtcHandler, applicationHandler: handleRequest }));
   attachExecutionEventsWebSocket({
     server,
     accessControl: globalAccessControl,
@@ -5028,8 +5070,15 @@ if (IS_MAIN) {
     process.once(signal, () => {
       stopTranslationExecutionWorkerRuntime();
       server.close(() => {
+        if (redis instanceof Redis) redis.disconnect();
         process.exit(0);
       });
     });
   }
+}
+
+export function routeNodeRequest(req, res, { webRtcHandler, applicationHandler }) {
+  return /^\/api\/webrtc(?:\/|$)/u.test(new URL(req.url, 'http://localhost').pathname)
+    ? webRtcHandler(req, res)
+    : applicationHandler(req, res);
 }

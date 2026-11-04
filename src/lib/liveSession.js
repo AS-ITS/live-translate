@@ -189,6 +189,7 @@ export class LiveTranslateSession {
     this.pendingInputAudioChunks = [];
     this.pendingInputAudioBytes = 0;
     this.audioChunkSequence = 0;
+    this.captureSourceId = globalThis.crypto?.randomUUID?.() || `capture-${Date.now()}-${Math.random()}`;
     this.nextPlaybackTime = 0;
     this.playbackSources = new Set();
     this.pendingInputTranscript = null;
@@ -1116,6 +1117,7 @@ export class LiveTranslateSession {
     this.trace('pcm.generated', { bytes: bytes.byteLength, sequence: record.sequence });
     this.onInputAudioChunk?.(new Uint8Array(bytes), {
       connectionEpoch: epoch,
+      captureSourceId: this.captureSourceId,
       audioTurnId: this.audioTurnId,
       sequence: record.sequence,
       timestamp: record.timestamp

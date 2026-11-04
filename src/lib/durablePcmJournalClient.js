@@ -13,7 +13,7 @@ function deferred() {
 
 export function createDurablePcmJournalClient({ meetingId, recordingId, workerFactory = () => new Worker(
   new URL('./durablePcmJournal.worker.js', import.meta.url), { type: 'module' }
-), onStatus = () => {}, gapStore = createLocalPcmGapLedger(),
+), onStatus = () => {}, gapStore = createLocalPcmGapLedger(), existingOnly = false, readOnly = false,
 maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
   if (typeof meetingId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(meetingId)) {
     throw new TypeError('valid meetingId required');
@@ -46,6 +46,7 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
   let persisted = null;
   let estimatedRemainingBytes = null;
   const gaps = [];
+  const lastSequenceBySource = new Map();
   const gapWrites = new Set();
   const gapSessionId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 
@@ -139,7 +140,8 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
         const args = task.kind === 'pcm'
           ? { operationId: `r${captureEpoch}_${task.startSample}_${task.endSample}`,
             captureEpoch, startSample: task.startSample, bytes: task.bytes }
-          : { captureEpoch, endSample: task.endSample };
+          : { captureEpoch, endSample: task.endSample,
+            ...(task.transitionOperationId ? { transitionOperationId: task.transitionOperationId } : {}) };
         if (task.kind === 'pcm') emit('WRITTEN_UNCOMMITTED', { captureEpoch,
           startSample: task.startSample, endSample: task.endSample });
         const result = await rpc(task.kind === 'pcm' ? 'APPEND' : 'END', args,
@@ -175,22 +177,22 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
     return schedule(task);
   }
 
-  function rotate() {
+  function rotate(transitionOperationId = null) {
     flushBatch();
-    const endScheduled = startedEpoch === baseEpoch + localEpoch
+    const endScheduled = Boolean(transitionOperationId) || startedEpoch === baseEpoch + localEpoch
       || tasks.some((task) => task.localEpoch === localEpoch && task.kind === 'pcm');
     endDiagnostic('ROTATE', { captureEpoch: baseEpoch + localEpoch, localEpoch, startedEpoch, endScheduled, pendingTasks: tasks.length, endSample: cursor });
-    if (endScheduled) {
-      schedule({ kind: 'end', localEpoch, endSample: cursor });
-    }
+    const endTask = endScheduled
+      ? schedule({ kind: 'end', localEpoch, endSample: cursor, transitionOperationId }) : null;
     localEpoch += 1;
     cursor = 0;
+    return endTask;
   }
 
   return Object.freeze({
     open() {
       if (opening) return opening;
-      opening = rpc('OPEN', { meetingId, recordingId }).then(async (result) => {
+      opening = rpc('OPEN', { meetingId, recordingId, ...(existingOnly ? { existingOnly: true } : {}) }).then(async (result) => {
         baseEpoch = result.highestEpoch;
         ready = true;
         if (result.tailState !== 'CLEAN') {
@@ -202,11 +204,13 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
           pendingBytes = 0;
           batch = [];
           batchBytes = 0;
-        } else {
+        } else if (!readOnly) {
           await rpc('BEGIN', { captureEpoch: baseEpoch + 1 });
           startedEpoch = baseEpoch + 1;
           emit('READY', result);
           void pump();
+        } else {
+          emit('READY', result);
         }
         const storage = globalThis.navigator?.storage;
         if (!recoveryTailState) void storage?.persisted?.().then((value) => {
@@ -223,11 +227,17 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
       }).catch((error) => { fail(error); throw error; });
       return opening;
     },
-    offer(bytes, { connectionEpoch } = {}) {
+    offer(bytes, { connectionEpoch, captureSourceId, sequence } = {}) {
+      if (readOnly) return { state: 'REJECTED', code: 'JOURNAL_READ_ONLY' };
       if (!(bytes instanceof Uint8Array) || bytes.length === 0 || bytes.length % 2 !== 0) {
         return { state: 'REJECTED', code: 'INVALID_PCM' };
       }
-      const nextKey = connectionEpoch ?? 'default';
+      if (captureSourceId && Number.isSafeInteger(sequence) && sequence > 0) {
+        const prior = lastSequenceBySource.get(captureSourceId) || 0;
+        if (sequence <= prior) return { state: 'REJECTED', code: 'DUPLICATE_OR_LATE_PCM' };
+        lastSequenceBySource.set(captureSourceId, sequence);
+      }
+      const nextKey = captureSourceId ? `${captureSourceId}:${connectionEpoch ?? 'default'}` : connectionEpoch ?? 'default';
       if (connectionKey === undefined) connectionKey = nextKey;
       else if (connectionKey !== nextKey) { rotate(); connectionKey = nextKey; }
       const range = { startSample: cursor, endSample: cursor + bytes.length / 2, localEpoch };
@@ -250,19 +260,39 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
       if (batchBytes >= BATCH_BYTES) flushBatch();
       return { state: 'QUEUED', range };
     },
-    async flush({ endEpoch = false } = {}) {
+    async flush({ endEpoch = false, transitionOperationId = null } = {}) {
+      if (readOnly && endEpoch) throw new Error('Read-only Journal cannot end an epoch.');
+      if (transitionOperationId && !endEpoch) throw new TypeError('transitionOperationId requires endEpoch');
       if (endEpoch) endDiagnostic('FLUSH_ENTER', { captureEpoch: baseEpoch + localEpoch, localEpoch, startedEpoch, pendingTasks: tasks.length });
       if (recoveryTailState) return this.status();
       flushBatch();
-      if (endEpoch) { rotate(); connectionKey = undefined; }
+      const endTask = endEpoch ? rotate(transitionOperationId) : null;
+      if (endEpoch) connectionKey = undefined;
       await this.open();
+      const endResult = endTask ? await endTask : null;
       while (tasks.length && !failure) {
         const task = tasks.at(-1);
         await task.result.promise;
       }
       if (failure) throw failure;
       if (endEpoch) endDiagnostic('FLUSH_AWAITED', { captureEpoch: baseEpoch + localEpoch - 1, pendingTasks: tasks.length, code: this.status().code ?? null });
-      return this.status();
+      return { ...this.status(), boundaryReceipt: endResult?.receipt || null };
+    },
+    async transitionReceipt(operationId) {
+      await this.open();
+      return rpc('TRANSITION_RECEIPT', { operationId });
+    },
+    async verifiedTransitionReceipt(operationId) {
+      const receipt = await this.transitionReceipt(operationId);
+      if (!receipt) return null;
+      const coverage = await this.coverage(receipt.captureEpoch, 0, receipt.endSample);
+      if (coverage.tailState !== 'CLEAN' || !coverage.epochClosed
+        || coverage.endSample !== receipt.endSample || !coverage.complete) {
+        const error = new Error('PCM transition boundary is incomplete.');
+        error.code = 'INTEGRITY_UNRESOLVED';
+        throw error;
+      }
+      return receipt;
     },
     async coverage(captureEpoch, startSample, endSample) {
       await this.flush();
@@ -292,7 +322,7 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
     async close() {
       endDiagnostic('CLIENT_CLOSE_ENTER', { captureEpoch: baseEpoch + localEpoch, localEpoch, startedEpoch, recoveryTailState, pendingTasks: tasks.length });
       try {
-        if (!recoveryTailState) await this.flush({ endEpoch: true });
+        if (!readOnly && !recoveryTailState) await this.flush({ endEpoch: true });
         await rpc('CLOSE');
         endDiagnostic('CLIENT_CLOSE_AWAITED', { captureEpoch: baseEpoch + localEpoch - 1, pendingTasks: tasks.length, code: this.status().code ?? null });
       } finally {

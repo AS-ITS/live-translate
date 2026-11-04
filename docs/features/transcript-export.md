@@ -1,5 +1,7 @@
 # Transcript Export
 
+Issue #41 Cutover in the current development branch supersedes the older Cloud Export flow below: the Host reads final Cues and raw/translated audio from local IndexedDB/OPFS after Reload. TXT/SRT/VTT and audio download remain on the Host; new Cloud Export requests and historical cloud download routes return `410 meeting_content_local_only`. Historical cloud rows are retained for a separate controlled cleanup.
+
 Status: Cue-backed Session export implemented (WP5A); P7 cloud lifecycle and P8 cloud-only path completed
 
 P7 adds the Supabase cloud lifecycle for Meeting exports. Cloud TXT, SRT, and VTT
@@ -90,13 +92,11 @@ Timed formats do not accept `stream: "both"`. The shared `export_jobs` PGMQ
 worker uses the existing visibility timeout, retry, and dead-letter behavior.
 Meeting deletion stops if export Storage cleanup fails.
 
-## 4. P8 Cloud-only path
+## 4. P8 Cloud-only path (historical)
 
-All user-visible transcript downloads use the cloud export lifecycle above.
-Supabase cloud mode renders the asynchronous export panel. Local file-backed
-mode does not generate TXT, SRT, or VTT files in the browser; it shows a
-message directing users to a Supabase cloud deployment instead. Existing
-local JSON, audio, and transcript data are not migrated by P8.
+P8 used the cloud export lifecycle for Meeting detail downloads. Issue #41
+replaces that panel's source with Host local Cues as described below. The
+server endpoints remain available for compatibility.
 
 ## 5. Non-Goals
 
@@ -110,7 +110,12 @@ local JSON, audio, and transcript data are not migrated by P8.
 - Speaker diarization.
 - AI summaries.
 - Changing Gemini Live API session behavior.
+
 - Calling the real Gemini API in tests.
+
+## Issue #41 local Meeting export
+
+The Meeting detail export panel now downloads TXT, SRT, and VTT from Cues read from this Host browser's IndexedDB. Original audio downloads require a local OPFS artifact. When local content is absent, the panel shows an unavailable state and does not fall back to the cloud export API. The legacy cloud export endpoints still exist; this UI change does not disable their server-side writes. Reload export of translated audio is not yet available.
 
 ## 6. Export Formats
 

@@ -259,6 +259,10 @@ uploads, or unrelated background work before notifying Viewers.
 
 ## Viewer Ordering and Reconnect
 
+For Local-only rollover, Host sends `segment.transition` with local Segment ID, sequence, and `switching` or `ready` status over the existing DataChannel. Snapshot and replay retain the latest transition, so late or reconnected Viewers learn the current local Segment without a cloud Segment row. Cue append/update keeps its original Segment ownership.
+
+For Issue #41 local-only Meetings, a Viewer with a valid share starts the DataChannel even while cloud recording metadata is `created` or `waiting`. Snapshot, append/update, and replay Cues come only from the authorized Host. Local Segment IDs are checked for consistent Cue identity and session ownership without requiring cloud Segment rows; cloud reads remain limited to share authorization and connection metadata.
+
 WebRTC recovery keeps the Redis signaling cursor monotonic for the participant
 heartbeat lifetime, while individual offer/answer/ICE messages retain their
 shorter TTL. This prevents a long quiet connection from resetting a new

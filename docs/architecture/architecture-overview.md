@@ -1,6 +1,14 @@
 # Architecture Overview
 
+## Issue #41 Host Local-only vertical slice
+
+For local-only Meetings, cloud share metadata authorizes Viewer access and coordinates signaling. The Host DataChannel supplies all Cue snapshots, updates, and replay; Viewer does not require cloud recording Segment or Cue rows.
+
+For a new Host recording, the Meeting and glossary remain cloud settings, while the browser creates the recording Session and Segment in its IndexedDB manifest. The MediaRecorder OPFS chunks, PCM Journal, Cue, transcript, and Checkpoint use existing local durability barriers. Pause and Continue operate on that same local recording identity; Stop and End seal locally before reporting completion. The backend issues an ephemeral Gemini token after Meeting membership authorization without requiring a cloud recording Session or Segment. Rollover drains and seals the old Segment, flushes local Checkpoint and PCM Journal, then commits the successor Segment and operationId together in IndexedDB. Provider readiness resumes audio after the local commit; Reload reads the committed local Segment. Viewer handoff uses Host DataChannel Segment transition and Cue events. No cloud Recording lifecycle reconciliation or mutation is used.
+
 ## Issue #41 implementation 1A: PCM failure boundary
+
+Local-only Stop/End completes after MediaRecorder drain, sealed OPFS chunks and IndexedDB manifest, PCM Journal close, and the remaining local durability barriers. Audio decode and multi-Segment WAV composition run only when the Host requests a local download; export failure leaves the sealed recording available for retry until the existing retention deadline. Opening Meeting detail reads audio metadata without composing a Blob. Recording durability and export decodability are separate outcomes.
 
 After capture starts, a Gemini PCM send or provider connection failure leaves the
 microphone capture graph and local PCM Journal running. Provider reconnect changes

@@ -1,5 +1,9 @@
 # Live Translate API and Events
 
+## Host Local-only Start/Stop token boundary
+
+The Host creates and persists recording Session and Segment identities in IndexedDB. `POST /api/live-token` accepts `x-host-local-recording: 1` with matching `x-meeting-session-id` and `x-meeting-segment-id` headers for this path. It validates the authenticated actor's Meeting `canRecord` permission and uses cloud Meeting language and glossary settings; it does not read or write a cloud recording Session, Segment, lease, or Checkpoint. The token endpoint retains its origin gate and rate limit. Host Start, Pause, Continue, Stop, and End persist recording state locally. Rollover, interrupted recovery, and Viewer metadata still need cutover validation.
+
 ## Issue #41 Local-only Cutover contract (pending isolated acceptance)
 
 Meeting Cue, Checkpoint, transcript, translated output, audio upload, and Cloud Export content endpoints return `410 meeting_content_local_only`. Legacy shared Session content endpoints are closed. Meeting settings, glossary, sharing, lifecycle metadata, operation lookup/recovery, and Viewer WebRTC signaling remain available. Meeting detail and Segment list responses omit historical content; Host local IndexedDB/OPFS supplies transcript and audio exports after Reload. The isolated Cutover Migration also rejects direct table/RPC/Storage writes, while preserving existing historical rows for separate controlled cleanup. No Production Migration has run.

@@ -1,6 +1,15 @@
 # Testing
 
+## Issue #41 local integration startup
+
+Set `LOCAL_SUPABASE_WORKDIR` to a separate workdir containing `supabase/config.toml` and `supabase/migrations`; the repository root is rejected. Run `npm run start:local -- --check` to verify Docker, local Supabase, repository migrations, loopback Redis, and required auth configuration without starting the app. Then run `npm run start:local` for the Node API and Vite frontend. Both processes receive the same loopback Supabase URL and local keys, overriding cloud values in the shell and `.env*`. The startup gate requires a distinct project ID, matching loopback API/DB ports, identical migration files, and exact applied migration history. It does not reset or migrate the database. Production `npm start` is unchanged. Stop both local processes with Ctrl-C.
+
 ## Issue #41 SSH-independent local runner
+
+Each Local Core run generates a validated `issue41_audit_<24 hex>` namespace and checks that it does not exist before starting Chromium. The test verifies trigger coverage for every expected public table and `storage.objects`, then reads writes only from that run's namespace. `evidence.json` and `verdict.json` retain the namespace and coverage; the runner does not clean up audit schemas. On a reused DB, earlier enabled audit triggers also record later writes, so use another isolated DB when earlier audit results must stay unchanged.
+
+For the Phase L2 short Chromium acceptance on an already running isolated stack, use
+`LOCAL_SUPABASE_WORKDIR=<isolated-workdir> LOCAL_REDIS_URL=redis://127.0.0.1:<local-port> node scripts/issue41-local-core-acceptance.mjs` from Mac Terminal. The runner rechecks the existing stack and starts test-mode API, Vite, and signaling processes; ports 3000, 3001, and 5174 must be free. It creates a Local Auth test user and an audit schema in that isolated DB, but never resets, migrates, or stops the stack. Gemini is mocked; Chromium, Local Auth, APIs, Redis signaling, IndexedDB/OPFS, and DB write audit are real. The runner writes `verdict.json` under `test-results/issue41-runner/core-*/`. Use `--plan` for a service-free path check.
 
 From this worktree, start a detached run with `node scripts/issue41-local-runner.mjs start`.
 For the real-time, database-backed Issue #41 case, use `start --real-time`.

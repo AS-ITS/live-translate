@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Issue #41: Local-only Pause now releases the PCM Journal writer after its END receipt; Continue verifies ownership before opening the next epoch's writer.
+
+- Issue #41：Pause 以獨立 boundary ID 封存並持久保存 PCM Journal END receipt；Continue 驗證該 receipt 與 predecessor coverage 後，透過既有 IndexedDB Segment Integrity transaction 提交唯一 successor。Reload、重複 Continue 與失去 ACK 依 durable operation 對帳；證據缺失時保留錄音並回報 `INTEGRITY_UNRESOLVED`。
+
+- Issue #41 Deferred WAV（開發分支、短測驗證中）：Stop／End 改以本機音訊封存與 Journal Barrier 為完成條件；Host 在下載時才讀取 OPFS 並合成音訊。匯出失敗保留 sealed chunks 供保留期限內重試，詳細頁載入不再預先合成音訊。
+
 - Issue #41 Local-only Cutover（開發分支、隔離驗證中）：Stop／End 以 Host 本機內容持久化為前提；翻譯 PCM 以 OPFS chunk 與 IndexedDB manifest 保存並可 Reload 匯出。舊雲端 Cue／Checkpoint／音訊／匯出寫入由 Server、資料庫與 Storage 拒絕，歷史內容讀取收窄；未部署或執行正式 Migration。
 
 - Issue #41 lifecycle target identity: persist pre-transition Session/Segment

@@ -76,6 +76,16 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
           onError: () => {},
         });
         transportRef.current = transport;
+        const initialTransitionStatus = lifecycleStatusRef.current === 'switching-segment' ? 'switching'
+          : lifecycleStatusRef.current === 'listening' ? 'ready' : null;
+        if (initialTransitionStatus && segmentMetaRef.current.segmentId
+          && Number.isSafeInteger(segmentMetaRef.current.segmentSequence)) {
+          transport.publishSegmentTransition({
+            segmentId: segmentMetaRef.current.segmentId,
+            segmentSequence: segmentMetaRef.current.segmentSequence,
+            status: initialTransitionStatus
+          });
+        }
         getStats = () => transport.getStats();
         publishTestCue = (cue) => transport.publishCue(cue);
         globalThis.__liveTranslateWebRtcGetStats = getStats;
@@ -100,6 +110,16 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
     if (!transport) return;
     cueHistoryRef.current.cues.forEach((cue) => transport.publishCue(cue));
   }, [cues, meetingId, segmentId, segmentSequence, segments]);
+  useEffect(() => {
+    const transitionStatus = lifecycleStatus === 'switching-segment' ? 'switching'
+      : lifecycleStatus === 'listening' ? 'ready' : null;
+    if (transitionStatus && segmentId && Number.isSafeInteger(segmentSequence)) {
+      transportRef.current?.publishSegmentTransition({
+        segmentId, segmentSequence,
+        status: transitionStatus
+      });
+    }
+  }, [lifecycleStatus, segmentId, segmentSequence]);
 
   return Object.freeze({
     ...connection,

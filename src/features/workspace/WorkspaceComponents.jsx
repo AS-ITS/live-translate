@@ -636,7 +636,7 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
   );
 }
 
-export function MeetingDetailPage({ detail, detailError = '', onRetry }) {
+export function MeetingDetailPage({ detail, detailError = '', onRetry, onDownloadLocalAudio }) {
   const [activeSection, setActiveSection] = useState('record');
 
   useEffect(() => {
@@ -669,20 +669,20 @@ export function MeetingDetailPage({ detail, detailError = '', onRetry }) {
           </nav>
         </aside>
         <div className="meeting-detail-page-scroll">
-          <MeetingRecordDetail detail={detail} detailError={detailError} activeSection={activeSection} onRetry={onRetry} />
+          <MeetingRecordDetail detail={detail} detailError={detailError} activeSection={activeSection} onRetry={onRetry} onDownloadLocalAudio={onDownloadLocalAudio} />
         </div>
       </div>
     </section>
   );
 }
 
-export function MeetingRecordDetail({ detail, detailError = '', activeSection, onRetry }) {
+export function MeetingRecordDetail({ detail, detailError = '', activeSection, onRetry, onDownloadLocalAudio }) {
   if (activeSection === 'translation') {
     return <MeetingTranslationSection detail={detail} detailError={detailError} onRetry={onRetry} />;
   }
 
   if (activeSection === 'export') {
-    return <MeetingExportSection detail={detail} detailError={detailError} onRetry={onRetry} />;
+    return <MeetingExportSection detail={detail} detailError={detailError} onRetry={onRetry} onDownloadLocalAudio={onDownloadLocalAudio} />;
   }
 
   if (detail === undefined) {
@@ -744,14 +744,14 @@ export function MeetingTranslationSection({ detail, detailError = '', onRetry })
   );
 }
 
-export function MeetingExportSection({ detail, detailError = '', onRetry }) {
+export function MeetingExportSection({ detail, detailError = '', onRetry, onDownloadLocalAudio }) {
   if (detail === undefined) return <MeetingDetailState title="正在載入匯出內容"><p className="history-empty">正在載入已儲存的會議…</p></MeetingDetailState>;
   if (!detail) return <MeetingDetailState title="無法取得匯出內容"><p className="error-message" role="alert">{detailError || '此會議紀錄無法使用。'} <button className="inline-retry" type="button" onClick={onRetry}>重試</button></p></MeetingDetailState>;
 
   return (
     <section className="meeting-record-section meeting-export-section" aria-label="匯出" data-history-section="export">
       <div className="meeting-record-section-heading"><div><p className="eyebrow">EXPORT</p><h2>匯出</h2><p>下載語音紀錄或匯出字幕檔案。</p></div></div>
-      <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這台設備保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.localExportAudioArtifacts || {}} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks onRefresh={onRetry} /></section>
+      <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這台設備保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.localExportAudioArtifacts || {}} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks onRefresh={onRetry} onDownloadLocalAudio={onDownloadLocalAudio} /></section>
       <MeetingTranscriptExportPanel detail={detail} />
     </section>
   );

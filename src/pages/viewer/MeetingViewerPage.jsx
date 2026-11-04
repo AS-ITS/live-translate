@@ -203,7 +203,7 @@ export function MeetingViewerPage({ token, code }) {
     }
     }
 
-    function applyWebRtcEnvelope(envelope, transportMeta = {}, metadataAttempts = 0) {
+    function applyWebRtcEnvelope(envelope, transportMeta = {}) {
       if (cancelled || terminal) return;
       if (envelope.meetingId !== detailRef.current?.meeting?.id) return;
       if (envelope.type === 'meeting.stopped') {
@@ -214,17 +214,10 @@ export function MeetingViewerPage({ token, code }) {
         return;
       }
       if (envelope.type === 'snapshot' || envelope.type === 'replay.response'
-        || envelope.type === 'cue.append' || envelope.type === 'cue.update') {
+        || envelope.type === 'cue.append' || envelope.type === 'cue.update'
+        || envelope.type === 'segment.transition') {
         const merged = mergeHostViewerEnvelope(detailRef.current, envelope);
         if (merged === detailRef.current) {
-          const incoming = envelope.cues || envelope.events?.map((event) => event.cue) || [envelope.cue];
-          if (metadataAttempts < 3 && incoming.some((cue) => cue?.segmentId && !detailRef.current?.segments?.some((segment) => segment.id === cue.segmentId))) {
-            const delay = metadataAttempts === 0 ? 0 : 250;
-            return new Promise((resolve) => setTimeout(resolve, delay)).then(() => fetchSnapshot()).then(() => {
-              if (!cancelled && !terminal) return applyWebRtcEnvelope(envelope, transportMeta, metadataAttempts + 1);
-              return null;
-            }).catch((error) => { handleSnapshotError(error); return null; });
-          }
           return detailRef.current?.hostCursor || null;
         }
         detailRef.current = merged;
@@ -304,10 +297,12 @@ export function MeetingViewerPage({ token, code }) {
     }
 
     function applyRecordingLifecycle(value) {
-      recordingState = value?.recordingState || (
+      const cloudRecordingState = value?.recordingState || (
         ['completed', 'failed'].includes(value?.meeting?.status) ? 'ended'
           : value?.meeting?.status === 'created' ? 'waiting' : 'active'
       );
+      recordingState = Number(value?.meeting?.lifecycleContractVersion) >= 2 && cloudRecordingState !== 'ended'
+        ? 'active' : cloudRecordingState;
       recordLivePipelineTrace({
         stage: 'VIEWER_MEETING_LIFECYCLE',
         event: 'viewer.meeting.lifecycle',

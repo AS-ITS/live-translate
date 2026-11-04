@@ -1099,6 +1099,17 @@ export function createWebRtcSubtitleTransport({
     documentRef?.removeEventListener?.('visibilitychange', handleVisibilityChange);
   }
 
+  function publishSegmentTransition(segment) {
+    if (!source || !segment?.segmentId) return false;
+    const envelope = source.transition(segment);
+    if (!envelope) return false;
+    for (const context of devicePeers.values()) context.adapter?.send(envelope);
+    recordLivePipelineTrace({ stage: 'VIEWER_SEGMENT_TRANSITION', meetingId,
+      segmentId: segment.segmentId, segmentSequence: segment.segmentSequence,
+      reason: segment.status, sequence: envelope.sequence });
+    return true;
+  }
+
   function publishCue(cue) {
     if (!source || !cue?.cueId) return false;
     const previous = cueVersions.get(cue.cueId);
@@ -1209,6 +1220,7 @@ export function createWebRtcSubtitleTransport({
       void connect({ reconnecting: true });
     },
     publishCue,
+    publishSegmentTransition,
     async stop({ revoke = false } = {}) {
       stopped = true;
       connectionEpoch += 1;

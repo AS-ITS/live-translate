@@ -4,6 +4,72 @@ import test from 'node:test';
 
 const integrationTest = process.env.RUN_SUPABASE_LIFECYCLE_TESTS === 'true' ? test : test.skip;
 
+integrationTest('legacy resume commits one durable successor and rejects invalid binding', async (t) => {
+  const client = localSupabaseClient();
+  const fixture = await createLegacyFixture(client, t, 'durable');
+  await expectOk(fetch(`${client.baseUrl}/rest/v1/meeting_segments?id=eq.${fixture.sourceSegmentId}`, {
+    method: 'PATCH',
+    headers: client.headers,
+    body: JSON.stringify({ session_id: fixture.sessionId })
+  }));
+  const operationId = randomUUID();
+  const checkpoint = await persistLegacyCheckpoint(client, fixture, operationId);
+  const body = resumeBody(fixture, operationId, checkpoint);
+  const before = await rest(client, `meeting_segments?meeting_id=eq.${fixture.meetingId}&select=id,status,session_id,checkpoint&order=sequence.asc`);
+
+  const rejected = await rpc(client, 'resume_legacy_meeting_segment', {
+    ...body,
+    p_expected_session_id: randomUUID()
+  });
+  assert.equal(rejected.response.ok, false);
+  assert.equal(rejected.body.message, 'meeting_segment_invalid_state');
+  assert.deepEqual(
+    await rest(client, `meeting_segments?meeting_id=eq.${fixture.meetingId}&select=id,status,session_id,checkpoint&order=sequence.asc`),
+    before,
+    'rejected transaction must leave source and successors unchanged'
+  );
+  assert.deepEqual(await rest(client, `meeting_lifecycle_operations?meeting_id=eq.${fixture.meetingId}&operation_id=eq.${operationId}&select=operation_id`), []);
+
+  const committed = await rpc(client, 'resume_legacy_meeting_segment', body);
+  assert.ok(committed.response.ok, committed.text);
+  assert.notEqual(committed.body.replayed, true);
+  assert.equal(committed.body.operation.operationId, operationId);
+  assert.equal(committed.body.operation.payloadHash, body.p_payload_hash);
+  assert.equal(committed.body.operation.sourceSegmentId, fixture.sourceSegmentId);
+  const successorId = committed.body.segment.id;
+  assert.equal(committed.body.operation.successorSegmentId, successorId);
+
+  const replay = await rpc(client, 'resume_legacy_meeting_segment', body);
+  assert.ok(replay.response.ok, replay.text);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(replay.body.segment.id, successorId);
+
+  const segments = await rest(client, `meeting_segments?meeting_id=eq.${fixture.meetingId}&select=id,sequence,status,session_id,checkpoint,ended_at,live_session_id&order=sequence.asc`);
+  assert.equal(segments.length, 2);
+  assert.equal(segments[0].id, fixture.sourceSegmentId);
+  assert.equal(segments[0].status, 'interrupted');
+  assert.equal(segments[0].session_id, fixture.sessionId);
+  assert.ok(segments[0].ended_at);
+  assert.equal(segments[0].checkpoint.idempotencyKey, operationId);
+  assert.equal(segments[0].checkpoint.payloadHash, body.p_payload_hash);
+  assert.equal(segments[0].checkpoint.revision, checkpoint.revision);
+  assert.equal(segments[1].id, successorId);
+  assert.equal(segments[1].sequence, 2);
+  assert.equal(segments[1].status, 'active');
+  assert.equal(segments[1].session_id, fixture.sessionId);
+  assert.equal(segments[1].live_session_id, body.p_next_live_session_id);
+
+  const operations = await rest(client, `meeting_lifecycle_operations?meeting_id=eq.${fixture.meetingId}&operation_id=eq.${operationId}&select=operation_id,command,request_payload,result`);
+  assert.equal(operations.length, 1);
+  assert.equal(operations[0].command, 'legacy_resume');
+  assert.equal(operations[0].request_payload.payloadHash, body.p_payload_hash);
+  assert.equal(operations[0].result.segment.id, successorId);
+  const sessions = await rest(client, `sessions?id=eq.${fixture.sessionId}&select=id,meeting_id,segment_id`);
+  assert.equal(sessions[0].meeting_id, fixture.meetingId);
+  assert.equal(sessions[0].segment_id, fixture.sourceSegmentId,
+    'SQL transaction does not perform the later frontend Session PATCH');
+});
+
 integrationTest('legacy resume persists one successor for concurrent replay', async (t) => {
   const client = localSupabaseClient();
   const fixture = await createLegacyFixture(client, t, 'concurrent');

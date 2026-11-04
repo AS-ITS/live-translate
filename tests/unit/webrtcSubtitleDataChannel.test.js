@@ -12,6 +12,20 @@ import {
   SUBTITLE_ENVELOPE_TYPES
 } from '../../src/webrtc/subtitleDataChannel.js';
 
+test('Host Segment transition reaches live Viewer and survives snapshot and replay', () => {
+  const source = createSubtitleSource({ meetingId: 'm-1', sourceId: 'host-1' });
+  const switching = source.transition({ segmentId: 'segment-1', segmentSequence: 1, status: 'switching' });
+  const ready = source.transition({ segmentId: 'segment-2', segmentSequence: 2, status: 'ready' });
+  assert.equal(switching.sequence, 1);
+  assert.equal(ready.sequence, 2);
+  assert.equal(source.transition({ segmentId: 'segment-2', segmentSequence: 2, status: 'ready' }), null);
+  assert.deepEqual(source.snapshot().segment, ready.segment);
+  const replay = source.replay(createReplayRequest({ meetingId: 'm-1', requestId: 'r-1', afterSequence: 0 }));
+  assert.deepEqual(replay.events.map((event) => event.type), ['segment.transition', 'segment.transition']);
+  assert.throws(() => source.transition({ segmentId: 'segment-3', segmentSequence: 3, status: 'unknown' }),
+    /Segment transition/u);
+});
+
 test('canonical cue envelopes support one-sided and late-arriving subtitle content', () => {
   const sourceOnly = buildSubtitleEnvelope(SUBTITLE_ENVELOPE_TYPES.cueAppend, {
     meetingId: 'm-1',

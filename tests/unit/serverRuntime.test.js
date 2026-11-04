@@ -49,6 +49,18 @@ test('default server uses production dependencies when Gemini API key is configu
     selectDefaultApplicationDependenciesFactory({ env: {} }),
     createApplicationDependencies
   );
+  assert.strictEqual(
+    selectDefaultApplicationDependenciesFactory({ env: {
+      LOCAL_SUPABASE_MODE: 'true', SUPABASE_URL: 'http://127.0.0.1:55421', SUPABASE_SECRET_KEY: 'local-key'
+    } }),
+    createProductionApplicationDependencies
+  );
+  assert.strictEqual(
+    selectDefaultApplicationDependenciesFactory({ env: {
+      LOCAL_SUPABASE_MODE: 'true', SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'remote-key'
+    } }),
+    createApplicationDependencies
+  );
 });
 
 test('translation execution worker runtime starts once and stops idempotently', async () => {

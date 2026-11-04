@@ -45,6 +45,29 @@ const frame = (operationId, startSample, value = 1, captureEpoch = 1) => ({
   operationId, captureEpoch, startSample, bytes: bytes(value)
 });
 
+test('hashed END receipt survives lost ACK and keeps later epochs distinct', async () => {
+  const store = memoryStore();
+  const first = createDurablePcmJournal({ store, recordingId: 'recording-boundary' });
+  await first.open();
+  await first.beginEpoch(1);
+  await first.append(frame('first-epoch', 0));
+  await first.endEpoch(1, 1600);
+  await first.beginEpoch(2);
+  await first.append(frame('second-epoch', 0, 2, 2));
+  const end = await first.endEpoch(2, 1600, { transitionOperationId: 'rollover-1' });
+  assert.equal(end.receipt.captureEpoch, 2);
+  store.crash();
+  const recovered = createDurablePcmJournal({ store, recordingId: 'recording-boundary' });
+  assert.equal((await recovered.open()).tailState, 'CLEAN');
+  assert.deepEqual(recovered.transitionReceipt('rollover-1'), end.receipt);
+  assert.deepEqual(recovered.coverage(1, 0, 1600).gaps, []);
+  assert.deepEqual(recovered.coverage(2, 0, 1600).gaps, []);
+  await assert.rejects(recovered.append(frame('late', 1600, 3, 2)), { code: 'CAPTURE_EPOCH_CLOSED' });
+  assert.equal((await recovered.endEpoch(2, 1600, { transitionOperationId: 'rollover-1' })).duplicate, true);
+  await assert.rejects(recovered.endEpoch(2, 1600, { transitionOperationId: 'rollover-other' }),
+    { code: 'EPOCH_END_CONFLICT' });
+});
+
 test('append/read uses exact half-open sample ranges; duplicate operation is idempotent', async () => {
   const store = memoryStore();
   const journal = createDurablePcmJournal({ store, recordingId: 'recording-1' });

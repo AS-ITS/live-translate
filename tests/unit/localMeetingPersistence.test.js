@@ -66,8 +66,9 @@ test('production local persistence keeps audio, cues, and checkpoints together',
   const restored = await persistence.restore('meeting-1');
   const snapshot = await persistence.contentSnapshot('meeting-1');
   const checkpoint = await persistence.getCheckpoint({ meetingId: 'meeting-1', segmentId: 'segment-1' });
-  assert.equal(audio.status, 'ready');
-  assert.equal(await audio.blob.text(), 'onetwo');
+  assert.equal(audio.status, 'sealed');
+  assert.equal(audio.blob, null);
+  assert.equal(await (await persistence.listFinalizedAudioArtifacts('meeting-1', { kind: 'input' }))[0].blob.text(), 'onetwo');
   assert.equal(restored.recording.state, 'stopped_local');
   assert.equal(restored.recording.providerEpoch, 2);
   assert.equal(restored.cues[0].cue.sourceText, 'hello');
@@ -77,7 +78,127 @@ test('production local persistence keeps audio, cues, and checkpoints together',
   assert.equal(checkpoint.checkpoint.cueCheckpoint.nextSequence, 2);
 });
 
-test('translated PCM survives reload and corrupt chunks fail the local durability barrier', async () => {
+test('explicit local lifecycle operation IDs replay without advancing the segment twice', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const options = { manifestStore, chunkStore: fakeChunkStore(), cryptoImpl: fakeCrypto(), createOperationId: operationIds() };
+  const first = createLocalMeetingPersistence(options);
+  await first.start({ meetingId: 'meeting-idempotent', recordingId: 'recording-idempotent', segmentId: 'segment-1', operationId: 'start-1' });
+  const paused = await first.pause({ operationId: 'pause-1' });
+  assert.deepEqual(await first.pause({ operationId: 'pause-1' }), paused);
+  const resumed = await first.resume({ operationId: 'continue-1' });
+  assert.deepEqual(await first.resume({ operationId: 'continue-1' }), resumed);
+  assert.equal(resumed.segmentId, 'segment:recording-idempotent:2');
+
+  const reloaded = createLocalMeetingPersistence(options);
+  await reloaded.start({ meetingId: 'meeting-idempotent', recordingId: 'recording-idempotent', segmentId: 'segment-1' });
+  assert.deepEqual(await reloaded.resume({ operationId: 'continue-1' }), resumed);
+  assert.equal((await reloaded.restore('meeting-idempotent')).recording.segmentId, 'segment:recording-idempotent:2');
+});
+
+test('committed local rollover survives Provider startup failure and Reload without a second Segment', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const options = { manifestStore, chunkStore: fakeChunkStore(), cryptoImpl: fakeCrypto() };
+  const host = createLocalMeetingPersistence(options);
+  await host.startLifecycle({ meetingId: 'meeting-recovery', recordingId: 'recording-recovery',
+    segmentId: 'segment-1', operationId: 'start-1' });
+  const committed = await host.rolloverLocalSegment({ operationId: 'rollover:recording-recovery:segment-1',
+    nextSegmentId: 'segment:recording-recovery:2' });
+  // Simulate reload before the successor Provider session becomes ready.
+  const reloaded = createLocalMeetingPersistence(options);
+  assert.equal((await reloaded.restore('meeting-recovery')).recording.segmentId, committed.segmentId);
+  assert.deepEqual(await reloaded.rolloverLocalSegment({ operationId: 'rollover:recording-recovery:segment-1',
+    nextSegmentId: committed.segmentId }), committed);
+  assert.equal((await manifestStore.getRecording('meeting-recovery')).segmentNumber, 2);
+});
+
+test('Host lifecycle remains durable when input audio recording is disabled', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const options = { manifestStore, chunkStore: fakeChunkStore(), cryptoImpl: fakeCrypto(), recordAudio: false };
+  const host = createLocalMeetingPersistence(options);
+  const started = await host.startLifecycle({ meetingId: 'meeting-local', recordingId: 'session-local', segmentId: 'segment-local', operationId: 'start-local' });
+  assert.equal(started.state, 'capturing');
+  assert.equal((await host.start({ meetingId: 'meeting-local' })).state, 'disabled');
+  await host.pauseLifecycle({ operationId: 'pause-local' });
+  const continued = await host.continueLifecycle({ operationId: 'continue-local' });
+  assert.equal(continued.state, 'capturing');
+  assert.equal(continued.segmentId, 'segment:session-local:2');
+  assert.deepEqual(await host.continueLifecycle({ operationId: 'continue-local' }), continued);
+  await host.endLifecycle({ operationId: 'end-local' });
+  const reloaded = createLocalMeetingPersistence(options);
+  assert.equal((await reloaded.restore('meeting-local')).recording.state, 'stopped_local');
+});
+
+test('Stop seals without composing; export failure preserves sealed chunks for retry', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  let composeCount = 0;
+  let failExport = true;
+  const persistence = createLocalMeetingPersistence({
+    manifestStore, chunkStore: fakeChunkStore(), cryptoImpl: fakeCrypto(),
+    createOperationId: operationIds(),
+    composeAudioArtifact: async (input) => {
+      composeCount += 1;
+      if (failExport) throw new Error('decode failed');
+      return concatenateTestArtifact(input);
+    }
+  });
+  await persistence.start({ meetingId: 'meeting-seal', recordingId: 'recording-seal', segmentId: 'segment-a' });
+  await persistence.appendAudioChunk({ data: new Blob(['audio']), receivedAt: 10 });
+  assert.equal((await persistence.finalizeAudio()).status, 'sealed');
+  assert.equal(composeCount, 0);
+  assert.deepEqual((await persistence.listFinalizedAudioArtifactMetadata('meeting-seal')).map((item) => item.kind), ['input']);
+  assert.equal(composeCount, 0);
+  await assert.rejects(persistence.listFinalizedAudioArtifacts('meeting-seal', { kind: 'input' }), /decode failed/u);
+  assert.equal((await persistence.restore('meeting-seal')).recording.state, 'stopped_local');
+  assert.equal((await manifestStore.list('meeting-seal')).length, 1);
+  failExport = false;
+  const [artifact] = await persistence.listFinalizedAudioArtifacts('meeting-seal', { kind: 'input' });
+  assert.equal(await artifact.blob.text(), 'audio');
+  assert.equal(composeCount, 2);
+});
+
+test('Stop refuses a failed recording manifest commit', async () => {
+  const base = createInMemoryLocalMeetingManifestStore();
+  const manifestStore = {
+    ...base,
+    commitRecordingOperation(input) {
+      if (input.recording.state === 'stopped_local') throw new Error('IndexedDB commit failed');
+      return base.commitRecordingOperation(input);
+    }
+  };
+  const persistence = createLocalMeetingPersistence({
+    manifestStore, chunkStore: fakeChunkStore(), cryptoImpl: fakeCrypto(),
+    createOperationId: operationIds(), composeAudioArtifact: concatenateTestArtifact
+  });
+  await persistence.start({ meetingId: 'meeting-fail', recordingId: 'recording-fail', segmentId: 'segment-1' });
+  await persistence.appendAudioChunk({ data: new Blob(['audio']), receivedAt: 10 });
+  await assert.rejects(persistence.finalizeAudio(), /IndexedDB commit failed/u);
+  assert.notEqual((await base.getRecording('meeting-fail')).state, 'stopped_local');
+});
+
+test('three sealed Segment manifests reload and export in recording order', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const chunkStore = fakeChunkStore();
+  const createPersistence = () => createLocalMeetingPersistence({
+    manifestStore, chunkStore, cryptoImpl: fakeCrypto(),
+    createOperationId: operationIds(), composeAudioArtifact: concatenateTestArtifact
+  });
+  const host = createPersistence();
+  await host.start({ meetingId: 'meeting-three', recordingId: 'recording-three', segmentId: 'segment-1' });
+  for (let segment = 1; segment <= 3; segment += 1) {
+    await host.appendAudioChunk({ data: new Blob([String(segment)]), receivedAt: segment });
+    if (segment < 3) await host.rolloverLocalSegment({ nextSegmentId: `segment-${segment + 1}` });
+  }
+  assert.equal((await host.finalizeAudio()).status, 'sealed');
+  const reloaded = createPersistence();
+  const [metadata] = await reloaded.listFinalizedAudioArtifactMetadata('meeting-three');
+  const [artifact] = await reloaded.listFinalizedAudioArtifacts('meeting-three', { kind: 'input' });
+  assert.equal(metadata.recordingId, 'recording-three');
+  assert.equal(artifact.captureSegmentCount, 3);
+  assert.deepEqual(artifact.segments.map((segment) => segment.segmentId), ['segment-1', 'segment-2', 'segment-3']);
+  assert.equal(await artifact.blob.text(), '123');
+});
+
+test('translated PCM survives reload and corrupt chunks fail on-demand export', async () => {
   const manifestStore = createInMemoryLocalMeetingManifestStore();
   const chunkStore = fakeChunkStore();
   const makePersistence = () => createLocalMeetingPersistence({
@@ -89,7 +210,7 @@ test('translated PCM survives reload and corrupt chunks fail the local durabilit
   const first = makePersistence();
   await first.start({ meetingId: 'meeting-1', recordingId: 'session-1', segmentId: 'segment-1' });
   await first.appendTranslatedAudioChunk({ meetingId: 'meeting-1', sessionId: 'session-1', bytes: new Uint8Array([1, 0, 2, 0]) });
-  assert.equal((await first.finalizeTranslatedAudio()).status, 'ready');
+  assert.equal((await first.finalizeTranslatedAudio()).status, 'sealed');
   const reloaded = makePersistence();
   const artifacts = await reloaded.listFinalizedAudioArtifacts('meeting-1');
   assert.equal(artifacts.length, 1);
@@ -98,7 +219,8 @@ test('translated PCM survives reload and corrupt chunks fail the local durabilit
   assert.equal(artifacts[0].blob.size, 48);
   const [chunk] = await manifestStore.listTranslatedAudioChunks('meeting-1');
   chunkStore.files.set(chunk.path, new Uint8Array([9, 0, 2, 0]));
-  await assert.rejects(first.finalizeTranslatedAudio(), /corrupt/u);
+  assert.equal((await first.finalizeTranslatedAudio()).status, 'sealed');
+  await assert.rejects(first.listFinalizedAudioArtifacts('meeting-1', { kind: 'translation' }), /corrupt/u);
 });
 
 test('Segment seal waits for local audio and refuses a failed chunk', async () => {
@@ -145,7 +267,8 @@ test('reload recovery resumes audio sequence without overwriting prior chunks', 
   await reloaded.appendAudioChunk({ data: new Blob(['two']), receivedAt: 20 });
   const audio = await reloaded.finalizeAudio();
 
-  assert.equal(await audio.blob.text(), 'onetwo');
+  assert.equal(audio.status, 'sealed');
+  assert.equal(await (await reloaded.listFinalizedAudioArtifacts('meeting-1', { kind: 'input' }))[0].blob.text(), 'onetwo');
   assert.deepEqual((await manifestStore.list('meeting-1')).map((chunk) => chunk.sequence), [1, 2]);
 });
 
@@ -191,8 +314,8 @@ test('stale construction follows hydrated recording enablement without replacing
   await persistence.appendAudioChunk({ data: new Blob(['saved']), receivedAt: 10 });
   assert.equal(await persistence.getLocalAudioStatus('meeting-stale'), 'processing');
   const finalized = await persistence.finalizeAudio();
-  assert.equal(finalized.status, 'ready');
-  assert.equal(await persistence.getLocalAudioStatus('meeting-stale'), 'ready');
+  assert.equal(finalized.status, 'sealed');
+  assert.equal(await persistence.getLocalAudioStatus('meeting-stale'), 'sealed');
   persistence.setRecordingEnabled(false);
   assert.equal((await persistence.listFinalizedAudioArtifacts('meeting-stale')).length, 1);
 });
@@ -215,7 +338,8 @@ test('a new meeting gets a distinct chunk identity and preserves the interrupted
   await persistence.appendAudioChunk({ data: new Blob(['new']), receivedAt: 20 });
   const finalized = await persistence.finalizeAudio();
 
-  assert.equal(await finalized.blob.text(), 'new');
+  assert.equal(finalized.status, 'sealed');
+  assert.equal(await (await persistence.listFinalizedAudioArtifacts('meeting-2', { kind: 'input' }))[0].blob.text(), 'new');
   assert.deepEqual((await manifestStore.list('meeting-1')).map((chunk) => chunk.chunkId), ['recording-1:audio-00000001']);
   assert.deepEqual((await manifestStore.list('meeting-2')).map((chunk) => chunk.chunkId), ['recording-2:audio-00000001']);
   assert.equal((await manifestStore.list('meeting-1'))[0].state, 'sealed');
@@ -274,7 +398,8 @@ test('rapid pause and continue keeps one recording identity and monotonic chunk 
 
   assert.equal((await persistence.restore('meeting-1')).recording.recordingId, started.recordingId);
   assert.deepEqual(chunks.map((chunk) => chunk.sequence), [1, 2, 3]);
-  assert.equal(await finalized.blob.text(), '123');
+  assert.equal(finalized.status, 'sealed');
+  assert.equal(await (await persistence.listFinalizedAudioArtifacts('meeting-1', { kind: 'input' }))[0].blob.text(), '123');
 });
 
 test('rollover barrier assigns pending chunks to the old Segment and later chunks to the committed Segment', async () => {

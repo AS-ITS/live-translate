@@ -561,10 +561,23 @@ async function mockMeetingCheckpointApi(page, {
 
     if (method === 'POST' && url.pathname === '/api/meetings') {
       const body = JSON.parse(request.postData() || '{}');
+      page.mockMeetingCreateRequests ||= [];
+      page.mockMeetingCreateRequests.push(body);
       await route.fulfill({
         status: 201,
         contentType: 'application/json',
-        body: JSON.stringify({
+        body: JSON.stringify(page.mockMeetingLifecycleV2 ? {
+          meeting: {
+            id: MOCK_MEETING_ID,
+            name: body.name,
+            status: 'created',
+            sourceLanguageCode,
+            targetLanguageCode,
+            lifecycleContractVersion: 2,
+            lifecycleVersion: 0
+          },
+          segment: null
+        } : {
           meeting: { id: MOCK_MEETING_ID, status: 'active' },
           segment: {
             id: MOCK_SEGMENT_ID(1),
@@ -2936,7 +2949,7 @@ test('legacy Continue reuses committed successor after token failure without rel
 });
 
 test('pause and resume drains first speech from the replacement pre-roll', async ({ page }) => {
-  const checkpointRequests = await mockMeetingCheckpointApi(page);
+  await mockMeetingCheckpointApi(page);
   await mockLiveSessionCreateApi(page);
   await gotoMockMeetingLive(page);
   await configureTestGeminiCredential(page);
@@ -2946,6 +2959,10 @@ test('pause and resume drains first speech from the replacement pre-roll', async
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'initial source', 'initial translation');
   await expect(page.getByText('initial source')).toBeVisible();
+  const expectedCues = [{
+    segmentId: MOCK_SEGMENT_ID(1),
+    cueId: await finalCueRows(page).filter({ hasText: 'initial source' }).getAttribute('data-cue-id')
+  }];
 
   for (let cycle = 1; cycle <= 3; cycle += 1) {
     await page.getByRole('button', { name: '停止錄音' }).click();
@@ -2965,11 +2982,47 @@ test('pause and resume drains first speech from the replacement pre-roll', async
     await expect(page.getByText(`resume ${cycle} partial`)).toBeVisible();
     await emitFinalTranscript(page, `resume ${cycle} final`, `resume ${cycle} translation final`);
     await expect(page.getByText(`resume ${cycle} final`)).toBeVisible();
+    expectedCues.push({
+      segmentId: MOCK_SEGMENT_ID(cycle + 1),
+      cueId: await finalCueRows(page).filter({ hasText: `resume ${cycle} final` }).getAttribute('data-cue-id')
+    });
   }
 
-  await expect.poll(() => new Set(checkpointRequests.cueRequests.map(({ segmentId }) => segmentId)).size).toBe(4);
   await page.getByRole('button', { name: '結束會議' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+
+  const readLocalContent = () => page.evaluate(async (meetingId) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+    const store = createIndexedDbLocalMeetingManifestStore();
+    return {
+      cues: await store.listCues(meetingId),
+      checkpoints: await store.listCheckpoints(meetingId)
+    };
+  }, MOCK_MEETING_ID);
+  const assertLocalContent = ({ cues, checkpoints }) => {
+    expect(expectedCues).toHaveLength(4);
+    expect(expectedCues.every(({ cueId }) => Boolean(cueId))).toBe(true);
+    expect(new Set(expectedCues.map(({ cueId }) => cueId)).size).toBe(4);
+    expect(cues).toHaveLength(4);
+    expect(checkpoints).toHaveLength(4);
+    for (const { segmentId, cueId } of expectedCues) {
+      const cue = cues.find((record) => record.cueId === cueId);
+      expect(cue).toMatchObject({ meetingId: MOCK_MEETING_ID, segmentId, cueId });
+      expect(cue.cue).toMatchObject({ segmentId, cueId, status: 'final' });
+      const checkpoint = checkpoints.find((record) => record.segmentId === segmentId);
+      expect(checkpoint).toMatchObject({ meetingId: MOCK_MEETING_ID, segmentId });
+      expect(checkpoint.checkpoint.finalCues).toHaveLength(1);
+      expect(checkpoint.checkpoint.finalCues[0]).toMatchObject({ segmentId, cueId, status: 'final' });
+      expect(checkpoint.checkpoint.cueCheckpoint.nextSequence).toBeGreaterThan(cue.sequence);
+    }
+  };
+  await expect.poll(async () => {
+    const { cues, checkpoints } = await readLocalContent();
+    return [cues.length, checkpoints.length];
+  }).toEqual([4, 4]);
+  assertLocalContent(await readLocalContent());
+  await page.reload();
+  assertLocalContent(await readLocalContent());
 });
 
 test('Continue provider setup close cannot enter fake listening state', async ({ page }) => {
@@ -3068,6 +3121,194 @@ test('live session creates a meeting checkpoint and flushes final chunks on Stop
     translatedText: 'checkpoint translation'
   });
   await expect(partialCueRows(page)).toHaveCount(0);
+});
+
+test('Host local-only Start Pause Continue End survives cloud recording write outage and Reload', async ({ page }) => {
+  page.mockMeetingLifecycleV2 = true;
+  page.mockMeetingLocalAudio = true;
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await page.goto('/#meeting-settings?mode=create');
+  await page.getByLabel('會議名稱').fill('新建本機錄音會議');
+  await page.getByLabel('會議設定').getByRole('button', { name: '建立會議', exact: true }).click();
+  await expect(page.locator('.success-message')).toContainText('會議已建立');
+  expect(page.mockMeetingCreateRequests).toHaveLength(1);
+  expect(page.mockMeetingCreateRequests[0].name).toBe('新建本機錄音會議');
+  const recordingWrites = [];
+  const tokenBindings = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/live-token') {
+      const headers = request.headers();
+      tokenBindings.push({ localOnly: headers['x-host-local-recording'] === '1',
+        hasSessionId: Boolean(headers['x-meeting-session-id']), hasSegmentId: Boolean(headers['x-meeting-segment-id']) });
+    }
+    if (request.method() === 'GET' || path === '/api/meetings') return;
+    if (/\/api\/meetings\/[^/]+\/(?:recording|segments|complete)(?:\/|$)/u.test(path)
+      || /^\/api\/sessions(?:\/|$)/u.test(path)
+      || /\/rest\/v1\/(?:sessions|meeting_segments|subtitle_cues|meeting_events)/u.test(path)) {
+      recordingWrites.push(`${request.method()} ${path}`);
+    }
+  });
+  await page.route('**/api/meetings/*/recording/**', (route) => route.fulfill({ status: 503 }));
+  await page.route('**/api/sessions**', (route) => route.request().method() === 'GET'
+    ? route.fallback() : route.fulfill({ status: 503 }));
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始錄製', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.getByRole('button', { name: '停止錄音' }).click();
+  await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+  const paused = await page.evaluate(async (meetingId) => {
+    const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+    const restored = await createLocalMeetingPersistence().restore(meetingId);
+    const root = await navigator.storage.getDirectory();
+    const journal = await (await (await root.getDirectoryHandle('pcm-journals')).getDirectoryHandle('v1')).getDirectoryHandle(meetingId);
+    const pcmFiles = [];
+    for await (const [, recording] of journal.entries()) {
+      for await (const [, file] of recording.entries()) {
+        if (file.kind === 'file') pcmFiles.push((await file.getFile()).size);
+      }
+    }
+    return { state: restored.recording.state, chunks: restored.chunks.map((chunk) => ({ state: chunk.state, bytes: chunk.byteSize })), pcmFiles };
+  }, MOCK_MEETING_ID);
+  expect(paused.state).toBe('paused');
+  expect(paused.chunks.some((chunk) => chunk.state === 'sealed' && chunk.bytes > 0)).toBe(true);
+  expect(paused.pcmFiles.some((bytes) => bytes > 0)).toBe(true);
+  await page.getByRole('button', { name: '繼續' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.getByRole('button', { name: '結束會議' }).click();
+  await expect(page).toHaveURL(/#meetings$/u);
+  await page.reload();
+  const ended = await page.evaluate(async (meetingId) => {
+    const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+    const restored = await createLocalMeetingPersistence().restore(meetingId);
+    return { state: restored.recording.state, chunkCount: restored.chunks.length };
+  }, MOCK_MEETING_ID);
+  expect(ended.state).toBe('stopped_local');
+  expect(ended.chunkCount).toBeGreaterThanOrEqual(2);
+  expect(recordingWrites).toEqual([]);
+  expect(tokenBindings.length).toBeGreaterThanOrEqual(2);
+  expect(tokenBindings.every((binding) => binding.localOnly && binding.hasSessionId && binding.hasSegmentId)).toBe(true);
+  console.log('HOST_LOCAL_ONLY_EVIDENCE', JSON.stringify({ meetingCreated: page.mockMeetingCreateRequests.length === 1, paused, ended, recordingWrites, tokenBindings }));
+  await test.info().attach('host-local-only-evidence', {
+    body: JSON.stringify({ meetingCreated: page.mockMeetingCreateRequests.length === 1, paused, ended, recordingWrites, tokenBindings }, null, 2),
+    contentType: 'application/json'
+  });
+});
+
+const issue41RealTimeRollover = process.env.ISSUE41_REAL_TIME_ROLLOVER === 'true';
+test(issue41RealTimeRollover
+  ? 'Host local-only 15 minute real-time rollover keeps Cue ownership and durable recovery'
+  : 'Host local-only accelerated rollover keeps Cue ownership and durable recovery', async ({ page }) => {
+  test.setTimeout(issue41RealTimeRollover ? 18 * 60_000 : 90_000);
+  page.mockMeetingLifecycleV2 = true;
+  page.mockMeetingLocalAudio = true;
+  if (!issue41RealTimeRollover) {
+    await page.addInitScript(() => { window.__liveTranslateSegmentSwitchIntervalMs = 8000; });
+  }
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  const recordingWrites = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'GET') return;
+    if (/\/api\/meetings\/[^/]+\/(?:recording|segments|complete)(?:\/|$)/u.test(path)
+      || /^\/api\/sessions(?:\/|$)/u.test(path)
+      || /\/rest\/v1\/(?:sessions|meeting_segments|subtitle_cues|meeting_events)/u.test(path)) {
+      recordingWrites.push(`${request.method()} ${path}`);
+    }
+  });
+  await page.route('**/api/meetings/*/recording/**', (route) => route.fulfill({ status: 503 }));
+  await page.route('**/api/sessions**', (route) => route.request().method() === 'GET'
+    ? route.fallback() : route.fulfill({ status: 503 }));
+  await gotoMockMeetingLive(page);
+  const startedAt = Date.now();
+  await page.getByRole('button', { name: '開始錄製', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await page.evaluate(() => {
+    window.__issue41AudioPulse = setInterval(() => {
+      window.__mockAudioProcessors.at(-1)?.onaudioprocess?.({
+        inputBuffer: { getChannelData: () => new Float32Array(1600).fill(0.25) }
+      });
+    }, 250);
+  });
+  await emitMicrophoneAudio(page);
+  await emitFinalTranscript(page, 'before local rollover', 'before translation');
+  const readLocal = () => page.evaluate(async (meetingId) => {
+    const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+    const persistence = createLocalMeetingPersistence();
+    const restored = await persistence.restore(meetingId);
+    const snapshot = await persistence.contentSnapshot(meetingId);
+    const root = await navigator.storage.getDirectory();
+    const journal = await (await (await root.getDirectoryHandle('pcm-journals')).getDirectoryHandle('v1'))
+      .getDirectoryHandle(meetingId);
+    let pcmBytes = 0;
+    for await (const [, recording] of journal.entries()) {
+      for await (const [, file] of recording.entries()) {
+        if (file.kind === 'file') pcmBytes += (await file.getFile()).size;
+      }
+    }
+    return {
+      state: restored.recording.state,
+      recordingId: restored.recording.recordingId,
+      segmentId: restored.recording.segmentId,
+      pcmBytes,
+      cues: restored.cues.map((row) => ({ sourceText: row.cue.sourceText, segmentId: row.segmentId })),
+      checkpoints: snapshot.checkpoints.map((row) => row.segmentId),
+      chunks: restored.chunks.map((row) => ({ segmentId: row.segmentId, state: row.state, byteSize: row.byteSize }))
+    };
+  }, MOCK_MEETING_ID);
+  const before = await readLocal();
+  expect(before.cues.find((cue) => cue.sourceText === 'before local rollover')?.segmentId).toBe(before.segmentId);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length),
+    { timeout: issue41RealTimeRollover ? 16 * 60_000 : 30_000 })
+    .toBeGreaterThanOrEqual(2);
+  const rolloverElapsedMs = Date.now() - startedAt;
+  if (issue41RealTimeRollover) expect(rolloverElapsedMs).toBeGreaterThanOrEqual(15 * 60_000);
+  await expect.poll(async () => (await readLocal()).segmentId,
+    { timeout: issue41RealTimeRollover ? 60_000 : 30_000 }).not.toBe(before.segmentId);
+  await page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].emitMessage({
+    serverContent: { inputTranscription: { text: 'late old segment cue' }, turnComplete: true }
+  }));
+  await emitMicrophoneAudio(page);
+  await emitFinalTranscript(page, 'after local rollover', 'after translation');
+  const after = await readLocal();
+  expect(after.cues.find((cue) => cue.sourceText === 'after local rollover')?.segmentId).toBe(after.segmentId);
+  expect(after.cues.find((cue) => cue.sourceText === 'before local rollover')?.segmentId).toBe(before.segmentId);
+  const lateCue = after.cues.find((cue) => cue.sourceText === 'late old segment cue');
+  if (lateCue) expect(lateCue.segmentId).toBe(before.segmentId);
+  expect(after.checkpoints).toContain(before.segmentId);
+  expect(after.pcmBytes).toBeGreaterThan(0);
+  await page.evaluate(() => clearInterval(window.__issue41AudioPulse));
+  await page.getByRole('button', { name: '結束會議' }).click();
+  await expect(page).toHaveURL(/#meetings$/u);
+  await page.reload();
+  const recovered = await readLocal();
+  expect(recovered.state).toBe('stopped_local');
+  expect(recovered.cues).toEqual(after.cues);
+  expect(recovered.pcmBytes).toBeGreaterThan(0);
+  expect(recovered.chunks.some((chunk) => chunk.byteSize > 0 && chunk.state === 'sealed')).toBe(true);
+  const replayed = await page.evaluate(async ({ meetingId, operationId, nextSegmentId }) => {
+    const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+    const persistence = createLocalMeetingPersistence();
+    await persistence.restore(meetingId);
+    return persistence.rolloverLocalSegment({ operationId, nextSegmentId });
+  }, { meetingId: MOCK_MEETING_ID,
+    operationId: `rollover:${before.recordingId}:${before.segmentId}`, nextSegmentId: after.segmentId });
+  expect(replayed.segmentId).toBe(after.segmentId);
+  expect((await readLocal()).segmentId).toBe(after.segmentId);
+  expect(recordingWrites).toEqual([]);
+  const rolloverEvidence = { mode: issue41RealTimeRollover ? 'real-time-15-minute' : 'accelerated-8-second',
+    rolloverElapsedMs, before, after, recovered, recordingWrites };
+  console.log('HOST_LOCAL_ROLLOVER_EVIDENCE', JSON.stringify(rolloverEvidence));
+  await test.info().attach('host-local-only-rollover', {
+    body: JSON.stringify(rolloverEvidence, null, 2),
+    contentType: 'application/json'
+  });
 });
 
 test('lifecycle v2 rollover survives unrelated session PATCH outage and keeps provider captions', async ({ page }) => {
@@ -3783,12 +4024,128 @@ test('recover 409 shows its own operation and clears the error after a successfu
 });
 
 test('active segment with a bound live session resumes without subtitles', async ({ page }) => {
+  const sessionId = 'session-1';
+  const sourceSegmentId = MOCK_SEGMENT_ID(1);
+  const successorSegmentId = MOCK_SEGMENT_ID(2);
+  const effectiveGlossaryRevision = createHash('sha256')
+    .update(serializeEffectiveGlossary({ sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', entries: [] }))
+    .digest('hex');
+  const legacyRequests = [];
+  const sessionUpdates = [];
+  const operations = new Map();
+  let sourceStatus = 'active';
+  let sourceCheckpoint = null;
+  let sessionSegmentId = sourceSegmentId;
+  page.mockMeetingStatus = 'active';
   const checkpointRequests = await mockMeetingCheckpointApi(page, {
     initialSegmentStatus: 'active',
     initialLiveSessionId: 'live-session-interrupted'
   });
-  await page.addInitScript(() => {
-    sessionStorage.setItem(`live-translate:meeting-audio:${MOCK_MEETING_ID}`, JSON.stringify({
+  await page.route('**/api/sessions**', async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === 'GET' && pathname === '/api/sessions') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{
+        id: sessionId, meetingId: MOCK_MEETING_ID, segmentId: sessionSegmentId,
+        status: 'active', lifecycleContractVersion: 1
+      }]) });
+      return;
+    }
+    if (request.method() === 'PATCH' && pathname === `/api/sessions/${sessionId}`) {
+      const patch = request.postDataJSON();
+      sessionUpdates.push(patch);
+      if (patch.meetingId !== MOCK_MEETING_ID || patch.segmentId !== successorSegmentId || operations.size !== 1) {
+        await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'meeting_segment_invalid_state' } }) });
+        return;
+      }
+      sessionSegmentId = patch.segmentId;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        session: { id: sessionId, name: '測試會議', meetingId: MOCK_MEETING_ID,
+          segmentId: sessionSegmentId, status: 'active', lifecycleContractVersion: 1 }
+      }) });
+      return;
+    }
+    if (request.method() === 'POST' && pathname === '/api/sessions') {
+      await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'duplicate_session' } }) });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route('**/api/meetings/**', async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    const meetingPath = `/api/meetings/${MOCK_MEETING_ID}`;
+    if (request.method() === 'GET' && pathname === meetingPath) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        meeting: { id: MOCK_MEETING_ID, name: '測試會議', status: 'active',
+          lifecycleContractVersion: 1, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
+          glossaryEntries: [], privateGlossaryEntries: [] }, cues: []
+      }) });
+      return;
+    }
+    if (request.method() === 'GET' && pathname === `${meetingPath}/segments`) {
+      const segments = [{ id: sourceSegmentId, meetingId: MOCK_MEETING_ID, sequence: 0,
+        status: sourceStatus, lifecycleContractVersion: 1, sessionId,
+        liveSessionId: 'live-session-interrupted' }];
+      if (operations.size) segments.push({ id: successorSegmentId, meetingId: MOCK_MEETING_ID,
+        sequence: 1, status: 'active', lifecycleContractVersion: 1, sessionId,
+        liveSessionId: [...operations.values()][0].segment.liveSessionId });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ meetingId: MOCK_MEETING_ID, segments }) });
+      return;
+    }
+    if (request.method() === 'GET' && pathname === `${meetingPath}/segments/${sourceSegmentId}/checkpoint` && sourceCheckpoint) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        meetingId: MOCK_MEETING_ID, segmentId: sourceSegmentId, checkpoint: sourceCheckpoint
+      }) });
+      return;
+    }
+    if (request.method() === 'POST' && pathname === `${meetingPath}/recording/legacy-resume`) {
+      const body = request.postDataJSON();
+      legacyRequests.push(body);
+      const committed = operations.get(body.operationId);
+      if (body.reconcileOnly === true) {
+        await route.fulfill(committed
+          ? { status: 200, contentType: 'application/json', body: JSON.stringify({ ...committed, replayed: true }) }
+          : { status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'meeting_segment_not_found' } }) });
+        return;
+      }
+      const validBinding = body.sourceSegmentId === sourceSegmentId
+        && body.expectedSessionId === sessionId
+        && typeof body.operationId === 'string' && body.operationId.length > 0
+        && typeof body.payloadHash === 'string' && body.payloadHash.length > 0
+        && typeof body.nextLiveSessionId === 'string' && body.nextLiveSessionId.length > 0;
+      if (!validBinding || (!committed && (sourceStatus !== 'active' || sessionSegmentId !== sourceSegmentId))) {
+        await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'meeting_segment_invalid_state' } }) });
+        return;
+      }
+      if (committed && (committed.operation.payloadHash !== body.payloadHash || committed.segment.liveSessionId !== body.nextLiveSessionId)) {
+        await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'meeting_lifecycle_conflict' } }) });
+        return;
+      }
+      if (!committed) {
+        sourceStatus = 'interrupted';
+        sourceCheckpoint = { ...body.checkpoint, idempotencyKey: body.operationId,
+          payloadHash: body.payloadHash, updatedAt: new Date().toISOString() };
+        operations.set(body.operationId, {
+          meeting: { id: MOCK_MEETING_ID, status: 'active', lifecycleContractVersion: 1 },
+          interruptedSegment: { id: sourceSegmentId, meetingId: MOCK_MEETING_ID,
+            status: sourceStatus, sessionId, checkpoint: sourceCheckpoint },
+          segment: { id: successorSegmentId, meetingId: MOCK_MEETING_ID, sequence: 1,
+            status: 'active', sessionId, liveSessionId: body.nextLiveSessionId },
+          operation: { operationId: body.operationId, payloadHash: body.payloadHash, sourceSegmentId },
+          liveGlossaryEntries: [],
+          effectiveGlossaryRevision,
+          glossaryEntryCount: 0
+        });
+      }
+      await route.fulfill({ status: 201, contentType: 'application/json',
+        body: JSON.stringify({ ...operations.get(body.operationId), replayed: Boolean(committed) }) });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.addInitScript((meetingId) => {
+    sessionStorage.setItem(`live-translate:meeting-audio:${meetingId}`, JSON.stringify({
       inputDeviceId: '',
       outputDeviceId: '',
       inputDeviceLabel: '瀏覽器預設麥克風',
@@ -3796,18 +4153,54 @@ test('active segment with a bound live session resumes without subtitles', async
       permissionStatus: 'confirmed',
       confirmedAt: new Date().toISOString()
     }));
-  });
+  }, MOCK_MEETING_ID);
 
   await page.goto(`/#live?meetingId=${MOCK_MEETING_ID}`);
+  await configureTestGeminiCredential(page, { expectedControl: '繼續錄製' });
 
   await expect(page.getByRole('button', { name: '繼續錄製' })).toBeVisible();
   await expect(finalCueRows(page)).toHaveCount(0);
   await page.getByRole('button', { name: '繼續錄製' }).click();
 
-  await expect.poll(() => checkpointRequests.recoverRequests.length).toBe(1);
-  expect(checkpointRequests.recoverRequests[0].body.outcome).toBe('interrupted');
-  expect(checkpointRequests.recoverRequests[0].body.failureReason).toBe('manual_resume');
+  await expect.poll(() => legacyRequests.filter((body) => !body.reconcileOnly).length).toBe(1);
+  expect(legacyRequests[0]).toMatchObject({ sourceSegmentId, reconcileOnly: true });
+  const committedRequest = legacyRequests.find((body) => !body.reconcileOnly);
+  expect(legacyRequests[0].operationId).toBe(committedRequest.operationId);
+  expect(committedRequest.expectedSessionId).toBe(sessionId);
+  expect(checkpointRequests.recoverRequests).toHaveLength(0);
+  expect(sourceStatus).toBe('interrupted');
+  expect(operations.size).toBe(1);
+  expect(operations.get(committedRequest.operationId).segment).toMatchObject({
+    id: successorSegmentId, meetingId: MOCK_MEETING_ID, sessionId, sequence: 1
+  });
+  expect(sourceCheckpoint).toMatchObject({
+    idempotencyKey: committedRequest.operationId, payloadHash: committedRequest.payloadHash
+  });
+  await expect.poll(() => sessionUpdates.length).toBe(1);
+  expect(sessionSegmentId).toBe(successorSegmentId);
   await expect.poll(() => page.liveTokenRequests.length).toBe(1);
+  expect(page.liveTokenRequests[0]).toMatchObject({
+    meetingId: MOCK_MEETING_ID,
+    segmentId: MOCK_SEGMENT_ID(2)
+  });
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(1);
+  const replay = await page.evaluate(async ({ meetingId, body }) => {
+    const response = await fetch(`/api/meetings/${meetingId}/recording/legacy-resume`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    return { status: response.status, body: await response.json() };
+  }, { meetingId: MOCK_MEETING_ID, body: committedRequest });
+  expect(replay.status).toBe(201);
+  expect(replay.body.replayed).toBe(true);
+  expect(operations.size).toBe(1);
+  const invalidBinding = await page.evaluate(async ({ meetingId, body }) => {
+    const response = await fetch(`/api/meetings/${meetingId}/recording/legacy-resume`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    return response.status;
+  }, { meetingId: MOCK_MEETING_ID, body: { ...committedRequest, operationId: 'invalid-binding', expectedSessionId: 'wrong-session' } });
+  expect(invalidBinding).toBe(409);
+  expect(operations.size).toBe(1);
   await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
   await expect(page.getByText('即時翻譯失敗')).toHaveCount(0);
@@ -5053,7 +5446,7 @@ test('recordAudio=false keeps Cue after end without audio artifact or download',
   await expect(audioDownloadSection.getByRole('link', { name: /下載.*語音/ })).toHaveCount(0);
 });
 
-test('meeting export exposes one complete original-audio download instead of per-segment duplicates', async ({ page }) => {
+test('meeting export does not expose legacy cloud audio downloads', async ({ page }) => {
   await page.route(`**/api/meetings/${MOCK_MEETING_ID}`, async (route) => {
     if (route.request().method() !== 'GET') {
       await route.fallback();
@@ -5091,10 +5484,76 @@ test('meeting export exposes one complete original-audio download instead of per
   await page.goto(`/#meeting-detail?meetingId=${MOCK_MEETING_ID}&from=meetings`);
   await page.getByRole('button', { name: '匯出', exact: true }).click();
   const audioDownloads = page.getByRole('region', { name: '語音下載' });
-  await expect(audioDownloads.getByRole('link', { name: '下載原始語音', exact: true })).toHaveCount(1);
+  await expect(audioDownloads.getByRole('link', { name: '下載原始語音', exact: true })).toHaveCount(0);
+  await expect(audioDownloads.getByRole('button', { name: '下載原始語音', exact: true })).toHaveCount(0);
   await expect(audioDownloads.getByRole('button', { name: /下載第 .*段原始語音/u })).toHaveCount(0);
   await expect(audioDownloads).not.toContainText('下載第 0 段原始語音');
   await expect(audioDownloads).not.toContainText('下載第 1 段原始語音');
+});
+
+test('meeting detail composes local audio only when Host clicks download', async ({ page, browser }) => {
+  await page.route(`**/api/meetings/${MOCK_MEETING_ID}`, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    return route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ meeting: { id: MOCK_MEETING_ID, name: '本機錄音', status: 'completed', shouldRecordInputAudio: true }, cues: [], audioArtifacts: {}, cloudAudioArtifacts: [] })
+    });
+  });
+  await page.addInitScript(() => {
+    window.__issue41AudioStages = [];
+    window.__issue41RamStage = (event) => window.__issue41AudioStages.push(event.stage);
+  });
+  await page.goto('/#meetings');
+  await page.evaluate(async ({ meetingId, segmentId }) => {
+    const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+    const persistence = createLocalMeetingPersistence();
+    await persistence.start({ meetingId, recordingId: 'local-recording-1', segmentId });
+    await persistence.appendAudioChunk({ data: new Blob(['local-audio'], { type: 'audio/webm' }), mimeType: 'audio/webm' });
+    await persistence.finalizeAudio();
+  }, { meetingId: MOCK_MEETING_ID, segmentId: MOCK_SEGMENT_ID(1) });
+  await page.goto(`/#meeting-detail?meetingId=${MOCK_MEETING_ID}&from=meetings`);
+  await page.getByRole('button', { name: '匯出', exact: true }).click();
+  const downloadButton = page.getByRole('button', { name: '下載原始語音', exact: true });
+  await expect(downloadButton).toBeVisible();
+  expect(await page.evaluate(() => window.__issue41AudioStages)).not.toContain('opfs_readback');
+  const otherContext = await browser.newContext();
+  try {
+    const otherPage = await otherContext.newPage();
+    await otherPage.goto('/');
+    const otherArtifacts = await otherPage.evaluate(async (meetingId) => {
+      const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+      return createLocalMeetingPersistence().listFinalizedAudioArtifactMetadata(meetingId);
+    }, MOCK_MEETING_ID);
+    expect(otherArtifacts).toEqual([]);
+  } finally {
+    await otherContext.close();
+  }
+  const download = page.waitForEvent('download');
+  await downloadButton.click();
+  expect((await download).suggestedFilename()).toContain('input.webm');
+  await expect.poll(() => page.evaluate(() => window.__issue41AudioStages.includes('opfs_readback'))).toBe(true);
+  await page.evaluate(async (meetingId) => {
+    const { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore } = await import('/src/lib/localMeetingStorage.js');
+    const [chunk] = await createIndexedDbLocalMeetingManifestStore().list(meetingId);
+    await createOpfsChunkStore().remove(chunk.path);
+  }, MOCK_MEETING_ID);
+  await downloadButton.click();
+  await expect(page.getByRole('alert')).toContainText('本機語音匯出失敗，請重試。');
+  await page.evaluate(async (meetingId) => {
+    const { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore } = await import('/src/lib/localMeetingStorage.js');
+    const [chunk] = await createIndexedDbLocalMeetingManifestStore().list(meetingId);
+    await createOpfsChunkStore().write(chunk.path, new TextEncoder().encode('local-audio'));
+  }, MOCK_MEETING_ID);
+  const retryDownload = page.waitForEvent('download');
+  await downloadButton.click();
+  await retryDownload;
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.evaluate(async (meetingId) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+    await createIndexedDbLocalMeetingManifestStore().saveRetention({ meetingId, expiresAt: '2000-01-01T00:00:00.000Z' });
+  }, MOCK_MEETING_ID);
+  await downloadButton.click();
+  await expect(page.getByRole('alert')).toContainText('錄製資料已到期，無法下載。');
 });
 
 test('reconnects once after mocked unexpected close and preserves transcript', async ({ page }) => {

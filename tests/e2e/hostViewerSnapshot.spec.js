@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { installHostViewerHarness } from './hostViewerHarness.js';
 
 test('Host reload rebuilds a scoped Viewer snapshot from IndexedDB Cues', async ({ page }) => {
   const meetingId = `host-snapshot-${Date.now()}`;
@@ -31,4 +32,27 @@ test('Host reload rebuilds a scoped Viewer snapshot from IndexedDB Cues', async 
     { cueId: 'cue-1', segmentId: 'segment-1', sourceText: 'cue-1', translatedText: 'first translation' },
     { cueId: 'cue-2', segmentId: 'segment-2', sourceText: 'cue-2', translatedText: 'second translation' }
   ] });
+});
+
+test('local-only Viewer receives Host snapshot, updates and reconnect replay without cloud Cues', async ({ page }) => {
+  const state = await installHostViewerHarness(page, {
+    code: 'LOCALONLY', meetingId: 'meeting-local', segments: [],
+    lifecycle: { lifecycleContractVersion: 2, recordingState: 'waiting', cloudStatus: 'created' },
+    cues: [{ cueId: 'cue-1', segmentId: 'local-segment-1', sessionId: 'local-session-1',
+      sequence: 1, sourceText: 'Host snapshot', sourceVersion: 1 }],
+  });
+  await page.goto('/#viewer?code=LOCALONLY');
+  await expect(page.getByText('Host snapshot')).toBeVisible();
+  await page.evaluate(() => window.__hostPublish({ cueId: 'cue-1', meetingId: 'meeting-local',
+    segmentId: 'local-segment-1', sessionId: 'local-session-1', sequence: 1,
+    sourceText: 'Host update', sourceVersion: 2 }, 'cue.update'));
+  await expect(page.getByText('Host update')).toBeVisible();
+  await page.evaluate(() => {
+    window.__hostClose();
+    window.__hostPublish({ cueId: 'cue-2', meetingId: 'meeting-local',
+      segmentId: 'local-segment-2', sessionId: 'local-session-2', segmentSequence: 2,
+      sequence: 1, sourceText: 'Host replay', sourceVersion: 1 });
+  });
+  await expect(page.getByText('Host replay')).toBeVisible();
+  expect(state.cloudContentReads).toBe(0);
 });

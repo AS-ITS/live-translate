@@ -1,6 +1,47 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { completeMeetingAfterRecordingFinalize } from '../../src/features/live/useLiveRecordingController.js';
+import { closeLocalPcmWriterAfterPause, completeMeetingAfterRecordingFinalize,
+  openLocalPcmWriterAfterContinue } from '../../src/features/live/useLiveRecordingController.js';
+
+test('local Pause waits for writer CLOSE before Continue opens a fresh writer', async () => {
+  const calls = [];
+  let releaseClose;
+  let writer;
+  const closing = closeLocalPcmWriterAfterPause({
+    operationId: 'pause:recording-1:segment-1', recordInputAudio: true,
+    closePcmJournal: async () => {
+      calls.push('close:start');
+      await new Promise((resolve) => { releaseClose = resolve; });
+      calls.push('close:done');
+    }
+  });
+  assert.deepEqual(calls, ['close:start']);
+  releaseClose();
+  await closing;
+  await openLocalPcmWriterAfterContinue({ localOnly: true, recordInputAudio: true,
+    resumed: { meeting: { id: 'meeting-1' }, session: { id: 'recording-1' } },
+    prepareInputAudioDownload: (record, options) => {
+      assert.deepEqual(record, { id: 'recording-1', meetingId: 'meeting-1', recordingId: 'recording-1' });
+      assert.deepEqual(options, { preserveBuffer: true });
+      calls.push('prepare');
+      writer = { open: async () => { calls.push('open'); } };
+    },
+    pcmJournal: () => writer
+  });
+  assert.deepEqual(calls, ['close:start', 'close:done', 'prepare', 'open']);
+});
+
+test('local Journal handoff failures do not report Pause or Continue success', async () => {
+  await assert.rejects(closeLocalPcmWriterAfterPause({
+    operationId: 'pause-1', recordInputAudio: true,
+    closePcmJournal: async () => { throw new Error('close failed'); }
+  }), /close failed/);
+  await assert.rejects(openLocalPcmWriterAfterContinue({ localOnly: true, recordInputAudio: true,
+    resumed: { meeting: { id: 'meeting-1' }, session: { id: 'recording-1' } },
+    prepareInputAudioDownload: () => {},
+    pcmJournal: () => ({ open: async () => { throw new Error('open failed'); } })
+  }), /open failed/);
+});
 
 test('end meeting awaits every local write before metadata and stays idempotent on retry', async () => {
   const calls = [];
@@ -67,4 +108,15 @@ test('local audio, translated audio, transcript, Cue, and checkpoint failures pr
     completeMeeting: async () => { submitted = true; }
   });
   assert.equal(submitted, true);
+});
+
+test('End accepts a durable local seal without a decoded audio Blob', async () => {
+  let completed = false;
+  await completeMeetingAfterRecordingFinalize({
+    flushAudio: async () => ({ status: 'sealed', blob: null }),
+    flushTranslatedAudio: async () => ({ status: 'sealed', blob: null }),
+    closePcmJournal: async () => {},
+    completeMeeting: async () => { completed = true; }
+  });
+  assert.equal(completed, true);
 });

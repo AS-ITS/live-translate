@@ -17,6 +17,103 @@ function committed(payload) {
   };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((finish) => { resolve = finish; });
+  return { promise, resolve };
+}
+
+test('flush barrier waits for a chunk enqueued during the first durable ACK', async () => {
+  const firstEntered = deferred();
+  const releaseFirst = deferred();
+  const secondEntered = deferred();
+  const releaseSecond = deferred();
+  const calls = [];
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => {
+      calls.push(payload);
+      if (calls.length === 1) {
+        firstEntered.resolve();
+        await releaseFirst.promise;
+      } else if (calls.length === 2) {
+        secondEntered.resolve();
+        await releaseSecond.promise;
+      }
+      return committed(payload);
+    },
+    setTimeoutFn: () => 1,
+    clearTimeoutFn: () => {}
+  });
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([chunk({ idempotencyKey: 'chunk-a', sequence: 1 })]);
+  const barrier = coordinator.flush();
+  await firstEntered.promise;
+  coordinator.enqueue([chunk({ idempotencyKey: 'chunk-b', sequence: 2 })]);
+  releaseFirst.resolve();
+  await secondEntered.promise;
+
+  let settled = false;
+  void barrier.then(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  assert.deepEqual(calls.map((call) => call.durableChunks.map((item) => item.idempotencyKey)),
+    [['chunk-a'], ['chunk-b']]);
+
+  releaseSecond.resolve();
+  assert.equal(await barrier, true);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls.length, 2, 'a repeated flush must not write acknowledged chunks again');
+});
+
+test('flush barrier reports failure when a later chunk write fails', async () => {
+  const firstEntered = deferred();
+  const releaseFirst = deferred();
+  const calls = [];
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => {
+      calls.push(payload);
+      if (calls.length === 1) {
+        firstEntered.resolve();
+        await releaseFirst.promise;
+      }
+      if (calls.length === 2) throw new Error('IndexedDB transaction failed');
+      return committed(payload);
+    },
+    setTimeoutFn: () => 1,
+    clearTimeoutFn: () => {}
+  });
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([chunk({ idempotencyKey: 'chunk-a', sequence: 1 })]);
+  const barrier = coordinator.flush();
+  await firstEntered.promise;
+  coordinator.enqueue([chunk({ idempotencyKey: 'chunk-b', sequence: 2 })]);
+  releaseFirst.resolve();
+
+  assert.equal(await barrier, false);
+  assert.equal(await coordinator.flush(), true);
+  assert.deepEqual(calls.map((call) => call.durableChunks.map((item) => item.idempotencyKey)),
+    [['chunk-a'], ['chunk-b'], ['chunk-b']]);
+});
+
+test('flush barrier stops after a bounded number of new pending batches', async () => {
+  let writes = 0;
+  let coordinator;
+  coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => {
+      writes += 1;
+      coordinator.enqueue([chunk({ idempotencyKey: `chunk-${writes + 1}`, sequence: writes + 1 })]);
+      return committed(payload);
+    },
+    setTimeoutFn: () => 1,
+    clearTimeoutFn: () => {}
+  });
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([chunk({ idempotencyKey: 'chunk-1', sequence: 1 })]);
+
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(writes, 3);
+});
+
 test('checkpoint flush requires a durable ACK before clearing a pending Cue', async () => {
   const calls = [];
   const failures = [];
@@ -236,7 +333,7 @@ test('queued flush keeps its original segment ownership after a new segment star
   coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-2' });
   coordinator.enqueue([chunk({ idempotencyKey: 'new', segmentId: 'segment-2', text: 'new' })]);
   resolveFirstUpdate();
-  await oldFlush;
+  assert.equal(await oldFlush, false, 'a replaced generation cannot satisfy the old barrier');
   await coordinator.flush();
 
   assert.equal(calls.length, 2);

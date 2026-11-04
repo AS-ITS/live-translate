@@ -1,26 +1,215 @@
 import { expect, test } from '@playwright/test';
 import { createHash } from 'node:crypto';
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, createWriteStream, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { once } from 'node:events';
+import { dirname, join } from 'node:path';
 import { serializeEffectiveGlossary } from '../../src/lib/glossaryRevision.js';
 import { installE2EAuth, localE2EAuthSession } from './authBootstrap.js';
+import { databaseSnapshot, installWriteAudit, recordedWrites } from './issue41DbWriteAudit.js';
+import { collectIssue41OwnershipEvidence } from './issue41OwnershipEvidence.js';
+import { PROVISIONAL_RAM_THRESHOLDS } from '../../scripts/issue41-ram-gate.mjs';
 
 const shortValidation = process.env.ISSUE41_SHORT_VALIDATION === 'true';
 const recordingOnly = process.env.ISSUE41_RECORDING_ONLY === 'true';
+const zeroWriteAudit = process.env.ISSUE41_ZERO_WRITE_AUDIT === 'true';
+const coreAcceptance = process.env.ISSUE41_CORE_ACCEPTANCE === 'true';
+if (coreAcceptance && (!zeroWriteAudit || !shortValidation || recordingOnly)) {
+  throw new Error('Core acceptance requires short Local-only audit with Host/Viewer enabled.');
+}
 const recordingSoak = recordingOnly && !shortValidation;
 const recordingContract = recordingOnly && process.env.ISSUE41_ROLLOVER_CONTRACT === 'true';
+const ram2Diagnostic = recordingContract && process.env.ISSUE41_RAM2_DIAGNOSTIC === 'true';
+const ram10Diagnostic = recordingOnly && process.env.ISSUE41_RAM10_DIAGNOSTIC === 'true';
+const ramAttributionSmoke = recordingOnly && process.env.ISSUE41_RAM_ATTRIBUTION_SMOKE === 'true';
+const ramAbcSmoke = recordingOnly && process.env.ISSUE41_RAM_ABC_SMOKE === 'true';
+const ramAbcMode = recordingOnly ? process.env.ISSUE41_RAM_ABC_MODE || null : null;
+const ramProfileC = recordingOnly && process.env.ISSUE41_RAM_3C_PROFILE === 'true';
+if (ramAbcMode && !['A', 'B', 'C'].includes(ramAbcMode)) throw new Error('Invalid RAM ABC mode');
 const soakMinutes = Number(process.env.ISSUE41_RECORDING_SOAK_MINUTES || 20);
-if (recordingSoak && ![20, 40, 130].includes(soakMinutes)) throw new Error('Unsupported recording soak duration');
+const realTimeRam40 = recordingSoak && soakMinutes === 40 && !zeroWriteAudit;
+const localRamMeasurement = realTimeRam40 || ramAttributionSmoke || ramAbcSmoke || Boolean(ramAbcMode) || ramProfileC;
+const recordingSmoke = recordingOnly && shortValidation && !recordingContract && !localRamMeasurement;
+
+function installCoreContinueRolloverClock() {
+  const nativeSetTimeout = window.setTimeout.bind(window);
+  const clock = { armed: false, shortened: 0, delayMs: null };
+  window.__issue41CoreRolloverClock = clock;
+  window.__issue41ArmContinueRolloverClock = () => { clock.armed = true; };
+  window.setTimeout = (callback, delay, ...args) => {
+    if (clock.armed && clock.shortened === 0 && delay === 15 * 60_000) {
+      clock.shortened += 1;
+      clock.delayMs = 15_000;
+      return nativeSetTimeout(callback, clock.delayMs, ...args);
+    }
+    return nativeSetTimeout(callback, delay, ...args);
+  };
+}
+
+function attributeHostRenderer({ pageTargetId, pageTargets, hostPageCount, rendererPids,
+  expectedTargetId, expectedRendererPid }) {
+  let reason = null;
+  if (!pageTargetId || !pageTargets.some((entry) => entry.targetId === pageTargetId))
+    reason = 'HOST_TARGET_NOT_IN_BROWSER_TARGETS';
+  else if (pageTargets.length !== 1 || hostPageCount !== 1) reason = 'MULTIPLE_PAGE_TARGETS';
+  else if (rendererPids.length !== 1) reason = 'RENDERER_COUNT_NOT_ONE';
+  else if (expectedTargetId && expectedTargetId !== pageTargetId) reason = 'HOST_TARGET_CHANGED';
+  else if (expectedRendererPid && expectedRendererPid !== rendererPids[0]) reason = 'RENDERER_PID_CHANGED';
+  return { method: reason ? 'UNATTRIBUTED' : 'ISOLATED_SINGLE_PAGE_SINGLE_RENDERER', reason,
+    rendererPid: reason ? null : rendererPids[0] };
+}
+if (recordingSoak && ![20, 40, 130].includes(soakMinutes) && !((ram10Diagnostic || ramAbcMode) && soakMinutes === 10)) throw new Error('Unsupported recording soak duration');
 const evidenceFile = process.env.ISSUE41_EVIDENCE_FILE;
 const supabaseUrl = process.env.SUPABASE_URL;
 const publishableKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 const serviceKey = process.env.SUPABASE_SECRET_KEY;
 const seriesFile = process.env.ISSUE41_RESOURCE_FILE;
 
-test.use({ trace: 'on' });
+async function runRecordingRam10Diagnostic({ page, browser, meetingId, initialSegmentId, localState, dbRows, evidence, save }) {
+  const cdp = await page.context().newCDPSession(page);
+  const system = await browser.newBrowserCDPSession();
+  await cdp.send('Performance.enable');
+  await cdp.send('HeapProfiler.enable');
+  evidence.ram10 = { samples: [], snapshots: [], cuePhaseMinutes: 5, pcmMinutes: 10 };
+  const startedAt = Date.now();
+  let nextCueAt = startedAt;
+  let lastPcmCount = 0;
+  const snapshot = async (minute) => {
+    const file = join(dirname(evidenceFile), `heap-${minute}min.heapsnapshot`);
+    const stream = createWriteStream(file);
+    const onChunk = ({ chunk }) => stream.write(chunk);
+    cdp.on('HeapProfiler.addHeapSnapshotChunk', onChunk);
+    let gc = 'CDP HeapProfiler.collectGarbage';
+    try {
+      await cdp.send('HeapProfiler.collectGarbage');
+      await cdp.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false });
+    } catch (error) {
+      gc = `UNRELIABLE: ${error.message}`;
+      throw error;
+    } finally {
+      cdp.off('HeapProfiler.addHeapSnapshotChunk', onChunk);
+      stream.end();
+      await once(stream, 'finish');
+      evidence.ram10.snapshots.push({ minute, file, gc, at: new Date().toISOString() });
+      save();
+    }
+  };
+  const sample = async (minute) => {
+    const [metrics, processInfo, local, browserState] = await Promise.all([
+      cdp.send('Performance.getMetrics'),
+      system.send('SystemInfo.getProcessInfo').catch(() => null),
+      localState(meetingId),
+      page.evaluate(async () => {
+        const root = await navigator.storage.getDirectory();
+        const opfs = { files: 0, bytes: 0 };
+        const walk = async (directory) => {
+          for await (const handle of directory.values()) {
+            if (handle.kind === 'directory') await walk(handle);
+            else { opfs.files += 1; opfs.bytes += (await handle.getFile()).size; }
+          }
+        };
+        await walk(root);
+        const stores = {};
+        for (const database of await indexedDB.databases()) {
+          if (!database.name) continue;
+          const db = await new Promise((resolve, reject) => {
+            const request = indexedDB.open(database.name);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+          for (const name of db.objectStoreNames) {
+            if (!/claim|operation/i.test(name)) continue;
+            stores[`${database.name}/${name}`] = await new Promise((resolve, reject) => {
+              const request = db.transaction(name, 'readonly').objectStore(name).count();
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+          }
+          db.close();
+        }
+        return { opfs, stores, pcmCount: window.__issue41PcmCount,
+          lastPcmAgeMs: Date.now() - window.__issue41LastPcmAt,
+          journalQueue: window.__issue41JournalWorkerPending?.size ?? 'NOT_MEASURED',
+          liveTracks: window.__issue41Tracks.filter((track) => track.readyState === 'live').length };
+      })
+    ]);
+    const rendererPid = processInfo?.processInfo?.find((entry) => entry.type === 'renderer')?.id ?? null;
+    let rendererRssBytes = 'NOT_MEASURED';
+    if (rendererPid !== null) {
+      try { rendererRssBytes = Number(execFileSync('ps', ['-p', String(rendererPid), '-o', 'rss='], { encoding: 'utf8' }).trim()) * 1024; }
+      catch { rendererRssBytes = 'NOT_MEASURED'; }
+    }
+    const metric = (name) => metrics.metrics.find((entry) => entry.name === name)?.value ?? 'NOT_MEASURED';
+    const row = { minute, elapsedMs: Date.now() - startedAt, at: new Date().toISOString(),
+      jsHeapBytes: metric('JSHeapUsedSize'), jsHeapTotalBytes: metric('JSHeapTotalSize'),
+      rendererPid, rendererRssBytes, cueCount: local.cues.length,
+      transcriptCount: local.transcripts.length, journalQueue: browserState.journalQueue,
+      claimsOperations: browserState.stores, opfs: browserState.opfs,
+      pcmCount: browserState.pcmCount, lastPcmAgeMs: browserState.lastPcmAgeMs,
+      liveTracks: browserState.liveTracks,
+      externalMemoryBytes: 'NOT_MEASURED_BY_CDP_PERFORMANCE' };
+    evidence.ram10.samples.push(row);
+    if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify({ phase: 'ram10_sample', ...row })}\n`);
+    save();
+    expect(row.liveTracks).toBeGreaterThan(0);
+    expect(row.pcmCount).toBeGreaterThan(lastPcmCount);
+    lastPcmCount = row.pcmCount;
+    return row;
+  };
+  await sample(0);
+  await snapshot(0);
+  for (let minute = 1; minute <= 10; minute += 1) {
+    while (Date.now() - startedAt < minute * 60_000) {
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < 5 * 60_000 && Date.now() >= nextCueAt) {
+        await page.evaluate((sequence) => window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+          serverContent: { inputTranscription: { text: `ram10 cue ${sequence}` },
+            outputTranscription: { text: `ram10 translation ${sequence}` }, turnComplete: true }
+        }), Math.floor(elapsed / 10_000));
+        nextCueAt = Date.now() + 10_000;
+      }
+      await page.waitForTimeout(Math.min(1000, Math.max(1, minute * 60_000 - (Date.now() - startedAt))));
+    }
+    await sample(minute);
+    if (minute === 5 || minute === 10) await snapshot(minute);
+  }
+  expect(Date.now() - startedAt).toBeGreaterThanOrEqual(600_000);
+  expect(evidence.ram10.samples[5].cueCount).toBeGreaterThan(0);
+  expect(evidence.ram10.samples[10].cueCount).toBe(evidence.ram10.samples[5].cueCount);
+  await page.getByRole('button', { name: '結束會議' }).click();
+  evidence.ram10.sessionRows = (await dbRows('sessions', `select=id,meeting_id,segment_id&meeting_id=eq.${meetingId}`)).length;
+  evidence.ram10.initialSegmentId = initialSegmentId;
+  evidence.result = 'RAM10_DIAGNOSTIC_CAPTURED';
+  evidence.finishedAt = new Date().toISOString();
+  save();
+}
 
-test(recordingOnly ? (recordingContract ? 'issue41 recording-only controlled rollover contract' : recordingSoak ? `issue41 recording-only ${soakMinutes}-minute real-time soak` : 'issue41 recording-only local smoke') : 'issue41 real-time 20-minute local meeting soak', async ({ page, browser }) => {
-  test.setTimeout(shortValidation ? 240_000 : (soakMinutes + 8) * 60_000);
+if (process.env.ISSUE41_FIXTURE_CLOCK_CONTRACT === 'true') {
+  test('issue41 fixture clock contract', async ({ page }) => {
+    await page.addInitScript(installCoreContinueRolloverClock);
+    await page.goto('data:text/html,<title>fixture clock</title>');
+    const clock = await page.evaluate(() => {
+      const schedule = () => {
+        const timer = window.setTimeout(() => {}, 15 * 60_000);
+        window.clearTimeout(timer);
+        return { ...window.__issue41CoreRolloverClock };
+      };
+      const initial = schedule();
+      window.__issue41ArmContinueRolloverClock();
+      const continued = schedule();
+      const subsequent = schedule();
+      return { initial, continued, subsequent };
+    });
+    expect(clock.initial).toEqual({ armed: false, shortened: 0, delayMs: null });
+    expect(clock.continued).toEqual({ armed: true, shortened: 1, delayMs: 15_000 });
+    expect(clock.subsequent).toEqual(clock.continued);
+  });
+}
+
+test.use({ trace: localRamMeasurement ? 'off' : 'on' });
+
+test(ramProfileC ? "issue41 RAM-3C isolated profile" : ramAbcSmoke ? "issue41 A/B/C RAM mode smoke" : ramAbcMode ? `issue41 RAM diagnostic ${ramAbcMode}` : ramAttributionSmoke ? 'issue41 Host RAM attribution smoke' : zeroWriteAudit ? 'issue41 isolated zero recording write audit' : recordingOnly ? (recordingContract ? 'issue41 recording-only controlled rollover contract' : recordingSoak ? `issue41 recording-only ${soakMinutes}-minute real-time soak` : 'issue41 recording-only local smoke') : 'issue41 real-time 20-minute local meeting soak', async ({ page, browser }) => {
+  test.setTimeout(ramProfileC ? 480_000 : recordingContract ? 540_000 : shortValidation ? 240_000 : (soakMinutes + 8) * 60_000);
   const auth = localE2EAuthSession();
   expect(auth, 'a local Supabase Auth user is required').toBeTruthy();
   expect(auth.profile.email.endsWith('@example.com')).toBe(true);
@@ -80,6 +269,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       audioObjects: audio.length, exportObjects: exports.length, segments: segmentRows.length, sessions: sessionRows.length };
   };
   page.on('pageerror', (error) => { evidence.browserErrors.push(error.name); save(); });
+  if (coreAcceptance) collectIssue41OwnershipEvidence(page, evidence, save);
   if (recordingOnly) page.on('response', (response) => {
     const request = response.request();
     if (request.method() !== 'POST') return;
@@ -91,6 +281,15 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
   });
 
   await installE2EAuth(page);
+  if (coreAcceptance) await page.addInitScript(installCoreContinueRolloverClock);
+  if (ramAbcMode || ramAbcSmoke || ramProfileC || realTimeRam40 || ramAttributionSmoke) await page.addInitScript((mode) => {
+    const originalDebug = console.debug.bind(console);
+    window.__issue41DiagnosticMode = mode;
+    console.debug = (...args) => {
+      if (window.__issue41DiagnosticMode === 'A') originalDebug(...args);
+    };
+  }, ramProfileC || realTimeRam40 || ramAttributionSmoke ? 'C' : ramAbcMode || 'A');
+  if (localRamMeasurement) await page.addInitScript(() => { window.__issue41BoundMockPcm = true; });
   await page.addInitScript(() => {
     const NativeWorker = window.Worker;
     window.__issue41JournalWorkerPending = new Set();
@@ -108,7 +307,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       }
     };
   });
-  if (recordingContract) await page.addInitScript(() => {
+  if (recordingContract) await page.addInitScript((ram2) => {
     const nativeSetTimeout = window.setTimeout.bind(window);
     const nativeRecorderStart = MediaRecorder.prototype.start;
     const nativeRecorderStop = MediaRecorder.prototype.stop;
@@ -128,16 +327,16 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       }, { once: true });
       return nativeRecorderStop.apply(this, args);
     };
-    let shortened = false;
+    let shortened = 0;
     window.setTimeout = (callback, delay, ...args) => {
-      if (!shortened && delay === 15 * 60_000) {
-        shortened = true;
+      if (shortened < (ram2 ? 2 : 1) && delay === 15 * 60_000) {
+        shortened += 1;
         window.__issue41ControlledRolloverTimer = true;
         return nativeSetTimeout(callback, 15_000, ...args);
       }
       return nativeSetTimeout(callback, delay, ...args);
     };
-  });
+  }, ram2Diagnostic || zeroWriteAudit);
   await page.addInitScript(() => {
     const NativeAudioContext = window.AudioContext;
     window.__issue41Tracks = [];
@@ -226,6 +425,12 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
   });
 
   await apiJson('GET', '/profile');
+  if (coreAcceptance) {
+    const denied = await page.request.get('/api/profile');
+    expect(denied.status()).toBe(401);
+    evidence.unauthenticatedProfileStatus = denied.status();
+    save();
+  }
   evidence.profileRows = (await dbRows('profiles', `select=id,status,role&id=eq.${auth.profile.id}`))
     .map((row) => ({ id: row.id, status: row.status, role: row.role }));
   save();
@@ -241,11 +446,46 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
   expect(created.meeting.lifecycleContractVersion).toBe(2);
   expect(created.meeting.lifecycleVersion).toBe(0);
   expect(created.segment).toBeNull();
+  if (coreAcceptance) expect(recordingOnly).toBe(false);
+  const acceptanceShare = coreAcceptance
+    ? await apiJson('POST', `/meetings/${meetingId}/shares`, { role: 'viewer' }) : null;
+  if (zeroWriteAudit || localRamMeasurement) {
+    const entry = await apiJson('POST', '/glossary/entries', {
+      source: `Issue 41 稽核 ${Date.now()}`, translations: { en: 'Issue 41 audit' }, scope: 'both'
+    });
+    expect(entry.entry.id).toBeTruthy();
+    expect((await apiJson('GET', '/glossary')).entries.some((row) => row.id === entry.entry.id)).toBe(true);
+    if (coreAcceptance) {
+      const updated = await apiJson('PUT', `/glossary/entries/${entry.entry.id}`, {
+        source: entry.entry.source, translations: { en: 'Issue 41 updated' }, scope: 'both'
+      });
+      expect(updated.entry.translations.en).toBe('Issue 41 updated');
+      expect((await apiJson('GET', '/glossary')).entries.find((row) => row.id === entry.entry.id)?.translations.en)
+        .toBe('Issue 41 updated');
+      evidence.dictionaryUpdated = true;
+    }
+    evidence.auditCoverage = installWriteAudit();
+    evidence.dbBefore = databaseSnapshot();
+    evidence.storageBefore = {
+      audio: await storageObjects('meeting-audio'), exports: await storageObjects('meeting-exports')
+    };
+    evidence.glossaryEntryId = entry.entry.id;
+    save();
+  }
   evidence.cloudBefore = await cloudInventory(meetingId);
   save();
-  const share = recordingOnly ? null : await apiJson('POST', `/meetings/${meetingId}/shares`, { role: 'viewer' });
+  const share = acceptanceShare || (recordingOnly ? null
+    : await apiJson('POST', `/meetings/${meetingId}/shares`, { role: 'viewer' }));
   if (!recordingOnly) expect(share.url || share.codeUrl).toBeTruthy();
   await page.goto('/#meetings');
+  if (coreAcceptance) {
+    const browserSupabaseUrl = await page.evaluate(async () =>
+      (await import('/src/lib/supabaseAuth.js')).supabase?.supabaseUrl);
+    expect(browserSupabaseUrl).toBe(supabaseUrl);
+    evidence.environment = { browserSupabaseUrl, apiSupabaseUrl: supabaseUrl,
+      authIssuer: `${supabaseUrl}/auth/v1` };
+    save();
+  }
   await page.evaluate((id) => sessionStorage.setItem(`live-translate:meeting-audio:${id}`, JSON.stringify({
     inputDeviceId: '', outputDeviceId: '', inputDeviceLabel: '瀏覽器預設麥克風',
     outputDeviceLabel: '瀏覽器預設揚聲器', permissionStatus: 'confirmed', confirmedAt: new Date().toISOString()
@@ -257,7 +497,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
   await credential.fill('issue41-test-key');
   await page.getByRole('button', { name: '設定金鑰' }).click();
   await page.goto(`/#live?meetingId=${meetingId}`);
-  await expect(page.getByRole('button', { name: '開始' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '開始錄製' })).toBeEnabled();
   if (recordingOnly) {
     evidence.startPreconditions = await page.evaluate(async (id) => {
       const { hasLiveCredential } = await import('/src/lib/liveCredentialHolder.js');
@@ -267,7 +507,1233 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     save();
     expect(evidence.startPreconditions).toEqual({ credentialPresent: true, audioConfirmed: true });
   }
-  await page.getByRole('button', { name: '開始' }).click();
+  const auditRequests = [];
+  if (zeroWriteAudit || localRamMeasurement) page.on('request', (request) => {
+    if (request.method() === 'GET') return;
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith('/api/') || path.startsWith('/rest/v1/') || path.startsWith('/storage/v1/')) {
+      auditRequests.push({ method: request.method(), path });
+    }
+  });
+  await page.getByRole('button', { name: '開始錄製' }).click();
+  if (zeroWriteAudit) {
+    expect(!coreAcceptance || !recordingOnly, 'Core acceptance requires the Host/Viewer path').toBe(true);
+    let auditViewer = null;
+    const opfsSnapshot = (id) => page.evaluate(async (meetingId) => {
+      const root = await navigator.storage.getDirectory();
+      const journal = await (await (await root.getDirectoryHandle('pcm-journals'))
+        .getDirectoryHandle('v1')).getDirectoryHandle(meetingId);
+      const pcmFiles = [];
+      for await (const [recordingId, directory] of journal.entries()) {
+        if (directory.kind !== 'directory') continue;
+        for await (const [name, handle] of directory.entries()) {
+          if (handle.kind !== 'file' || !/^pcm-\d+\.bin$/u.test(name)) continue;
+          const bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer());
+          pcmFiles.push({ recordingId, name, bytes: bytes.byteLength });
+        }
+      }
+      const { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore } = await import('/src/lib/localMeetingStorage.js');
+      const chunks = (await createIndexedDbLocalMeetingManifestStore().list(meetingId))
+        .filter((chunk) => chunk.state === 'sealed');
+      const chunkStore = createOpfsChunkStore();
+      const chunkFiles = await Promise.all(chunks.map(async (chunk) => {
+        const bytes = new Uint8Array(await (await chunkStore.read(chunk.path)).arrayBuffer());
+        return { segmentId: chunk.segmentId, path: chunk.path, bytes: bytes.byteLength,
+          matchesManifest: bytes.byteLength === chunk.byteSize };
+      }));
+      return { pcmFiles, pcmBytes: pcmFiles.reduce((sum, file) => sum + file.bytes, 0),
+        chunkFiles, chunkBytes: chunkFiles.reduce((sum, file) => sum + file.bytes, 0) };
+    }, id);
+      const ownershipSnapshot = (id) => page.evaluate(async (meetingId) => {
+        const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+        const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+        const { createDurablePcmJournalClient } = await import('/src/lib/durablePcmJournalClient.js');
+        const store = createIndexedDbLocalMeetingManifestStore();
+        const recording = await store.getRecording(meetingId);
+        if (!recording) throw new Error('Core ownership recording missing');
+        const segments = await store.listSegments(meetingId);
+        const pendingTransitions = await store.listPendingSegmentTransitions(meetingId);
+        const transitions = await Promise.all(segments.slice(0, -1).map((segment) =>
+          store.getSegmentTransition(meetingId, segment.endedByOperationId)));
+        const manifestChunks = (await store.list(meetingId)).filter((chunk) => chunk.state === 'sealed')
+          .map(({ recordingId, segmentId, path, byteSize }) => ({ recordingId, segmentId, path, byteSize }));
+        const client = createDurablePcmJournalClient({ meetingId, recordingId: recording.recordingId,
+          existingOnly: true, readOnly: true });
+        let journal;
+        let epochs;
+        let transitionReceipts;
+        try {
+          const status = await client.open();
+          journal = { highestEpoch: status.highestEpoch, tailState: status.tailState,
+            unclaimedTailBytes: status.unclaimedTailBytes };
+          epochs = await Promise.all(Array.from({ length: journal.highestEpoch }, async (_, index) => {
+            const captureEpoch = index + 1;
+            const summary = await client.coverage(captureEpoch, 0, 0);
+            const coverage = await client.coverage(captureEpoch, 0, summary.endSample ?? 0);
+            return { captureEpoch, epochBegun: summary.epochBegun, epochClosed: summary.epochClosed,
+              endSample: summary.endSample, complete: coverage.complete, gaps: coverage.gaps };
+          }));
+          transitionReceipts = await Promise.all(transitions.map(async (transition) => transition && ({
+            operationId: transition.operationId,
+            receipt: await client.verifiedTransitionReceipt(
+              transition.boundaryOperationId || transition.operationId)
+          })));
+        } finally {
+          await client.close();
+        }
+        const root = await navigator.storage.getDirectory();
+        const directory = await (await (await root.getDirectoryHandle('pcm-journals'))
+          .getDirectoryHandle('v1')).getDirectoryHandle(meetingId)
+          .then((meeting) => meeting.getDirectoryHandle(recording.recordingId));
+        const ledger = new Uint8Array(await (await directory.getFileHandle('claims.bin')).getFile()
+          .then((file) => file.arrayBuffer()));
+        const view = new DataView(ledger.buffer);
+        const digest = async (bytes) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+          .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        const records = [];
+        const pcmFiles = new Map();
+        for (let offset = 0; offset < ledger.length;) {
+          if (offset + 36 > ledger.length) throw new Error(`Core ownership ledger truncated at ${offset}`);
+          const length = view.getUint32(offset, true);
+          if (length < 2 || offset + 4 + length + 32 > ledger.length) {
+            throw new Error(`Core ownership ledger record invalid at ${offset}`);
+          }
+          const payload = ledger.subarray(offset + 4, offset + 4 + length);
+          const value = JSON.parse(new TextDecoder().decode(payload));
+          const ledgerHashValid = (await digest(payload)) === [...ledger.subarray(offset + 4 + length,
+            offset + 4 + length + 32)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+          const ownerSegmentIds = segments.filter((segment, index) =>
+            value.captureEpoch >= segment.firstJournalEpoch
+            && value.captureEpoch <= (segments[index + 1] ? segment.lastJournalEpoch : journal.highestEpoch))
+            .map((segment) => segment.segmentId);
+          const record = { ...value, ledgerOffset: offset, ledgerHashValid, ownerSegmentIds,
+            segmentId: ownerSegmentIds.length === 1 ? ownerSegmentIds[0] : null };
+          if (value.type === 'pcm') {
+            const name = `pcm-${String(value.segment).padStart(6, '0')}.bin`;
+            if (!pcmFiles.has(name)) pcmFiles.set(name, await (await directory.getFileHandle(name)).getFile());
+            const bytes = await pcmFiles.get(name).slice(value.offset, value.offset + value.byteLength).arrayBuffer();
+            record.pcmHashValid = bytes.byteLength === value.byteLength
+              && (await digest(bytes)) === value.sha256;
+            record.pcmFile = name;
+          }
+          records.push(record);
+          offset += 4 + length + 32;
+        }
+        const pcmFileSizes = [...pcmFiles].map(([name, file]) => ({ name, bytes: file.size }));
+        const verifier = await createLocalMeetingPersistence({ manifestStore: store })
+          .verifySegmentPcmOwnership(meetingId);
+        return { recording, segments, pendingTransitions, transitions, manifestChunks,
+          journal, epochs, transitionReceipts, ledgerBytes: ledger.length, records, pcmFileSizes,
+          verifier: { status: verifier.status, reason: verifier.reason || null } };
+      }, id);
+      const assertCoreOwnership = (snapshot, opfs, expectedRecordingId, expectedSegmentIds) => {
+        expect(snapshot.recording.recordingId).toBe(expectedRecordingId);
+        expect(snapshot.recording.state).toBe('stopped_local');
+        expect(snapshot.verifier, 'Product ownership verifier must pass').toMatchObject({ status: 'PASS' });
+        expect(snapshot.pendingTransitions).toEqual([]);
+        expect(snapshot.journal.tailState).toBe('CLEAN');
+        expect(snapshot.journal.unclaimedTailBytes).toBe(0);
+        expect(snapshot.segments.map((segment) => segment.segmentId)).toEqual(expectedSegmentIds);
+        expect(snapshot.segments.every((segment) => segment.recordingId === expectedRecordingId
+          && segment.status === 'ENDED' && segment.provenance === 'native')).toBe(true);
+        expect(snapshot.transitions).toHaveLength(snapshot.segments.length - 1);
+        expect(snapshot.transitions[0].boundaryOperationId,
+          'Continue must own the committed Pause boundary').toMatch(/^pause:/u);
+        const epochOwners = new Map();
+        snapshot.segments.forEach((segment, index) => {
+          const lastEpoch = snapshot.segments[index + 1]
+            ? segment.lastJournalEpoch : snapshot.journal.highestEpoch;
+          expect(segment.sequence).toBe(index + 1);
+          expect(segment.firstJournalEpoch).toBeGreaterThan(0);
+          expect(lastEpoch).toBeGreaterThanOrEqual(segment.firstJournalEpoch);
+          for (let epoch = segment.firstJournalEpoch; epoch <= lastEpoch; epoch += 1) {
+            expect(epochOwners.has(epoch), `Epoch ${epoch} must have one Segment owner`).toBe(false);
+            epochOwners.set(epoch, segment.segmentId);
+          }
+        });
+        expect([...epochOwners.keys()].sort((a, b) => a - b)).toEqual(
+          Array.from({ length: snapshot.journal.highestEpoch }, (_, index) => index + 1));
+        expect(snapshot.records.length).toBeGreaterThan(0);
+        expect(snapshot.records.every((record) => record.recordingId === expectedRecordingId
+          && record.ledgerHashValid && record.ownerSegmentIds.length === 1
+          && record.segmentId === epochOwners.get(record.captureEpoch))).toBe(true);
+        const pcmClaims = snapshot.records.filter((record) => record.type === 'pcm');
+        expect(pcmClaims.length).toBeGreaterThan(0);
+        expect(pcmClaims.every((claim) => claim.pcmHashValid
+          && claim.endSample > claim.startSample
+          && claim.byteLength === (claim.endSample - claim.startSample) * 2)).toBe(true);
+        expect(pcmClaims.reduce((sum, claim) => sum + claim.byteLength, 0)).toBe(opfs.pcmBytes);
+        expect(snapshot.pcmFileSizes.reduce((sum, file) => sum + file.bytes, 0)).toBe(opfs.pcmBytes);
+        snapshot.epochs.forEach((epoch) => {
+          const records = snapshot.records.filter((record) => record.captureEpoch === epoch.captureEpoch);
+          const begins = records.filter((record) => record.type === 'begin');
+          const ends = records.filter((record) => record.type === 'end');
+          expect(begins, `Epoch ${epoch.captureEpoch} BEGIN receipt`).toHaveLength(1);
+          expect(ends, `Epoch ${epoch.captureEpoch} END receipt`).toHaveLength(1);
+          expect(ends[0].endSample).toBe(epoch.endSample);
+          expect(epoch).toMatchObject({ epochBegun: true, epochClosed: true, complete: true, gaps: [] });
+        });
+        snapshot.transitions.forEach((transition, index) => {
+          const predecessor = snapshot.segments[index];
+          const successor = snapshot.segments[index + 1];
+          const verified = snapshot.transitionReceipts[index];
+          expect(transition.phase).toBe('COMMITTED');
+          expect(transition.recordingId).toBe(expectedRecordingId);
+          expect(transition.predecessorId).toBe(predecessor.segmentId);
+          expect(transition.successorId).toBe(successor.segmentId);
+          expect(verified.operationId).toBe(transition.operationId);
+          expect(verified.receipt, `Transition ${transition.operationId} END receipt`).toEqual(transition.boundary);
+          expect(verified.receipt.captureEpoch).toBe(predecessor.lastJournalEpoch);
+          expect(successor.firstJournalEpoch).toBe(verified.receipt.captureEpoch + 1);
+          expect(snapshot.records.some((record) => record.type === 'end'
+            && record.captureEpoch === verified.receipt.captureEpoch
+            && record.transitionOperationId === (transition.boundaryOperationId || transition.operationId)))
+            .toBe(true);
+        });
+        expect(snapshot.manifestChunks.length).toBeGreaterThan(0);
+        expect(snapshot.manifestChunks.every((chunk) => chunk.recordingId === expectedRecordingId
+          && expectedSegmentIds.includes(chunk.segmentId)
+          && opfs.chunkFiles.some((file) => file.path === chunk.path
+            && file.segmentId === chunk.segmentId && file.bytes === chunk.byteSize
+            && file.matchesManifest))).toBe(true);
+      };
+    const pipelineEvents = () => page.evaluate(async () => {
+      const { livePipelineTrace } = await import('/src/lib/livePipelineTrace.js');
+      return livePipelineTrace.get().filter(({ stage }) => [
+        'CONTINUE_REQUESTED', 'RESUME_SEGMENT_CONFIRMED', 'CONTINUE_READY',
+        'SESSION_ROLLOVER_START', 'ROLLOVER_COMMITTED', 'ROLLOVER_FAILED'
+      ].includes(stage));
+    });
+    const providerPcm = () => page.evaluate(() => {
+      const sessions = window.__mockGoogleGenAI?.liveSessions || [];
+      return sessions.map((session, index) => ({ index, closed: session.closed,
+        pcmInputs: session.sentInputs.filter((input) => Boolean(input?.audio)).length }));
+    });
+    try {
+      await page.evaluate(async () => {
+        const { livePipelineTrace } = await import('/src/lib/livePipelineTrace.js');
+        livePipelineTrace.setEnabled(true);
+      });
+      await expect.poll(() => page.evaluate(() => window.__issue41PcmCount), { timeout: 30_000 }).toBeGreaterThan(0);
+      const first = await localState(meetingId);
+      expect(first.recording?.segmentId).toBeTruthy();
+      const firstSegmentId = first.recording.segmentId;
+      await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+        serverContent: {
+          inputTranscription: { text: 'issue41 audit before' },
+          outputTranscription: { text: 'audit before' }, turnComplete: true
+        }
+      }));
+      await expect.poll(async () => (await localState(meetingId)).cues.length).toBeGreaterThan(0);
+    if (coreAcceptance) {
+      auditViewer = await browser.newPage();
+      auditViewer.on('pageerror', (error) => { evidence.browserErrors.push(`viewer:${error.name}`); save(); });
+      await auditViewer.goto(`/${share.url || share.codeUrl}`);
+      await expect(auditViewer.getByTestId('meeting-viewer-cue-row').filter({ hasText: 'issue41 audit before' }))
+        .toContainText('audit before', { timeout: 30_000 });
+      evidence.viewer.push({ phase: 'join-snapshot', source: 'issue41 audit before' });
+      save();
+    }
+      await page.getByRole('button', { name: '停止錄音' }).click();
+      await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+      expect(await page.evaluate(() => window.__issue41CoreRolloverClock.shortened),
+        'Initial recording must keep its 15-minute rollover clock').toBe(0);
+      await page.evaluate(() => window.__issue41ArmContinueRolloverClock());
+      const providerCountBeforeContinue = await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length);
+      const traceSequenceBeforeContinue = Math.max(0, ...(await pipelineEvents()).map((event) => event.traceSequence));
+      await page.getByRole('button', { name: '繼續' }).click();
+      await expect.poll(async () => (await pipelineEvents()).some((event) => event.stage === 'CONTINUE_READY'
+        && event.traceSequence > traceSequenceBeforeContinue && event.sessionId === first.recording.recordingId),
+        { message: 'Continue must emit CONTINUE_READY before Cue delivery', timeout: 60_000 }).toBe(true);
+      await expect(page.getByRole('button', { name: '停止錄音' }), 'Host must enter listening after Continue')
+        .toBeVisible({ timeout: 30_000 });
+      await expect.poll(async () => (await providerPcm()).length,
+        { message: 'Continue must create a new Provider session', timeout: 30_000 })
+        .toBeGreaterThan(providerCountBeforeContinue);
+      const continueProviderIndex = providerCountBeforeContinue;
+      await expect.poll(async () => (await providerPcm())[continueProviderIndex]?.pcmInputs || 0,
+        { message: 'Continue Provider must send first PCM before Cue delivery', timeout: 30_000 })
+        .toBeGreaterThan(0);
+      const continueSegmentId = (await localState(meetingId)).recording?.segmentId;
+      expect(continueSegmentId, 'Continue Segment ID').toBeTruthy();
+      expect(continueSegmentId).not.toBe(firstSegmentId);
+      const continueEvents = await pipelineEvents();
+      const requested = continueEvents.find((event) => event.stage === 'CONTINUE_REQUESTED'
+        && event.traceSequence > traceSequenceBeforeContinue && event.meetingId === meetingId
+        && event.sessionId === first.recording.recordingId);
+      const resumed = continueEvents.find((event) => event.stage === 'RESUME_SEGMENT_CONFIRMED'
+        && event.traceSequence > (requested?.traceSequence || traceSequenceBeforeContinue)
+        && event.meetingId === meetingId && event.segmentId === continueSegmentId);
+      const ready = continueEvents.find((event) => event.stage === 'CONTINUE_READY'
+        && event.traceSequence > (resumed?.traceSequence || traceSequenceBeforeContinue)
+        && event.sessionId === first.recording.recordingId);
+      expect(requested, 'Continue request belongs to this Meeting and session').toBeTruthy();
+      expect(resumed, 'Continue Segment belongs to this Meeting').toBeTruthy();
+      expect(ready, 'Continue readiness follows confirmed Segment').toBeTruthy();
+      evidence.continueReadiness = { segmentId: continueSegmentId, providerIndex: continueProviderIndex,
+        pcmInputs: (await providerPcm())[continueProviderIndex].pcmInputs,
+        requested, resumed, ready };
+      save();
+      expect(await page.evaluate(() => window.__issue41CoreRolloverClock.shortened),
+        'Continue must schedule the one shortened product rollover timer').toBe(1);
+      await expect.poll(async () => (await pipelineEvents()).some((event) => event.stage === 'SESSION_ROLLOVER_START'
+        && event.meetingId === meetingId && event.oldSegmentId === continueSegmentId),
+      { message: 'Expected actual SESSION_ROLLOVER_START from Continue Segment', timeout: 60_000 }).toBe(true);
+      await expect.poll(async () => (await pipelineEvents()).some((event) => event.stage === 'ROLLOVER_COMMITTED'
+        && event.meetingId === meetingId && event.oldSegmentId === continueSegmentId),
+      { message: 'Expected actual ROLLOVER_COMMITTED from Continue Segment', timeout: 60_000 }).toBe(true);
+      const rolloverEvents = await pipelineEvents();
+      const rolloverStart = rolloverEvents.find((event) => event.stage === 'SESSION_ROLLOVER_START'
+        && event.oldSegmentId === continueSegmentId);
+      const rolloverCommit = rolloverEvents.find((event) => event.stage === 'ROLLOVER_COMMITTED'
+        && event.oldSegmentId === continueSegmentId);
+      expect(rolloverCommit.traceSequence).toBeGreaterThan(rolloverStart.traceSequence);
+      expect(rolloverCommit.newSegmentId).toBeTruthy();
+      expect(rolloverCommit.newSegmentId).not.toBe(continueSegmentId);
+      const continueSequence = Number(continueSegmentId.match(/:(\d+)$/u)?.[1]);
+      const successorSequence = Number(rolloverCommit.newSegmentId.match(/:(\d+)$/u)?.[1]);
+      expect(Number.isSafeInteger(continueSequence) && continueSequence > 0).toBe(true);
+      expect(successorSequence).toBe(continueSequence + 1);
+      expect(rolloverCommit.meetingId).toBe(meetingId);
+      const providerCountBeforeRollover = providerCountBeforeContinue + 1;
+      await expect.poll(async () => (await localState(meetingId)).recording?.segmentId,
+        { message: 'Local current Segment must match committed successor', timeout: 30_000 })
+        .toBe(rolloverCommit.newSegmentId);
+      await expect.poll(async () => (await providerPcm()).length,
+        { message: 'Rollover must create successor Provider session', timeout: 30_000 })
+        .toBeGreaterThan(providerCountBeforeRollover);
+      const successorProviderIndex = providerCountBeforeRollover;
+      await expect.poll(async () => (await providerPcm())[successorProviderIndex]?.pcmInputs || 0,
+        { message: 'Rollover Provider must send first PCM before Cue delivery', timeout: 30_000 })
+        .toBeGreaterThan(0);
+      await expect(page.getByRole('button', { name: '停止錄音' }), 'Host must return to listening after Rollover')
+        .toBeVisible({ timeout: 30_000 });
+      evidence.rolloverReadiness = { start: rolloverStart, commit: rolloverCommit,
+        providerIndex: successorProviderIndex, pcmInputs: (await providerPcm())[successorProviderIndex].pcmInputs,
+        acceleratedContract: true };
+      save();
+      await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+        serverContent: {
+          inputTranscription: { text: 'issue41 audit after' },
+          outputTranscription: { text: 'audit after' }, turnComplete: true
+        }
+      }));
+      await expect.poll(async () => (await localState(meetingId)).cues.length, { timeout: 15_000 })
+        .toBeGreaterThan(1);
+      if (coreAcceptance) {
+        await expect(auditViewer.getByTestId('meeting-viewer-cue-row').filter({ hasText: 'issue41 audit after' }))
+          .toContainText('audit after', { timeout: 30_000 });
+        evidence.viewer.push({ phase: 'subsequent-cue', source: 'issue41 audit after' });
+        save();
+      }
+      const second = await localState(meetingId);
+      expect(second.recording?.segmentId).toBe(rolloverCommit.newSegmentId);
+      expect(second.cues.find((cue) => cue.sourceText === 'issue41 audit before')?.segmentId).toBe(firstSegmentId);
+      expect(second.cues.find((cue) => cue.sourceText === 'issue41 audit after')?.segmentId)
+        .toBe(rolloverCommit.newSegmentId);
+      evidence.localBeforeEnd = {
+        recordingId: second.recording.recordingId,
+        segmentId: second.recording.segmentId,
+        cueSegments: second.cues.map((cue) => ({ source: cue.sourceText, segmentId: cue.segmentId })),
+        chunkBytes: second.chunks.reduce((sum, chunk) => sum + chunk.byteSize, 0),
+        opfs: await opfsSnapshot(meetingId), checkpoints: second.checkpoints
+      };
+      if (coreAcceptance) {
+        await page.getByRole('button', { name: '停止錄音' }).click();
+        await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+        evidence.finalStop = { at: new Date().toISOString(), continueAvailable: true };
+        save();
+      }
+      let endDialogHandling;
+      page.once('dialog', (dialog) => {
+        endDialogHandling = (async () => {
+          try {
+            expect(dialog.type()).toBe('confirm');
+            expect(dialog.message()).toBe('確定要結束這場會議嗎？既有逐字稿會保留，之後將無法繼續錄製。');
+            await dialog.accept();
+          } catch (error) {
+            await dialog.dismiss();
+            throw error;
+          }
+        })();
+      });
+      await page.getByRole('button', { name: '結束會議' }).click();
+      expect(endDialogHandling, 'End must show its native confirmation').toBeDefined();
+      await endDialogHandling;
+      await expect.poll(async () => (await localState(meetingId)).recording?.state,
+        { message: 'End must commit stopped_local after the local durable barrier', timeout: 60_000 })
+        .toBe('stopped_local');
+      await expect.poll(() => page.evaluate(() => window.location.hash),
+        { message: 'End lifecycle must finish before Reload', timeout: 30_000 }).toBe('#meetings');
+      evidence.endBarrier = { at: new Date().toISOString(), recordingState: 'stopped_local', route: '#meetings' };
+      save();
+      if (coreAcceptance) {
+        try {
+          evidence.localAfterEnd = { opfs: await opfsSnapshot(meetingId) };
+          save();
+          evidence.ownershipBeforeReload = await ownershipSnapshot(meetingId);
+          save();
+        } catch (error) {
+          evidence.ownershipFailure = { stage: 'before_reload_snapshot', message: error.message };
+          save();
+          throw error;
+        }
+      }
+      await page.reload();
+      const restored = await localState(meetingId);
+      evidence.localAfterReload = {
+        state: restored.recording?.state,
+        recordingId: restored.recording?.recordingId,
+        segmentId: restored.recording?.segmentId,
+        cueSegments: restored.cues.map((cue) => ({ source: cue.sourceText, segmentId: cue.segmentId })),
+        chunkBytes: restored.chunks.reduce((sum, chunk) => sum + chunk.byteSize, 0),
+        opfs: await opfsSnapshot(meetingId), checkpoints: restored.checkpoints
+      };
+      if (coreAcceptance) {
+        try {
+          evidence.ownershipAfterReload = await ownershipSnapshot(meetingId);
+          save();
+          const expectedSegmentIds = [firstSegmentId, evidence.continueReadiness.segmentId,
+            evidence.rolloverReadiness.commit.newSegmentId];
+          assertCoreOwnership(evidence.ownershipBeforeReload, evidence.localAfterEnd.opfs,
+            second.recording.recordingId, expectedSegmentIds);
+          assertCoreOwnership(evidence.ownershipAfterReload, evidence.localAfterReload.opfs,
+            second.recording.recordingId, expectedSegmentIds);
+          expect(evidence.ownershipAfterReload, 'Reload must preserve Journal ownership')
+            .toEqual(evidence.ownershipBeforeReload);
+          evidence.ownershipGate = { status: 'PASS', at: new Date().toISOString() };
+          save();
+        } catch (error) {
+          evidence.ownershipFailure = { stage: 'reload_ownership', message: error.message };
+          save();
+          throw error;
+        }
+      }
+      expect(evidence.localBeforeEnd.opfs.pcmBytes).toBeGreaterThan(0);
+      expect(evidence.localAfterReload.opfs.pcmBytes).toBeGreaterThan(0);
+      expect(evidence.localAfterReload.opfs.chunkBytes).toBeGreaterThan(0);
+      expect(evidence.localAfterReload.opfs.chunkFiles.every((file) => file.matchesManifest)).toBe(true);
+      expect(evidence.localAfterReload.checkpoints.length).toBeGreaterThan(0);
+      expect(evidence.localAfterReload.cueSegments).toEqual(evidence.localBeforeEnd.cueSegments);
+      expect(evidence.localAfterReload.state).toBe('stopped_local');
+      expect(evidence.localAfterReload.cueSegments.find((cue) => cue.source === 'issue41 audit before')?.segmentId)
+        .toBe(firstSegmentId);
+      expect(evidence.localAfterReload.cueSegments.find((cue) => cue.source === 'issue41 audit after')?.segmentId)
+        .toBe(second.recording.segmentId);
+      const secondDevice = await browser.newContext();
+      try {
+        const userHeaders = { apikey: publishableKey, Authorization: `Bearer ${auth.token}` };
+        const apiOrigin = new URL(page.url()).origin;
+        const inspect = async (method, url, headers = userHeaders, data) => {
+          const response = await secondDevice.request.fetch(url, { method, headers, data });
+          const body = await response.json().catch(() => null);
+          return { status: response.status(), code: body?.code || body?.error?.code || null,
+            message: body?.message || body?.error?.message || null, body };
+        };
+        const profile = await inspect('GET', `${apiOrigin}/api/profile`, { Authorization: `Bearer ${auth.token}` });
+        expect(profile.status, 'Second device must authenticate through the real Server').toBe(200);
+        expect(profile.body?.profile?.id).toBe(auth.profile.id);
+        const detail = await inspect('GET', `${apiOrigin}/api/meetings/${meetingId}`,
+          { Authorization: `Bearer ${auth.token}` });
+        expect(detail.status, 'Second device must read allowed Meeting metadata').toBe(200);
+        expect(detail.body?.meeting?.id).toBe(meetingId);
+        const meeting = await inspect('GET', `${supabaseUrl}/rest/v1/meetings?select=id,name&id=eq.${meetingId}`);
+        expect(meeting.status, 'Second device must use the isolated Supabase project').toBe(200);
+        expect(meeting.body?.map((row) => row.id)).toEqual([meetingId]);
+        const checked = [];
+        const noContent = async (name, method, url, { server = false, data } = {}) => {
+          const result = await inspect(method, url, server ? { Authorization: `Bearer ${auth.token}` } : userHeaders, data);
+          checked.push({ name, status: result.status, code: result.code, message: result.message,
+            rows: Array.isArray(result.body) ? result.body.length : null });
+          if (server) {
+            expect(result.status, `${name} must use the Local-only Server fence`).toBe(410);
+            expect(result.code, `${name} must reject recording content`).toBe('meeting_content_local_only');
+          } else if (result.status === 200) {
+            expect(result.body, `${name} must contain no cloud recording rows or objects`).toEqual([]);
+          } else {
+            expect(result.status, `${name} must be an explicit permission denial`).toBe(403);
+            expect(result.code, `${name} must be denied by table privileges`).toBe('42501');
+          }
+        };
+        await noContent('subtitle_cues', 'GET', `${supabaseUrl}/rest/v1/subtitle_cues?select=id`);
+        await noContent('sessions', 'GET', `${supabaseUrl}/rest/v1/sessions?select=id&meeting_id=eq.${meetingId}`);
+        await noContent('meeting_segments', 'GET', `${supabaseUrl}/rest/v1/meeting_segments?select=id&meeting_id=eq.${meetingId}`);
+        await noContent('session_transcript', 'GET', `${supabaseUrl}/rest/v1/sessions?select=transcript_items&meeting_id=eq.${meetingId}`);
+        await noContent('segment_checkpoint', 'GET', `${supabaseUrl}/rest/v1/meeting_segments?select=checkpoint&meeting_id=eq.${meetingId}`);
+        await noContent('meeting_recordings', 'GET', `${supabaseUrl}/rest/v1/meeting_recordings?select=id&meeting_id=eq.${meetingId}`);
+        for (const bucket of ['meeting-audio', 'meeting-exports']) {
+          await noContent(`storage:${bucket}`, 'POST', `${supabaseUrl}/storage/v1/object/list/${bucket}`,
+            { data: { prefix: '', limit: 1000 } });
+        }
+        for (const path of [
+          `/api/meetings/${meetingId}/segments/${firstSegmentId}/cues`,
+          `/api/meetings/${meetingId}/segments/${firstSegmentId}/checkpoint`,
+          `/api/meetings/${meetingId}/audio/input`,
+          `/api/meetings/${meetingId}/audio-artifacts`,
+          `/api/meetings/${meetingId}/exports`,
+          `/api/sessions/${second.recording.recordingId}`,
+          `/api/sessions/${second.recording.recordingId}/audio/input`
+        ]) await noContent(path, 'GET', `${apiOrigin}${path}`, { server: true });
+        evidence.secondDevice = {
+          auth: { status: profile.status, userId: profile.body.profile.id },
+          meeting: { serverStatus: detail.status, supabaseStatus: meeting.status, meetingId },
+          contentChecks: checked
+        };
+        save();
+      } finally {
+        await secondDevice.close();
+      }
+    } finally {
+      if (!evidence.localAfterReload) {
+        evidence.firstDivergence = { events: await pipelineEvents().catch(() => []),
+          providers: await providerPcm().catch(() => []),
+          local: await localState(meetingId).catch(() => null) };
+      }
+      evidence.dbAfter = databaseSnapshot();
+      evidence.writeEvents = recordedWrites();
+      evidence.storageAfter = {
+        audio: await storageObjects('meeting-audio'), exports: await storageObjects('meeting-exports')
+      };
+      evidence.recordingHttpWrites = auditRequests.filter(({ path }) =>
+        /\/api\/(?:sessions|meetings\/[^/]+\/(?:recording|segments|complete))(?:\/|$)/u.test(path)
+        || /\/rest\/v1\/(?:sessions|meeting_recordings|meeting_segments|subtitle_cues|meeting_events)/u.test(path)
+        || path.startsWith('/storage/v1/object/'));
+      save();
+    }
+    expect(evidence.writeEvents.filter((event) => event.relation_name !== 'public.observability_metric_buckets'))
+      .toEqual([]);
+    for (const [relation, before] of Object.entries(evidence.dbBefore.tables)) {
+      if (relation === 'public.observability_metric_buckets') continue;
+      expect(evidence.dbAfter.tables[relation], relation).toEqual(before);
+    }
+    expect(evidence.storageAfter).toEqual(evidence.storageBefore);
+    expect(evidence.recordingHttpWrites).toEqual([]);
+    evidence.result = 'ZERO_RECORDING_WRITE_PASS';
+    if (coreAcceptance) {
+      expect(evidence.viewer.map((row) => row.phase)).toEqual(['join-snapshot', 'subsequent-cue']);
+      expect(evidence.browserErrors).toEqual([]);
+      await auditViewer.close();
+      evidence.result = 'LOCAL_CORE_E2E_PASS';
+    }
+    save();
+    return;
+  }
+  if (localRamMeasurement) {
+    await expect.poll(() => page.evaluate(() => window.__issue41PcmCount),
+      { timeout: 30_000 }).toBeGreaterThan(0);
+    const captureStart = await page.evaluate(async (debugEnabled) => {
+      const { livePipelineTrace } = await import('/src/lib/livePipelineTrace.js');
+      livePipelineTrace.setEnabled(debugEnabled);
+      return window.__issue41PcmStartedAt;
+    }, !ramProfileC && !realTimeRam40 && !ramAttributionSmoke && (!ramAbcMode || ramAbcMode === 'A'));
+    expect(captureStart, 'real PCM capture start').toBeGreaterThan(0);
+    await expect.poll(async () => (await localState(meetingId)).recording?.segmentId,
+      { timeout: 30_000 }).toBeTruthy();
+    const firstRecording = (await localState(meetingId)).recording;
+    initialSegmentId = firstRecording.segmentId;
+    evidence.initialSegmentId = initialSegmentId;
+    evidence.captureStartedAt = new Date(captureStart).toISOString();
+    evidence.ramConfiguration = { intervalMs: 30_000, heapSnapshots: false,
+      playwrightTrace: false, thresholds: PROVISIONAL_RAM_THRESHOLDS };
+    if (realTimeRam40 || ramAttributionSmoke) {
+      const debug = await page.evaluate(async () => {
+        const { livePipelineTrace } = await import('/src/lib/livePipelineTrace.js');
+        return { traceEnabled: livePipelineTrace.isEnabled(), consoleMode: window.__issue41DiagnosticMode };
+      });
+      expect(debug).toEqual({ traceEnabled: false, consoleMode: 'C' });
+      evidence.ramConfiguration.debug = debug;
+    }
+    evidence.rolloverObservations = [];
+    save();
+
+    const cdp = await page.context().newCDPSession(page);
+    const system = await browser.newBrowserCDPSession();
+    await cdp.send('Performance.enable');
+    let hostTargetId = null;
+    let firstRendererPid = null;
+    const memory = async () => {
+      const [metrics, processes, target, targets] = await Promise.all([
+        cdp.send('Performance.getMetrics'),
+        system.send('SystemInfo.getProcessInfo').catch(() => null),
+        cdp.send('Target.getTargetInfo').catch(() => null),
+        system.send('Target.getTargets').catch(() => null)
+      ]);
+      const pageTargetId = target?.targetInfo?.targetId ?? null;
+      const pageTargets = targets?.targetInfos?.filter((entry) => entry.type === 'page') ?? [];
+      const rendererPids = processes?.processInfo?.filter((entry) => entry.type === 'renderer')
+        .map((entry) => entry.id) ?? [];
+      const hostPageCount = page.context().pages().length;
+      const attributed = attributeHostRenderer({ pageTargetId, pageTargets, hostPageCount,
+        rendererPids, expectedTargetId: hostTargetId, expectedRendererPid: firstRendererPid });
+      let unattributedReason = attributed.reason;
+      let chromiumRssBytes = 'UNATTRIBUTED';
+      if (!unattributedReason) {
+        try {
+          chromiumRssBytes = Number(execFileSync('ps', ['-p', String(rendererPids[0]), '-o', 'rss='],
+            { encoding: 'utf8' }).trim()) * 1024;
+          if (!Number.isFinite(chromiumRssBytes) || chromiumRssBytes <= 0) throw new Error('invalid RSS');
+        } catch { unattributedReason = 'RENDERER_RSS_UNAVAILABLE'; }
+      }
+      if (unattributedReason) chromiumRssBytes = 'UNATTRIBUTED';
+      else { hostTargetId ||= pageTargetId; firstRendererPid ||= rendererPids[0]; }
+      const attribution = { pageTargetId, pageTargets: pageTargets.map(({ targetId, url }) => ({ targetId, url })),
+        hostPageCount, rendererPids, method: unattributedReason ? 'UNATTRIBUTED' : 'ISOLATED_SINGLE_PAGE_SINGLE_RENDERER',
+        reason: unattributedReason, initialRendererPid: firstRendererPid };
+      if (unattributedReason) {
+        evidence.rssAttributionFailure = { at: new Date().toISOString(), ...attribution };
+        save();
+        throw new Error(`RSS_UNATTRIBUTED:${unattributedReason}`);
+      }
+      return { rendererPid: unattributedReason ? null : rendererPids[0],
+        rendererAlive: !unattributedReason, rssAttribution: attribution,
+        chromiumRssBytes, jsHeapBytes: metrics.metrics.find((entry) => entry.name === 'JSHeapUsedSize')?.value ?? 'NOT_MEASURED',
+        arrayBufferExternalBytes: 'NOT_MEASURED_BY_CDP_PERFORMANCE' };
+    };
+    const browserSample = () => page.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      const opfs = { files: 0, bytes: 0 };
+      const walk = async (directory) => {
+        for await (const handle of directory.values()) {
+          if (handle.kind === 'directory') await walk(handle);
+          else { opfs.files += 1; opfs.bytes += (await handle.getFile()).size; }
+        }
+      };
+      await walk(root);
+      const stores = {};
+      for (const info of await indexedDB.databases()) {
+        if (!info.name) continue;
+        const db = await new Promise((resolve, reject) => {
+          const request = indexedDB.open(info.name);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        for (const name of db.objectStoreNames) {
+          if (!/claim|operation/i.test(name)) continue;
+          stores[`${info.name}/${name}`] = await new Promise((resolve, reject) => {
+            const request = db.transaction(name, 'readonly').objectStore(name).count();
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+        }
+        db.close();
+      }
+      const providers = window.__mockGoogleGenAI?.liveSessions || [];
+      return { opfs, stores, callbacks: window.__issue41PcmCount,
+        lastCallbackAgeMs: Date.now() - window.__issue41LastPcmAt,
+        journalQueue: window.__issue41JournalWorkerPending?.size ?? 'NOT_MEASURED',
+        providerSessions: providers.length,
+        providerPcmInputs: providers.map((session) => session.audioInputCount || session.sentInputs.filter((input) => Boolean(input?.audio)).length),
+        liveTracks: window.__issue41Tracks.filter((track) => track.readyState === 'live').length };
+    });
+    const lightBrowserSample = () => page.evaluate(() => ({
+      callbacks: window.__issue41PcmCount,
+      frames: window.__issue41Frames,
+      lastCallbackAgeMs: Date.now() - window.__issue41LastPcmAt,
+      journalQueue: window.__issue41JournalWorkerPending?.size ?? 'NOT_MEASURED',
+      liveTracks: window.__issue41Tracks.filter((track) => track.readyState === 'live').length
+    }));
+    const recordingSample = () => page.evaluate(async (id) => {
+      const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+      return createIndexedDbLocalMeetingManifestStore().getRecording(id);
+    }, meetingId);
+    const readJournalClaims = () => page.evaluate(async (id) => {
+      const root = await navigator.storage.getDirectory();
+      const meeting = await (await (await root.getDirectoryHandle('pcm-journals'))
+        .getDirectoryHandle('v1')).getDirectoryHandle(id);
+      const recordings = [];
+      for await (const [recordingId, directory] of meeting.entries()) {
+        const pcmFiles = new Map();
+        const ledger = new Uint8Array(await (await (await directory.getFileHandle('claims.bin')).getFile()).arrayBuffer());
+        const view = new DataView(ledger.buffer);
+        const epochs = new Map();
+        let cursor = 0;
+        let ledgerHashesValid = true;
+        let pcmHashesValid = true;
+        let pcmBytes = 0;
+        let claims = 0;
+        while (cursor < ledger.length) {
+          if (cursor + 36 > ledger.length) throw new Error('PCM journal ledger truncated');
+          const length = view.getUint32(cursor, true);
+          if (length < 2 || length > 4096 || cursor + 4 + length + 32 > ledger.length)
+            throw new Error('PCM journal ledger record invalid');
+          const payload = ledger.subarray(cursor + 4, cursor + 4 + length);
+          const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', payload));
+          if (hash.some((byte, index) => byte !== ledger[cursor + 4 + length + index])) ledgerHashesValid = false;
+          const claim = JSON.parse(new TextDecoder().decode(payload));
+          if (claim.recordingId !== recordingId || claim.version !== 1) throw new Error('PCM journal identity mismatch');
+          const epoch = epochs.get(claim.captureEpoch) || { captureEpoch: claim.captureEpoch,
+            claims: 0, bytes: 0, nextSample: 0, gaps: 0, overlaps: 0, ended: false };
+          if (claim.type === 'pcm') {
+            if (claim.startSample > epoch.nextSample) epoch.gaps += claim.startSample - epoch.nextSample;
+            if (claim.startSample < epoch.nextSample) epoch.overlaps += epoch.nextSample - claim.startSample;
+            epoch.nextSample = Math.max(epoch.nextSample, claim.endSample);
+            if (claim.byteLength !== (claim.endSample - claim.startSample) * 2) throw new Error('PCM claim length mismatch');
+            let file = pcmFiles.get(claim.segment);
+            if (!file) {
+              file = await (await directory.getFileHandle(`pcm-${String(claim.segment).padStart(6, '0')}.bin`)).getFile();
+              pcmFiles.set(claim.segment, file);
+            }
+            const bytes = new Uint8Array(await file.slice(claim.offset, claim.offset + claim.byteLength).arrayBuffer());
+            const pcmHash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+              .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+            if (bytes.length !== claim.byteLength || pcmHash !== claim.sha256) pcmHashesValid = false;
+            epoch.claims += 1;
+            epoch.bytes += claim.byteLength;
+            pcmBytes += claim.byteLength;
+            claims += 1;
+          } else if (claim.type === 'end') {
+            epoch.ended = true;
+            epoch.endSample = claim.endSample;
+            if (claim.endSample > epoch.nextSample) epoch.gaps += claim.endSample - epoch.nextSample;
+            if (claim.endSample < epoch.nextSample) epoch.overlaps += epoch.nextSample - claim.endSample;
+          } else if (claim.type !== 'begin') throw new Error('Unknown PCM journal record');
+          epochs.set(claim.captureEpoch, epoch);
+          cursor += 4 + length + 32;
+        }
+        recordings.push({ recordingId, ledgerBytes: ledger.length, claims, pcmBytes,
+          ledgerHashesValid, pcmHashesValid, epochs: [...epochs.values()] });
+      }
+      return recordings;
+    }, meetingId);
+    const releaseFixtureAudioAfterEnd = async () => {
+      await expect.poll(() => page.evaluate(() => ({
+        liveTracks: window.__issue41Tracks.filter((track) => track.readyState === 'live').length,
+        openNativeContexts: window.__issue41NativeContexts.filter((context) => context.state !== 'closed').length,
+        openFixtureContexts: window.__issue41Contexts.filter((context) => context.state !== 'closed').length,
+        activeProcessors: window.__issue41Processors.filter((processor) => typeof processor.onaudioprocess === 'function').length,
+        pendingJournalRequests: window.__issue41JournalWorkerPending.size
+      })), { timeout: 10_000 }).toEqual({ liveTracks: 0, openNativeContexts: 0,
+        openFixtureContexts: 0, activeProcessors: 0, pendingJournalRequests: 0 });
+      const released = await page.evaluate(() => {
+        const counts = { tracks: window.__issue41Tracks.length,
+          nativeContexts: window.__issue41NativeContexts.length,
+          fixtureContexts: window.__issue41Contexts.length,
+          processors: window.__issue41Processors.length };
+        clearInterval(window.__issue41PcmTimer);
+        window.__issue41PcmTimer = null;
+        window.__issue41Tracks.length = 0;
+        window.__issue41NativeContexts.length = 0;
+        window.__issue41Contexts.length = 0;
+        window.__issue41Processors.length = 0;
+        return counts;
+      });
+      return { at: new Date().toISOString(), ownership: 'fixture-owned references and timer',
+        verifiedStopped: true, released };
+    };
+    if (ramAttributionSmoke) {
+      const firstPcmCount = await page.evaluate(() => window.__issue41PcmCount);
+      const first = { at: new Date().toISOString(), ...await memory(), pcmCallbacks: firstPcmCount };
+      expect(first.rssAttribution.method).toBe('ISOLATED_SINGLE_PAGE_SINGLE_RENDERER');
+      expect(first.chromiumRssBytes).toBeGreaterThan(0);
+      expect(first.jsHeapBytes).toBeGreaterThan(0);
+      const syntheticAmbiguity = attributeHostRenderer({
+        pageTargetId: first.rssAttribution.pageTargetId,
+        pageTargets: first.rssAttribution.pageTargets,
+        hostPageCount: 1,
+        rendererPids: [...first.rssAttribution.rendererPids, -1],
+        expectedTargetId: first.rssAttribution.pageTargetId,
+        expectedRendererPid: first.rendererPid
+      });
+      expect(syntheticAmbiguity).toMatchObject({ method: 'UNATTRIBUTED', reason: 'RENDERER_COUNT_NOT_ONE', rendererPid: null });
+      await expect.poll(() => page.evaluate(() => window.__issue41PcmCount),
+        { timeout: 15_000 }).toBeGreaterThan(firstPcmCount + 20);
+      const second = { at: new Date().toISOString(), ...await memory(),
+        pcmCallbacks: await page.evaluate(() => window.__issue41PcmCount) };
+      expect(second.rssAttribution.pageTargetId).toBe(first.rssAttribution.pageTargetId);
+      expect(second.rendererPid).toBe(first.rendererPid);
+      evidence.ramAttributionSmoke = { first, second, syntheticAmbiguity };
+      save();
+      await page.getByRole('button', { name: '結束會議' }).click();
+      await expect.poll(async () => (await localState(meetingId)).recording?.state,
+        { timeout: 60_000 }).toBe('stopped_local');
+      await expect.poll(() => page.evaluate(() => window.location.hash),
+        { timeout: 30_000 }).toBe('#meetings');
+      evidence.ramAttributionSmoke.fixtureAudioCleanup = await releaseFixtureAudioAfterEnd();
+      evidence.ramAttributionSmoke.afterEnd = { at: new Date().toISOString(), ...await memory() };
+      await page.reload();
+      const restored = await localState(meetingId);
+      const opfs = await browserSample();
+      expect(restored.recording?.state).toBe('stopped_local');
+      expect(restored.chunks.length).toBeGreaterThan(0);
+      expect(opfs.opfs.bytes).toBeGreaterThan(0);
+      evidence.ramAttributionSmoke.restored = { state: restored.recording.state,
+        chunks: restored.chunks.length, opfs: opfs.opfs };
+      evidence.dbAfter = databaseSnapshot();
+      evidence.writeEvents = recordedWrites();
+      evidence.storageAfter = { audio: await storageObjects('meeting-audio'), exports: await storageObjects('meeting-exports') };
+      expect(evidence.writeEvents.filter((event) => event.relation_name !== 'public.observability_metric_buckets')).toEqual([]);
+      for (const [relation, before] of Object.entries(evidence.dbBefore.tables)) {
+        if (relation !== 'public.observability_metric_buckets') expect(evidence.dbAfter.tables[relation], relation).toEqual(before);
+      }
+      expect(evidence.storageAfter).toEqual(evidence.storageBefore);
+      expect(auditRequests.filter(({ path }) => /\/api\/(?:sessions|meetings\/[^/]+\/(?:recording|segments|complete))(?:\/|$)/u.test(path)
+        || /\/rest\/v1\/(?:sessions|meeting_recordings|meeting_segments|subtitle_cues|meeting_events)/u.test(path)
+        || path.startsWith('/storage/v1/object/'))).toEqual([]);
+      evidence.result = 'RAM_ATTRIBUTION_SMOKE_PASS';
+      save();
+      return;
+    }
+    if (ramProfileC) {
+      const targets = (await system.send('Target.getTargets')).targetInfos;
+      const journalTargets = targets.filter((entry) => entry.type === 'worker'
+        && entry.url.includes('durablePcmJournal.worker'));
+      evidence.ram3cProfile = { diagnosticOnly: true, forcedGc: false, durationMs: 120_000,
+        targetId: (await cdp.send('Target.getTargetInfo')).targetInfo.targetId,
+        workerTargets: journalTargets.map(({ targetId, type, url }) => ({ targetId, type, url })),
+        snapshots: [], samples: [] };
+      save();
+      expect(journalTargets, 'one Journal Worker target').toHaveLength(1);
+      const { sessionId } = await system.send('Target.attachToTarget',
+        { targetId: journalTargets[0].targetId, flatten: false });
+      let nextCommandId = 0;
+      const pending = new Map();
+      const workerListeners = new Map();
+      system.on('Target.receivedMessageFromTarget', ({ sessionId: receivedSessionId, message }) => {
+        if (receivedSessionId !== sessionId) return;
+        const event = JSON.parse(message);
+        if (event.id) {
+          const request = pending.get(event.id);
+          if (!request) return;
+          pending.delete(event.id);
+          clearTimeout(request.timer);
+          if (event.error) request.reject(new Error(`${request.method}: ${event.error.message}`));
+          else request.resolve(event.result);
+        } else if (event.method) {
+          for (const listener of workerListeners.get(event.method) || []) listener(event.params);
+        }
+      });
+      const workerCdp = {
+        send(method, params = {}) {
+          const id = ++nextCommandId;
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              pending.delete(id);
+              reject(new Error(`WORKER_CDP_TIMEOUT:${method}`));
+            }, 120_000);
+            pending.set(id, { method, resolve, reject, timer });
+            system.send('Target.sendMessageToTarget',
+              { sessionId, message: JSON.stringify({ id, method, params }) })
+              .catch((error) => { clearTimeout(timer); pending.delete(id); reject(error); });
+          });
+        },
+        on(method, listener) {
+          const listeners = workerListeners.get(method) || new Set();
+          listeners.add(listener);
+          workerListeners.set(method, listeners);
+        },
+        off(method, listener) { workerListeners.get(method)?.delete(listener); }
+      };
+      await Promise.all([cdp.send('HeapProfiler.enable'), workerCdp.send('HeapProfiler.enable')]);
+      const heapUsage = async () => {
+        const [main, worker] = await Promise.all([
+          cdp.send('Runtime.getHeapUsage'), workerCdp.send('Runtime.getHeapUsage')
+        ]);
+        return { main, worker };
+      };
+      const snapshot = async (label, session) => {
+        const file = join(dirname(evidenceFile), `ram3c-${label}.heapsnapshot`);
+        const stream = createWriteStream(file);
+        const onChunk = ({ chunk }) => stream.write(chunk);
+        session.on('HeapProfiler.addHeapSnapshotChunk', onChunk);
+        try { await session.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false }); }
+        finally {
+          session.off('HeapProfiler.addHeapSnapshotChunk', onChunk);
+          stream.end();
+          await once(stream, 'finish');
+        }
+        evidence.ram3cProfile.snapshots.push({ label, file, bytes: stream.bytesWritten,
+          at: new Date().toISOString() });
+        save();
+      };
+      evidence.ram3cProfile.before = { at: new Date().toISOString(),
+        memory: await memory(), heapUsage: await heapUsage(),
+        callbacks: await page.evaluate(() => window.__issue41PcmCount) };
+      save();
+      await snapshot('main-start', cdp);
+      await snapshot('worker-start', workerCdp);
+      await Promise.all([cdp.send('HeapProfiler.startSampling', { samplingInterval: 32768 }),
+        workerCdp.send('HeapProfiler.startSampling', { samplingInterval: 32768 })]);
+      const samplingStartedAt = Date.now();
+      let priorCallbacks = await page.evaluate(() => window.__issue41PcmCount);
+      while (Date.now() - samplingStartedAt < 120_000) {
+        await page.waitForTimeout(Math.min(10_000, samplingStartedAt + 120_000 - Date.now()));
+        const callbacks = await page.evaluate(() => window.__issue41PcmCount);
+        expect(callbacks, 'PCM must continue during profile').toBeGreaterThan(priorCallbacks);
+        priorCallbacks = callbacks;
+        const row = { at: new Date().toISOString(), elapsedMs: Date.now() - samplingStartedAt,
+          callbacks, memory: await memory(), heapUsage: await heapUsage() };
+        evidence.ram3cProfile.samples.push(row);
+        expect(recordedWrites().filter((event) => event.relation_name !== 'public.observability_metric_buckets')).toEqual([]);
+        save();
+      }
+      const [mainAllocations, workerAllocations] = await Promise.all([
+        cdp.send('HeapProfiler.stopSampling'), workerCdp.send('HeapProfiler.stopSampling')
+      ]);
+      const mainAllocationFile = join(dirname(evidenceFile), 'ram3c-main-allocations.json');
+      const workerAllocationFile = join(dirname(evidenceFile), 'ram3c-worker-allocations.json');
+      writeFileSync(mainAllocationFile, JSON.stringify(mainAllocations));
+      writeFileSync(workerAllocationFile, JSON.stringify(workerAllocations));
+      evidence.ram3cProfile.allocations = { main: mainAllocationFile, worker: workerAllocationFile };
+      evidence.ram3cProfile.afterSampling = { at: new Date().toISOString(),
+        memory: await memory(), heapUsage: await heapUsage(), callbacks: priorCallbacks };
+      save();
+      await snapshot('main-end', cdp);
+      await snapshot('worker-end', workerCdp);
+      await page.getByRole('button', { name: '結束會議' }).click();
+      await expect.poll(async () => (await localState(meetingId)).recording?.state,
+        { timeout: 60_000 }).toBe('stopped_local');
+      await page.reload();
+      const restored = await localState(meetingId);
+      expect(restored.recording?.state).toBe('stopped_local');
+      expect(restored.chunks.length).toBeGreaterThan(0);
+      evidence.ram3cProfile.restored = { state: restored.recording.state,
+        chunks: restored.chunks.length, checkpoints: restored.checkpoints.length };
+      evidence.dbAfter = databaseSnapshot();
+      evidence.writeEvents = recordedWrites();
+      evidence.storageAfter = { audio: await storageObjects('meeting-audio'),
+        exports: await storageObjects('meeting-exports') };
+      expect(evidence.writeEvents.filter((event) => event.relation_name !== 'public.observability_metric_buckets')).toEqual([]);
+      for (const [relation, before] of Object.entries(evidence.dbBefore.tables))
+        if (relation !== 'public.observability_metric_buckets') expect(evidence.dbAfter.tables[relation], relation).toEqual(before);
+      expect(evidence.storageAfter).toEqual(evidence.storageBefore);
+      evidence.result = 'RAM_3C_PROFILE_CAPTURED';
+      save();
+      return;
+    }
+    if (ramAbcSmoke || ramAbcMode) {
+      const lightObserver = () => page.evaluate(() => ({
+        callbacks: window.__issue41PcmCount,
+        lastCallbackAgeMs: Date.now() - window.__issue41LastPcmAt,
+        journalQueue: window.__issue41JournalWorkerPending?.size ?? 'NOT_MEASURED',
+        providerSessions: window.__mockGoogleGenAI?.liveSessions?.length ?? 0,
+        liveTracks: window.__issue41Tracks.filter((track) => track.readyState === 'live').length
+      }));
+      const setMode = (mode) => page.evaluate(async (nextMode) => {
+        const { livePipelineTrace } = await import('/src/lib/livePipelineTrace.js');
+        window.__issue41DiagnosticMode = nextMode;
+        livePipelineTrace.setEnabled(nextMode === 'A');
+        return { mode: window.__issue41DiagnosticMode, traceEnabled: livePipelineTrace.isEnabled(),
+          observer: nextMode === 'C' ? 'BOUNDED_COUNTERS' : 'FULL_OPFS_IDB' };
+      }, mode);
+      const captureSample = async (mode, index) => {
+        const at = Date.now();
+        const [ram, observed, local] = await Promise.all([
+          memory(), mode === 'C' ? lightObserver() : browserSample(),
+          mode === 'C' ? Promise.resolve(null) : localState(meetingId)
+        ]);
+        const row = { phase: 'capture', mode, sampleIndex: index, at: new Date(at).toISOString(),
+          elapsedMs: at - captureStart, ...ram, ...observed,
+          cueCount: local?.cues.length ?? 'END_ONLY',
+          opfsChunkCount: local?.chunks.length ?? 'END_ONLY',
+          checkpointCount: local?.checkpoints.length ?? 'END_ONLY' };
+        expect(row.liveTracks, 'live PCM track').toBeGreaterThan(0);
+        expect(row.lastCallbackAgeMs, 'PCM callback age').toBeLessThan(3000);
+        expect(row.chromiumRssBytes).toBeGreaterThan(0);
+        expect(row.jsHeapBytes).toBeGreaterThan(0);
+        if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify(row)}\n`);
+        return row;
+      };
+      const forbiddenHttp = () => auditRequests.filter(({ path }) =>
+        /\/api\/(?:sessions|meetings\/[^/]+\/(?:recording|segments|complete))(?:\/|$)/u.test(path)
+        || /\/rest\/v1\/(?:sessions|meeting_recordings|meeting_segments|subtitle_cues|meeting_events)/u.test(path)
+        || path.startsWith('/storage/v1/object/'));
+      evidence.ramAbc = { mode: ramAbcMode || 'SMOKE', samples: [], configurations: [],
+        intervalMs: 30_000, durationMs: ramAbcSmoke ? null : 600_000,
+        heapSnapshots: false, forcedGc: false, playwrightTrace: false, cueSchedule: 'at start and minute 5' };
+      const modes = ramAbcSmoke ? ['A', 'B', 'C'] : [ramAbcMode];
+      let lastCallbacks = 0;
+      const emitCue = async (index) => {
+        const text = `issue41 abc cue ${index}`;
+        await expect.poll(() => page.evaluate(() => {
+          const provider = window.__mockGoogleGenAI?.liveSessions?.at(-1);
+          return provider?.audioInputCount || provider?.sentInputs.filter((input) => Boolean(input?.audio)).length || 0;
+        }), { timeout: 30_000 }).toBeGreaterThan(0);
+        await page.evaluate((sourceText) => window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+          serverContent: { inputTranscription: { text: sourceText },
+            outputTranscription: { text: `translated ${sourceText}` }, turnComplete: true }
+        }), text);
+        await expect.poll(async () => (await localState(meetingId)).cues
+          .find((cue) => cue.sourceText === text)?.segmentId, { timeout: 30_000 }).toBe(initialSegmentId);
+      };
+      if (!ramAbcSmoke) await emitCue(0);
+      const sampleCount = ramAbcSmoke ? 3 : 21;
+      for (let index = 0; index < sampleCount; index += 1) {
+        if (!ramAbcSmoke) {
+          const dueAt = captureStart + index * 30_000;
+          if (dueAt > Date.now()) await page.waitForTimeout(dueAt - Date.now());
+          if (index === 10) await emitCue(1);
+        }
+        const mode = ramAbcSmoke ? modes[index] : ramAbcMode;
+        const configuration = ramAbcSmoke || index === 0 ? await setMode(mode)
+          : await page.evaluate(async (expectedMode) => {
+            const { livePipelineTrace } = await import('/src/lib/livePipelineTrace.js');
+            return { mode: window.__issue41DiagnosticMode,
+              traceEnabled: livePipelineTrace.isEnabled(),
+              observer: expectedMode === 'C' ? 'BOUNDED_COUNTERS' : 'FULL_OPFS_IDB' };
+          }, mode);
+        expect(configuration.mode).toBe(mode);
+        expect(configuration.traceEnabled).toBe(mode === 'A');
+        evidence.ramAbc.configurations.push({ at: new Date().toISOString(), ...configuration });
+        const row = await captureSample(mode, index);
+        expect(row.callbacks, 'continuous PCM callbacks').toBeGreaterThan(lastCallbacks);
+        lastCallbacks = row.callbacks;
+        evidence.ramAbc.samples.push(row);
+        expect(recordedWrites().filter((event) => event.relation_name !== 'public.observability_metric_buckets')).toEqual([]);
+        expect(forbiddenHttp()).toEqual([]);
+        save();
+        if (ramAbcSmoke && index < 2) await expect.poll(() => page.evaluate(() => window.__issue41PcmCount),
+          { timeout: 15_000 }).toBeGreaterThan(lastCallbacks + 10);
+      }
+      if (!ramAbcSmoke) expect(Date.now() - captureStart).toBeGreaterThanOrEqual(600_000);
+      await page.getByRole('button', { name: '結束會議' }).click();
+      await expect.poll(async () => (await localState(meetingId)).recording?.state,
+        { timeout: 60_000 }).toBe('stopped_local');
+      await expect.poll(() => page.evaluate(() => window.location.hash),
+        { timeout: 30_000 }).toBe('#meetings');
+      const afterEnd = await localState(meetingId);
+      const barrierAt = Date.now();
+      for (const secondsAfterBarrier of ramAbcSmoke ? [0] : [0, 30, 60]) {
+        if (secondsAfterBarrier) await page.waitForTimeout(Math.max(0, barrierAt + secondsAfterBarrier * 1000 - Date.now()));
+        const row = { phase: 'post_end', mode: ramAbcMode || 'SMOKE', secondsAfterBarrier,
+          at: new Date().toISOString(), ...await memory() };
+        (evidence.ramAbc.postEnd ||= []).push(row);
+        if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify(row)}\n`);
+        save();
+      }
+      await page.reload();
+      const restored = await localState(meetingId);
+      const finalOpfs = await browserSample();
+      const pcmBytes = await page.evaluate(async (id) => {
+        const root = await navigator.storage.getDirectory();
+        const meeting = await (await (await root.getDirectoryHandle('pcm-journals'))
+          .getDirectoryHandle('v1')).getDirectoryHandle(id);
+        let bytesRead = 0;
+        for await (const [, recording] of meeting.entries()) {
+          for await (const [name, handle] of recording.entries()) {
+            if (handle.kind === 'file' && name.startsWith('pcm-'))
+              bytesRead += (await (await handle.getFile()).arrayBuffer()).byteLength;
+          }
+        }
+        return bytesRead;
+      }, meetingId);
+      expect(restored.recording?.state).toBe('stopped_local');
+      expect(restored.recording?.segmentId).toBe(initialSegmentId);
+      expect(restored.chunks).toEqual(afterEnd.chunks);
+      expect(restored.chunks.length).toBeGreaterThan(0);
+      expect(restored.checkpoints).toEqual(afterEnd.checkpoints);
+      if (!ramAbcSmoke) expect(restored.checkpoints.length).toBeGreaterThan(0);
+      expect(pcmBytes).toBeGreaterThan(0);
+      if (!ramAbcSmoke) {
+        for (const index of [0, 1]) expect(restored.cues.find((cue) => cue.sourceText === `issue41 abc cue ${index}`)?.segmentId)
+          .toBe(initialSegmentId);
+      }
+      evidence.ramAbc.durability = { state: restored.recording.state, chunks: restored.chunks.length,
+        checkpoints: restored.checkpoints.length, cues: restored.cues.length, pcmBytes,
+        opfs: finalOpfs.opfs, callbacks: lastCallbacks };
+      evidence.dbAfter = databaseSnapshot();
+      evidence.writeEvents = recordedWrites();
+      evidence.storageAfter = { audio: await storageObjects('meeting-audio'), exports: await storageObjects('meeting-exports') };
+      expect(evidence.writeEvents.filter((event) => event.relation_name !== 'public.observability_metric_buckets')).toEqual([]);
+      for (const [relation, before] of Object.entries(evidence.dbBefore.tables))
+        if (relation !== 'public.observability_metric_buckets') expect(evidence.dbAfter.tables[relation], relation).toEqual(before);
+      expect(evidence.storageAfter).toEqual(evidence.storageBefore);
+      expect(forbiddenHttp()).toEqual([]);
+      evidence.result = ramAbcSmoke ? 'RAM_ABC_SMOKE_PASS' : `RAM_ABC_${ramAbcMode}_PASS`;
+      save();
+      return;
+    }
+    const localRolloverOperation = (oldSegmentId, newSegmentId, segmentNumber) => page.evaluate(async (input) => {
+      const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+      const suffix = `:${input.segmentNumber}`;
+      if (!input.newSegmentId.startsWith('segment:') || !input.newSegmentId.endsWith(suffix)) return null;
+      const sessionId = input.newSegmentId.slice('segment:'.length, -suffix.length);
+      if (!sessionId) return null;
+      const operationId = `rollover:${sessionId}:${input.oldSegmentId}`;
+      return createIndexedDbLocalMeetingManifestStore().getOperation(input.meetingId, operationId);
+    }, { meetingId, oldSegmentId, newSegmentId, segmentNumber });
+    let previousSegmentId = initialSegmentId;
+    let previousSegmentNumber = firstRecording.segmentNumber;
+    let previousCallbacks = 0;
+    let nextSampleAt = captureStart;
+    const cueSegments = [];
+    const fullScanIntervalMs = 5 * 60_000;
+    let nextFullScanAt = captureStart + fullScanIntervalMs;
+    evidence.ramConfiguration = { ...evidence.ramConfiguration, observer: 'bounded-30s-plus-full-5min-v1',
+      fullScanIntervalMs, fullScanScope: 'OPFS-and-IndexedDB', fullScanPhase: 'after-memory-sample',
+      olsWindowMinutes: 30 };
+    evidence.fullScans = [];
+    const fullScan = async (phase) => {
+      const started = Date.now();
+      const [storage, local] = await Promise.all([browserSample(), localState(meetingId)]);
+      const scan = { phase, at: new Date(started).toISOString(), elapsedMs: started - captureStart,
+        durationMs: Date.now() - started, opfs: storage.opfs, stores: storage.stores,
+        cueCount: local.cues.length, transcriptCount: local.transcripts.length,
+        checkpointCount: local.checkpoints.length, audioChunks: local.chunks.length };
+      evidence.fullScans.push(scan);
+      if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify({ phase: 'storage_scan', ...scan })}\n`);
+      save();
+      return { storage, local };
+    };
+    const recordCue = async (segmentId) => {
+      await expect(page.getByRole('button', { name: '停止錄音' })).toBeVisible({ timeout: 30_000 });
+      await expect.poll(() => page.evaluate(() => {
+        const provider = window.__mockGoogleGenAI?.liveSessions?.at(-1);
+        return provider?.audioInputCount || provider?.sentInputs.filter((input) => Boolean(input?.audio)).length || 0;
+      }), { timeout: 30_000 }).toBeGreaterThan(0);
+      const sourceText = `issue41 real-time cue ${cueSegments.length + 1}`;
+      await page.evaluate((text) => window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+        serverContent: { inputTranscription: { text }, outputTranscription: { text: `translated ${text}` }, turnComplete: true }
+      }), sourceText);
+      await expect.poll(async () => (await localState(meetingId)).cues
+        .find((cue) => cue.sourceText === sourceText)?.segmentId,
+      { timeout: 30_000 }).toBe(segmentId);
+      cueSegments.push({ sourceText, segmentId });
+      save();
+    };
+    await recordCue(initialSegmentId);
+    while (Date.now() - captureStart < 40 * 60_000) {
+      const at = Date.now();
+      const [ram, browserState, recording] = await Promise.all([memory(), lightBrowserSample(), recordingSample()]);
+      const row = { phase: 'capture', at: new Date(at).toISOString(), elapsedMs: at - captureStart,
+        ...ram, ...browserState, segmentId: recording?.segmentId ?? null,
+        segmentNumber: recording?.segmentNumber ?? null, providerEpoch: recording?.providerEpoch ?? null };
+      if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify(row)}\n`);
+      expect(row.liveTracks, 'PCM source remains live').toBeGreaterThan(0);
+      expect(row.lastCallbackAgeMs, 'PCM input remains live').toBeLessThan(5_000);
+      if (previousCallbacks) expect(row.callbacks, 'PCM callbacks advance').toBeGreaterThan(previousCallbacks);
+      previousCallbacks = row.callbacks;
+      if (typeof row.chromiumRssBytes === 'number')
+        expect(row.chromiumRssBytes, 'RSS safety stop').toBeLessThanOrEqual(PROVISIONAL_RAM_THRESHOLDS.rssPeakMiB * 1048576);
+      if (typeof row.jsHeapBytes === 'number')
+        expect(row.jsHeapBytes, 'heap safety stop').toBeLessThanOrEqual(PROVISIONAL_RAM_THRESHOLDS.jsHeapPeakMiB * 1048576);
+      if (row.segmentId !== previousSegmentId) {
+        const operation = await localRolloverOperation(previousSegmentId, row.segmentId, row.segmentNumber);
+        expect(operation, 'durable local rollover operation').toMatchObject({
+          meetingId, type: 'local_segment_rollover',
+          result: { meetingId, recordingId: firstRecording.recordingId, segmentId: row.segmentId }
+        });
+        expect(row.segmentNumber).toBe(previousSegmentNumber + 1);
+        evidence.rolloverObservations.push({ oldSegmentId: previousSegmentId, newSegmentId: row.segmentId,
+          sequence: row.segmentNumber, elapsedMs: row.elapsedMs,
+          evidenceSource: 'indexeddb-local-rollover-operation', operationId: operation.operationId });
+        previousSegmentId = row.segmentId;
+        previousSegmentNumber = row.segmentNumber;
+        save();
+        await recordCue(row.segmentId);
+      }
+      if (row.elapsedMs >= 16 * 60_000) expect(evidence.rolloverObservations.length).toBeGreaterThanOrEqual(1);
+      if (row.elapsedMs >= 31 * 60_000) expect(evidence.rolloverObservations.length).toBeGreaterThanOrEqual(2);
+      if (Math.floor(row.elapsedMs / 60_000) !== Math.floor((row.elapsedMs - 30_000) / 60_000)) {
+        expect(recordedWrites().filter((event) => event.relation_name !== 'public.observability_metric_buckets'),
+          'transient recording writes').toEqual([]);
+      }
+      expect(auditRequests.filter(({ path }) => /\/api\/(?:sessions|meetings\/[^/]+\/(?:recording|segments|complete))(?:\/|$)/u.test(path)
+        || /\/rest\/v1\/(?:sessions|meeting_recordings|meeting_segments|subtitle_cues|meeting_events)/u.test(path)
+        || path.startsWith('/storage/v1/object/')), 'recording HTTP writes').toEqual([]);
+      if (Date.now() >= nextFullScanAt) {
+        await fullScan('capture');
+        nextFullScanAt += fullScanIntervalMs;
+      }
+      nextSampleAt += 30_000;
+      await page.waitForTimeout(Math.max(0, nextSampleAt - Date.now()));
+    }
+    const captureEndAt = Date.now();
+const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), lightBrowserSample(), recordingSample()]);
+    if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify({ phase: 'capture',
+      at: new Date(captureEndAt).toISOString(), elapsedMs: captureEndAt - captureStart,
+      ...endMemory, ...endBrowser, segmentId: endRecording?.segmentId ?? null,
+      segmentNumber: endRecording?.segmentNumber ?? null, providerEpoch: endRecording?.providerEpoch ?? null })}\n`);
+    evidence.captureElapsedMs = Date.now() - captureStart;
+    expect(evidence.rolloverObservations).toHaveLength(2);
+    expect(evidence.rolloverObservations[0].elapsedMs).toBeGreaterThanOrEqual(14 * 60_000);
+    expect(evidence.rolloverObservations[0].elapsedMs).toBeLessThan(16 * 60_000);
+    expect(evidence.rolloverObservations[1].elapsedMs).toBeGreaterThanOrEqual(29 * 60_000);
+    expect(evidence.rolloverObservations[1].elapsedMs).toBeLessThan(31 * 60_000);
+    evidence.preStopSegments = [initialSegmentId, ...evidence.rolloverObservations.map((entry) => entry.newSegmentId)]
+      .map((id, index) => ({ id, sequence: index + 1 }));
+    await page.getByRole('button', { name: '結束會議' }).click();
+    await expect.poll(async () => (await localState(meetingId)).recording?.state,
+      { timeout: 60_000 }).toBe('stopped_local');
+    await expect.poll(() => page.evaluate(() => window.location.hash),
+      { timeout: 30_000 }).toBe('#meetings');
+    evidence.barrierCompletedAt = new Date().toISOString();
+    const barrierAt = Date.now();
+    evidence.fixtureAudioCleanup = await releaseFixtureAudioAfterEnd();
+    for (const secondsAfterBarrier of [0, 30, 60]) {
+      if (secondsAfterBarrier) await page.waitForTimeout(Math.max(0, barrierAt + secondsAfterBarrier * 1000 - Date.now()));
+      const row = { phase: 'post_stop', at: new Date().toISOString(), secondsAfterBarrier, ...await memory() };
+      if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify(row)}\n`);
+    }
+    const beforeReload = await localState(meetingId);
+    evidence.pcm = await page.evaluate(() => ({ callbacks: window.__issue41PcmCount,
+      frames: window.__issue41Frames, bytes: window.__issue41Frames * 2,
+      startedAt: window.__issue41PcmStartedAt, lateBatches: window.__issue41LateBatches,
+      skippedBatches: window.__issue41SkippedBatches }));
+    expect(evidence.pcm.callbacks).toBeGreaterThan(0);
+    expect(evidence.pcm.frames).toBeGreaterThan(0);
+    evidence.localAfterEnd = { recording: beforeReload.recording, chunks: beforeReload.chunks,
+      cues: beforeReload.cues, checkpoints: beforeReload.checkpoints };
+    await page.reload();
+    const restored = await localState(meetingId);
+    const { storage: opfs } = await fullScan('after_reload');
+    evidence.journalClaims = await readJournalClaims();
+    expect(evidence.journalClaims).toHaveLength(1);
+    expect(evidence.journalClaims[0].recordingId).toBe(restored.recording.recordingId);
+    expect(evidence.journalClaims[0].claims).toBeGreaterThan(0);
+    expect(evidence.journalClaims[0].ledgerHashesValid).toBe(true);
+    expect(evidence.journalClaims[0].pcmHashesValid).toBe(true);
+    expect(evidence.journalClaims[0].epochs.every((epoch) => epoch.ended
+      && epoch.gaps === 0 && epoch.overlaps === 0)).toBe(true);
+    expect(evidence.journalClaims[0].pcmBytes).toBe(evidence.pcm.bytes);
+    expect(restored.recording?.state).toBe('stopped_local');
+    expect(restored.recording?.segmentId).toBe(previousSegmentId);
+    expect(restored.chunks).toEqual(beforeReload.chunks);
+    expect(restored.chunks.length).toBeGreaterThan(0);
+    expect(restored.checkpoints.length).toBeGreaterThanOrEqual(3);
+    expect(opfs.opfs.bytes).toBeGreaterThan(0);
+    for (const cue of cueSegments) expect(restored.cues.find((entry) => entry.sourceText === cue.sourceText)?.segmentId).toBe(cue.segmentId);
+    expect(restored.cues).toEqual(beforeReload.cues);
+    expect(restored.checkpoints).toEqual(beforeReload.checkpoints);
+    expect(new Set(evidence.rolloverObservations.map((entry) => entry.newSegmentId)).size).toBe(2);
+    expect(evidence.rolloverObservations[0].oldSegmentId).toBe(initialSegmentId);
+    expect(evidence.rolloverObservations[1].oldSegmentId).toBe(evidence.rolloverObservations[0].newSegmentId);
+    evidence.evidenceChecks = {
+      pcmCallbacksFramesBytes: 'PASS', journalClaimCoverageAndHashes: 'PASS',
+      pcmRecordingOwnership: 'PASS', segmentPcmOwnership: 'UNVERIFIED',
+      segmentCueOwnership: 'PASS', endDurability: 'PASS', reloadReadback: 'PASS',
+      rolloverDurableOperations: 'PASS', oldSegmentEnded: 'UNVERIFIED',
+      providerStartTrace: 'UNVERIFIED'
+    };
+    evidence.restored = { recordingState: restored.recording.state, chunks: restored.chunks.length,
+      checkpoints: restored.checkpoints.length, cues: cueSegments, opfs: opfs.opfs };
+    evidence.dbAfter = databaseSnapshot();
+    evidence.writeEvents = recordedWrites();
+    evidence.storageAfter = { audio: await storageObjects('meeting-audio'), exports: await storageObjects('meeting-exports') };
+    evidence.cloudAfter = await cloudInventory(meetingId);
+    evidence.recordingHttpWrites = auditRequests.filter(({ path }) =>
+      /\/api\/(?:sessions|meetings\/[^/]+\/(?:recording|segments|complete))(?:\/|$)/u.test(path)
+      || /\/rest\/v1\/(?:sessions|meeting_recordings|meeting_segments|subtitle_cues|meeting_events)/u.test(path)
+      || path.startsWith('/storage/v1/object/'));
+    evidence.cloudZeroWrite = { status: 'NOT_RUN', before: evidence.cloudBefore,
+      after: evidence.cloudAfter, storageBefore: evidence.storageBefore,
+      storageAfter: evidence.storageAfter,
+      transientWriteAudit: evidence.writeEvents,
+      recordingHttpWrites: evidence.recordingHttpWrites };
+    expect(evidence.writeEvents.filter((event) => event.relation_name !== 'public.observability_metric_buckets')).toEqual([]);
+    for (const [relation, before] of Object.entries(evidence.dbBefore.tables)) {
+      if (relation !== 'public.observability_metric_buckets') expect(evidence.dbAfter.tables[relation], relation).toEqual(before);
+    }
+    expect(evidence.storageAfter).toEqual(evidence.storageBefore);
+    for (const key of ['cues', 'contentEvents', 'checkpoints', 'sessionContent', 'audioObjects', 'exportObjects'])
+      expect(evidence.cloudAfter[key], `Cloud recording content ${key}`).toBe(evidence.cloudBefore[key]);
+    expect(evidence.recordingHttpWrites).toEqual([]);
+    evidence.cloudZeroWrite.status = 'PASS';
+    evidence.evidenceChecks.cloudZeroWrite = 'PASS';
+    evidence.result = 'RECORDING_40MIN_SOAK_PASS';
+    evidence.finishedAt = new Date().toISOString();
+    save();
+    return;
+  }
   if (recordingOnly) {
     try {
     const startState = () => page.evaluate(async (id) => {
@@ -291,18 +1757,66 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     evidence.startState = await startState();
     evidence.captureStartedAt = new Date().toISOString();
     save();
-    await expect.poll(async () => (await dbRows('sessions', `select=id,meeting_id,segment_id&meeting_id=eq.${meetingId}`)).length)
-      .toBeGreaterThan(0);
-  const startedSegments = await segments(meetingId);
-  expect(startedSegments).toHaveLength(1);
-  initialSegmentId = startedSegments[0].id;
+    if (recordingSmoke) {
+      const started = await localState(meetingId);
+      expect(started.recording?.meetingId).toBe(meetingId);
+      expect(started.recording?.recordingId).toBeTruthy();
+      expect(started.recording?.segmentId).toBeTruthy();
+      expect(started.recording?.segmentNumber).toBe(1);
+      expect(started.recording?.state).toBe('capturing');
+      evidence.initialRecordingId = started.recording.recordingId;
+      initialSegmentId = started.recording.segmentId;
+    } else {
+      await expect.poll(async () => (await dbRows('sessions', `select=id,meeting_id,segment_id&meeting_id=eq.${meetingId}`)).length)
+        .toBeGreaterThan(0);
+      const startedSegments = await segments(meetingId);
+      expect(startedSegments).toHaveLength(1);
+      initialSegmentId = startedSegments[0].id;
+    }
   evidence.initialSegmentId = initialSegmentId;
   save();
-    if (recordingSoak || recordingContract) {
+  if (ram10Diagnostic) {
+    await runRecordingRam10Diagnostic({ page, browser, meetingId, initialSegmentId, localState, dbRows, evidence, save });
+    return;
+  }
+  let samplePostStop = null;
+  let sampleExport = null;
+  let attachRamStage = null;
+  if (recordingSoak || recordingContract) {
       const captureStart = await page.evaluate(() => window.__issue41PcmStartedAt);
       const cdp = await page.context().newCDPSession(page);
       await cdp.send('Performance.enable');
       const system = await browser.newBrowserCDPSession();
+  if (ram2Diagnostic || recordingSoak) {
+    evidence.ram2Stages = [];
+    await page.exposeBinding('__issue41CaptureRamStage', async (_, event) => {
+      const sampledAt = Date.now();
+      const [metrics, processInfo] = await Promise.all([
+        cdp.send('Performance.getMetrics').catch(() => null),
+        system.send('SystemInfo.getProcessInfo').catch(() => null)
+      ]);
+      const rendererPid = processInfo?.processInfo?.find((entry) => entry.type === 'renderer')?.id ?? null;
+      let chromiumRssBytes = 'NOT_COMPARABLE';
+      if (rendererPid !== null) {
+        try { chromiumRssBytes = Number(execFileSync('ps', ['-p', String(rendererPid), '-o', 'rss='], { encoding: 'utf8' }).trim()) * 1024; }
+        catch { /* A renderer exit is recorded as incomparable. */ }
+      }
+      const row = { ...event, sampledAt: new Date(sampledAt).toISOString(), sampleLagMs: sampledAt - event.at,
+        rendererPid, chromiumRssBytes,
+        jsHeapBytes: metrics?.metrics?.find((item) => item.name === 'JSHeapUsedSize')?.value ?? 'NOT_MEASURED' };
+      evidence.ram2Stages.push(row);
+      if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify({ phase: 'ram2_stage', ...row })}\n`);
+    });
+    attachRamStage = () => page.evaluate(() => {
+      window.__issue41RamStagePending = [];
+      window.__issue41RamStage = (event) => {
+        const pending = window.__issue41CaptureRamStage(event);
+        window.__issue41RamStagePending.push(pending);
+        void pending.catch(() => {});
+      };
+    });
+    await attachRamStage();
+  }
     let lastSegmentId = initialSegmentId;
       let nextSampleAt = captureStart;
       evidence.rolloverObservations = [];
@@ -342,9 +1856,11 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
           catch { /* The renderer may have exited between the CDP and ps calls. */ }
         }
         const active = authoritative.find((segment) => segment.status === 'active');
-        const row = {
+      const row = {
           at: new Date(at).toISOString(), elapsedMs: at - captureStart,
-          chromiumRssBytes, jsHeapBytes: metrics.metrics.find((item) => item.name === 'JSHeapUsedSize')?.value ?? 'NOT_MEASURED',
+        phase: 'capture', rendererPid: renderer?.id ?? null,
+        rendererAlive: typeof chromiumRssBytes === 'number',
+        chromiumRssBytes, jsHeapBytes: metrics.metrics.find((item) => item.name === 'JSHeapUsedSize')?.value ?? 'NOT_MEASURED',
           ...browserState, audioChunks: local.chunks.length,
           audioBytes: local.chunks.reduce((sum, chunk) => sum + chunk.byteSize, 0),
           segmentId: active?.id ?? null, sessionId: active?.session_id ?? null,
@@ -362,7 +1878,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
         }
         return row;
       };
-    const requiredCaptureMs = recordingContract ? 45_000 : soakMinutes * 60_000;
+  const requiredCaptureMs = ram2Diagnostic ? 60_000 : recordingContract ? 45_000 : soakMinutes * 60_000;
       while (Date.now() - captureStart < requiredCaptureMs) {
         const row = await sample();
         expect(row.liveTracks, 'the MediaRecorder source must remain live').toBeGreaterThan(0);
@@ -370,7 +1886,46 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
         nextSampleAt += recordingContract ? 5_000 : 30_000;
         await page.waitForTimeout(Math.max(0, Math.min(nextSampleAt - Date.now(), recordingContract ? 5_000 : 30_000)));
       }
-      await sample();
+      const lastCaptureRow = await sample();
+      const preStopRendererPid = lastCaptureRow.rendererPid;
+      const measureRenderer = async () => {
+        const at = Date.now();
+        const [metrics, processInfo] = await Promise.all([
+          cdp.send('Performance.getMetrics').catch(() => null),
+          system.send('SystemInfo.getProcessInfo').catch(() => null)
+        ]);
+        const rendererPid = processInfo?.processInfo?.find((entry) => entry.type === 'renderer')?.id ?? null;
+        let chromiumRssBytes = 'NOT_COMPARABLE';
+        let rendererAlive = false;
+        if (rendererPid !== null) {
+          try {
+            const rss = Number(execFileSync('ps', ['-p', String(rendererPid), '-o', 'rss='], { encoding: 'utf8' }).trim());
+            rendererAlive = Number.isFinite(rss) && rss > 0;
+            if (rendererAlive && rendererPid === preStopRendererPid) chromiumRssBytes = rss * 1024;
+          } catch { /* A stopped renderer is not comparable to its pre-Stop samples. */ }
+        }
+        const comparable = rendererAlive && rendererPid === preStopRendererPid;
+        return {
+          at: new Date(at).toISOString(), elapsedMs: at - captureStart,
+          rendererPid, rendererAlive, rendererComparable: comparable,
+          chromiumRssBytes,
+          jsHeapBytes: comparable
+            ? metrics?.metrics?.find((item) => item.name === 'JSHeapUsedSize')?.value ?? 'NOT_MEASURED'
+            : 'NOT_COMPARABLE'
+        };
+      };
+      samplePostStop = async (secondsAfterBarrier) => {
+        const row = { ...(await measureRenderer()), phase: 'post_stop', secondsAfterBarrier };
+        if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify(row)}\n`);
+        (evidence.postStopMemorySamples ||= []).push(row);
+        save();
+      };
+      sampleExport = async (phase, marker) => {
+        const row = { ...(await measureRenderer()), phase, marker };
+        if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify(row)}\n`);
+        (evidence.exportMemorySamples ||= []).push(row);
+        save();
+      };
       const preStopSegments = await segments(meetingId);
       const authoritativeSessions = await dbRows('sessions', `select=id,meeting_id,segment_id,current_segment_id,recording_id&meeting_id=eq.${meetingId}`);
       evidence.preStopSegments = preStopSegments.map((segment) => ({ id: segment.id, sessionId: segment.session_id, sequence: segment.sequence, status: segment.status }));
@@ -378,7 +1933,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       evidence.captureElapsedMs = Date.now() - captureStart;
       save();
       expect(evidence.captureElapsedMs).toBeGreaterThanOrEqual(requiredCaptureMs);
-    const requiredRollovers = recordingContract ? 1 : Math.floor((soakMinutes - 1) / 15);
+  const requiredRollovers = ram2Diagnostic ? 2 : recordingContract ? 1 : Math.floor((soakMinutes - 1) / 15);
     expect(evidence.rolloverObservations.length, 'product scheduled 15-minute rollovers').toBeGreaterThanOrEqual(requiredRollovers);
       expect(evidence.rolloverObservations[0].elapsedMs).toBeGreaterThan(recordingContract ? 10_000 : 840_000);
       expect(evidence.rolloverObservations[0].elapsedMs).toBeLessThan(recordingContract ? 40_000 : 1_020_000);
@@ -390,7 +1945,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     expect(preStopSegments.find((segment) => segment.status === 'active')?.id).toBe(evidence.rolloverObservations.at(-1).newSegmentId);
     expect(authoritativeSessions[0].current_segment_id).toBe(evidence.rolloverObservations.at(-1).newSegmentId);
       if (recordingContract) {
-        expect(evidence.lifecycleResponses?.filter((entry) => entry.meetingId === meetingId && entry.command === 'rollover' && entry.method === 'POST' && entry.status === 201)).toHaveLength(1);
+        expect(evidence.lifecycleResponses?.filter((entry) => entry.meetingId === meetingId && entry.command === 'rollover' && entry.method === 'POST' && entry.status === 201)).toHaveLength(requiredRollovers);
       }
     } else {
       await page.waitForTimeout(12_000);
@@ -464,8 +2019,23 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     expect(evidence.journalBeforeStop.some((file) => file.name.startsWith('pcm-') && file.bytes > 0)).toBe(true);
     await page.getByRole('button', { name: '結束會議' }).click();
     await expect.poll(async () => (await localState(meetingId)).recording?.state, { timeout: 30_000 }).toBe('stopped_local');
-    await expect.poll(() => evidence.lifecycleResponses?.filter((entry) => entry.meetingId === meetingId && entry.command === 'stop' && entry.method === 'POST' && entry.status === 200).length ?? 0, { timeout: 30_000 }).toBe(1);
+    if (!recordingSmoke) await expect.poll(() => evidence.lifecycleResponses?.filter((entry) => entry.meetingId === meetingId && entry.command === 'stop' && entry.method === 'POST' && entry.status === 200).length ?? 0, { timeout: 30_000 }).toBe(1);
     evidence.barrierCompletedAt = new Date().toISOString();
+      if (samplePostStop) {
+        const barrierAt = Date.now();
+        for (const seconds of [0, 30, 60]) {
+          if (seconds > 0) await page.waitForTimeout(Math.max(0, barrierAt + seconds * 1000 - Date.now()));
+          await samplePostStop(seconds);
+        }
+      }
+  if (ram2Diagnostic || recordingSoak) {
+    await page.evaluate(() => Promise.allSettled(window.__issue41RamStagePending));
+    evidence.ram2Stages.push({ stage: 'stop_barrier', state: 'complete', at: Date.parse(evidence.barrierCompletedAt),
+      rendererPid: evidence.postStopMemorySamples?.[0]?.rendererPid ?? null,
+      chromiumRssBytes: 'SEE_POST_STOP_0', jsHeapBytes: 'SEE_POST_STOP_0' });
+    save();
+    expect(evidence.ram2Stages.filter((event) => ['opfs_readback', 'decode_audio', 'wav_encode'].includes(event.stage))).toEqual([]);
+  }
     evidence.journalAfterStop = await journalFiles();
   if (recordingContract) {
     evidence.audioContainerAfterStop = await diagnoseAudioContainers();
@@ -523,6 +2093,13 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       expect(evidence.journalClaims[0].epochs.every((epoch) => epoch.gaps === 0 && epoch.overlaps === 0 && epoch.ended)).toBe(true);
     }
     const beforeReload = await localState(meetingId);
+    if (recordingSmoke) {
+      expect(beforeReload.recording?.recordingId).toBe(evidence.initialRecordingId);
+      expect(beforeReload.recording?.segmentId).toBe(initialSegmentId);
+      expect(beforeReload.recording?.segmentNumber).toBe(1);
+      expect(beforeReload.recording?.state).toBe('stopped_local');
+      expect(beforeReload.chunks.every((chunk) => chunk.segmentId === initialSegmentId)).toBe(true);
+    }
     if (recordingSoak || recordingContract) {
       expect(beforeReload.recording?.recordingId).toBe(evidence.preStopSessions[0].recording_id);
       expect(evidence.journalClaims[0].recordingId).toBe(beforeReload.recording.recordingId);
@@ -536,38 +2113,88 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       expect([...chunkSegments].sort()).toEqual(evidence.preStopSegments.map((segment) => segment.id).sort());
     }
     await page.reload();
+    if (attachRamStage) await attachRamStage();
     const restored = await localState(meetingId);
+    if (recordingSmoke) {
+      expect(restored.recording?.meetingId).toBe(meetingId);
+      expect(restored.recording?.recordingId).toBe(evidence.initialRecordingId);
+      expect(restored.recording?.segmentId).toBe(initialSegmentId);
+      expect(restored.recording?.segmentNumber).toBe(1);
+    }
     evidence.restored = { recordingState: restored.recording?.state, chunks: restored.chunks };
-    const exported = await page.evaluate(async ({ id, isSoak }) => {
-      const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
-      const { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore } = await import('/src/lib/localMeetingStorage.js');
-      const chunks = await createIndexedDbLocalMeetingManifestStore().list(id);
-      const chunkStore = createOpfsChunkStore();
-      const actualChunks = await Promise.all(chunks.map(async (chunk) => ({ expected: chunk.byteSize, actual: (await chunkStore.read(chunk.path)).size })));
-      const artifacts = await createLocalMeetingPersistence().listFinalizedAudioArtifacts(id);
-      const audio = [];
-      for (const artifact of artifacts) {
-        const context = new AudioContext();
-        const decoded = await context.decodeAudioData(await artifact.blob.arrayBuffer());
-        await context.close();
-        audio.push({ kind: artifact.kind, bytes: artifact.blob.size, mimeType: artifact.mimeType,
-          durationMs: Math.round(decoded.duration * 1000), segments: artifact.captureSegmentCount });
-      }
-      const perSegment = [];
-      if (isSoak) {
-        const { composeLocalMeetingAudioArtifact } = await import('/src/lib/localMeetingAudioExport.js');
-        for (const segmentId of [...new Set(chunks.map((chunk) => chunk.segmentId))]) {
-          const segmentChunks = chunks.filter((chunk) => chunk.segmentId === segmentId);
-          const artifact = await composeLocalMeetingAudioArtifact({ chunks: segmentChunks, readChunk: (path) => chunkStore.read(path) });
-          const context = new AudioContext();
-          const decoded = await context.decodeAudioData(await artifact.blob.arrayBuffer());
-          await context.close();
-          perSegment.push({ segmentId, chunks: segmentChunks.length, bytes: artifact.blob.size,
-            mimeType: artifact.mimeType, durationMs: Math.round(decoded.duration * 1000) });
-        }
-      }
-      return { actualChunks, audio, perSegment };
-    }, { id: meetingId, isSoak: recordingSoak || recordingContract });
+const measureExportPhase = async (phase, action) => {
+  if (sampleExport) await sampleExport(phase, 'start');
+  const pendingSamples = new Set();
+  const sampler = sampleExport ? setInterval(() => {
+    if (pendingSamples.size) return;
+    const pending = sampleExport(phase, 'during');
+    pendingSamples.add(pending);
+    void pending.then(() => pendingSamples.delete(pending), (error) => {
+      pendingSamples.delete(pending);
+      evidence.exportMemoryError = error.message;
+      save();
+    });
+  }, 1_000) : null;
+  let result;
+  try { result = await action(); }
+  finally {
+    if (sampler) clearInterval(sampler);
+    await Promise.allSettled([...pendingSamples]);
+  }
+  if (sampleExport) {
+    await page.evaluate(() => Promise.allSettled(window.__issue41RamStagePending));
+    await sampleExport(phase, 'complete');
+    await page.waitForTimeout(60_000);
+    await sampleExport(phase, 'residual_60s');
+  }
+  return result;
+};
+const productAudio = await measureExportPhase('export', () => page.evaluate(async (id) => {
+  const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+  const artifacts = await createLocalMeetingPersistence().listFinalizedAudioArtifacts(id);
+  window.__issue41ExportArtifacts = artifacts;
+  return artifacts.map((artifact) => ({ kind: artifact.kind, bytes: artifact.blob.size,
+    mimeType: artifact.mimeType, segments: artifact.captureSegmentCount }));
+}, meetingId));
+if (sampleExport) {
+  expect(evidence.ram2Stages.some((event) => event.stage === 'opfs_readback' && event.state === 'start')).toBe(true);
+  expect(evidence.ram2Stages.some((event) => event.stage === 'decode_audio' && event.state === 'start')).toBe(true);
+}
+const decodedAudio = await measureExportPhase('wav_validation', () => page.evaluate(async () => {
+  const results = [];
+  for (const artifact of window.__issue41ExportArtifacts) {
+    const context = new AudioContext();
+    const decoded = await context.decodeAudioData(await artifact.blob.arrayBuffer());
+    await context.close();
+    results.push({ kind: artifact.kind, durationMs: Math.round(decoded.duration * 1000) });
+  }
+  return results;
+}));
+const segmentValidation = await measureExportPhase('segment_validation', () => page.evaluate(async ({ id, isSoak }) => {
+  const { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore } = await import('/src/lib/localMeetingStorage.js');
+  const chunks = await createIndexedDbLocalMeetingManifestStore().list(id);
+  const chunkStore = createOpfsChunkStore();
+  const actualChunks = await Promise.all(chunks.map(async (chunk) => ({ expected: chunk.byteSize, actual: (await chunkStore.read(chunk.path)).size })));
+  const perSegment = [];
+  if (isSoak) {
+    const { composeLocalMeetingAudioArtifact } = await import('/src/lib/localMeetingAudioExport.js');
+    for (const segmentId of [...new Set(chunks.map((chunk) => chunk.segmentId))]) {
+      const segmentChunks = chunks.filter((chunk) => chunk.segmentId === segmentId);
+      const artifact = await composeLocalMeetingAudioArtifact({ chunks: segmentChunks, readChunk: (path) => chunkStore.read(path) });
+      const context = new AudioContext();
+      const decoded = await context.decodeAudioData(await artifact.blob.arrayBuffer());
+      await context.close();
+      perSegment.push({ segmentId, chunks: segmentChunks.length, bytes: artifact.blob.size,
+        mimeType: artifact.mimeType, durationMs: Math.round(decoded.duration * 1000) });
+    }
+  }
+  return { actualChunks, perSegment };
+}, { id: meetingId, isSoak: recordingSoak || recordingContract }));
+const exported = {
+  ...segmentValidation,
+  audio: productAudio.map((artifact) => ({ ...artifact,
+    durationMs: decodedAudio.find((item) => item.kind === artifact.kind)?.durationMs ?? 0 }))
+};
     evidence.exported = exported;
     expect(restored.recording?.state).toBe('stopped_local');
     expect(restored.chunks).toEqual(beforeReload.chunks);
@@ -591,7 +2218,12 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     for (const key of ['cues', 'contentEvents', 'checkpoints', 'sessionContent', 'audioObjects', 'exportObjects']) {
       expect(evidence.cloudAfter[key], `Cloud content ${key}`).toBe(evidence.cloudBefore[key]);
     }
-    expect(evidence.cloudAfter.sessions).toBeGreaterThanOrEqual(1);
+    if (recordingSmoke) {
+      expect(evidence.cloudAfter.sessions).toBe(evidence.cloudBefore.sessions);
+      expect(evidence.cloudAfter.segments).toBe(evidence.cloudBefore.segments);
+    } else {
+      expect(evidence.cloudAfter.sessions).toBeGreaterThanOrEqual(1);
+    }
     expect(evidence.browserErrors).toEqual([]);
 evidence.result = recordingContract ? 'ROLLOVER_CONTRACT_PASS' : recordingSoak ? `RECORDING_${soakMinutes}MIN_SOAK_PASS` : 'RECORDING_SMOKE_PASS';
     evidence.finishedAt = new Date().toISOString();

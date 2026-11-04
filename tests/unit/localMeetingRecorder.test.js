@@ -231,13 +231,49 @@ test('local segment rollover keeps recording and capture identity while replayin
   });
 
   const rolled = await recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' });
-  const replayed = await recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-untrusted' });
+  const replayed = await recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' });
+  await assert.rejects(
+    recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-untrusted' }),
+    { code: 'local_segment_transition_conflict' }
+  );
 
   assert.equal(rolled.recordingId, started.recordingId);
   assert.equal(rolled.segmentId, 'segment-2');
   assert.equal(rolled.captureEpoch, started.captureEpoch);
   assert.equal(rolled.providerEpoch, started.providerEpoch + 1);
   assert.deepEqual(replayed, rolled);
+  const reconnected = await recorder.providerReconnect({ operationId: 'reconnect-after-rollover' });
+  assert.equal(reconnected.segmentId, rolled.segmentId);
+  assert.equal((await manifestStore.getRecording('meeting-1')).segmentNumber, rolled.segmentNumber);
+});
+
+test('failed local segment transaction leaves the current Segment unchanged', async () => {
+  const baseStore = createInMemoryLocalMeetingManifestStore();
+  let failCommit = true;
+  const manifestStore = {
+    ...baseStore,
+    async commitSegmentTransition(input) {
+      if (failCommit) {
+        failCommit = false;
+        throw new Error('IndexedDB transaction failed');
+      }
+      return baseStore.commitSegmentTransition(input);
+    }
+  };
+  const recorder = createLocalMeetingRecorder({ manifestStore, chunkStore: fakeChunkStore() });
+  await recorder.start('meeting-1', { operationId: 'start-1', recordingId: 'recording-1', segmentId: 'segment-1' });
+  await assert.rejects(
+    recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' }),
+    /IndexedDB transaction failed/u
+  );
+  assert.equal(recorder.snapshot().segmentId, 'segment-1');
+  assert.equal((await baseStore.getRecording('meeting-1')).segmentId, 'segment-1');
+  const committed = await recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' });
+  assert.equal(committed.segmentId, 'segment-2');
+  assert.deepEqual(
+    await recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' }),
+    committed
+  );
 });
 
 test('successful Finalize clears stale stop error and replays the clean result', async () => {

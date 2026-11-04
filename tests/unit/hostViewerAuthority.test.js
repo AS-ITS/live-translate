@@ -16,6 +16,22 @@ const packet = (type, sequence, fields = {}) => ({
   type, meetingId, sourceId: 'host-1', sequence, ...fields,
 });
 
+test('Viewer accepts Host Segment transition without cloud Segment rows', () => {
+  const local = { meeting: { id: meetingId }, segments: [], cues: [] };
+  const switching = mergeHostViewerEnvelope(local, packet('segment.transition', 1, {
+    segment: { segmentId: 'local-1', segmentSequence: 1, status: 'switching' }
+  }));
+  assert.equal(switching.hostSegment.status, 'switching');
+  const ready = mergeHostViewerEnvelope(switching, packet('segment.transition', 2, {
+    segment: { segmentId: 'local-2', segmentSequence: 2, status: 'ready' }
+  }));
+  assert.equal(ready.hostSegment.segmentId, 'local-2');
+  assert.equal(ready.hostCursor.sequence, 2);
+  assert.equal(mergeHostViewerEnvelope(ready, packet('segment.transition', 2, {
+    segment: { segmentId: 'unexpected', segmentSequence: 3, status: 'ready' }
+  })), ready);
+});
+
 test('Host snapshot, live cue, replay and stale snapshot keep latest revisions and segment order', () => {
   let detail = mergeHostViewerEnvelope(initial(), packet('snapshot', 2, { cues: [cue('first')] }));
   detail = mergeHostViewerEnvelope(detail, packet('cue.update', 3, { cue: cue('first', segments[0], 2) }));
@@ -38,7 +54,7 @@ test('Host packets reject foreign meeting, session, segment and Cue identity reu
   for (const invalid of [
     { ...packet('cue.append', 2, { cue: cue('foreign') }), meetingId: 'meeting-2' },
     packet('cue.append', 2, { cue: { ...cue('foreign'), sessionId: 'wrong' } }),
-    packet('cue.append', 2, { cue: { ...cue('foreign'), segmentId: 'wrong' } }),
+    packet('cue.append', 2, { cue: { ...cue('foreign'), segmentId: '' } }),
     packet('cue.update', 2, { cue: cue('first', segments[1], 2) }),
   ]) assert.equal(mergeHostViewerEnvelope(detail, invalid), detail);
   assert.equal(detail.cues.length, 1);
@@ -52,21 +68,41 @@ test('Host reload may publish a fresh source snapshot without discarding existin
   assert.equal(detail.hostCursor.sourceId, 'host-2');
 });
 
-test('new Segment Cue remains unacknowledged until metadata arrives, then replays once', () => {
+test('new local Segment Cue does not wait for cloud metadata', () => {
   const first = packet('snapshot', 1, { cues: [cue('first')] });
   let detail = mergeHostViewerEnvelope({ ...initial(), segments: [segments[0]] }, first);
   const second = packet('cue.append', 2, { cue: cue('second', segments[1]) });
-  assert.equal(mergeHostViewerEnvelope(detail, second), detail);
-  assert.equal(detail.hostCursor.sequence, 1);
+  detail = mergeHostViewerEnvelope(detail, second);
+  assert.equal(detail.hostCursor.sequence, 2);
   const third = packet('cue.append', 3, { cue: cue('third') });
-  assert.equal(mergeHostViewerEnvelope(detail, third), detail);
-  detail = { ...detail, segments };
-  detail = mergeHostViewerEnvelope(detail, packet('replay.response', 3, {
-    fromSequence: 1, toSequence: 3, events: [second, third],
-  }));
+  detail = mergeHostViewerEnvelope(detail, third);
   assert.deepEqual(detail.cues.map((item) => item.cueId), ['first', 'third', 'second']);
   assert.equal(detail.hostCursor.sequence, 3);
   assert.equal(mergeHostViewerEnvelope(detail, second), detail);
+});
+test('Host only snapshot, append, update and replay survive local-only metadata', () => {
+  let detail = { meeting: { id: meetingId }, segments: [], cues: [] };
+  detail = mergeHostViewerEnvelope(detail, packet('snapshot', 1, { cues: [cue('first')] }));
+  detail = mergeHostViewerEnvelope(detail, packet('cue.update', 2, { cue: cue('first', segments[0], 2) }));
+  detail = mergeHostViewerEnvelope(detail, packet('replay.response', 4, {
+    fromSequence: 2, toSequence: 4, events: [
+      packet('cue.append', 3, { cue: { ...cue('second', segments[1]), segmentSequence: 2 } }),
+      packet('cue.update', 4, { cue: cue('first', segments[0], 3) }),
+    ],
+  }));
+  assert.deepEqual(detail.cues.map(({ cueId, sourceText }) => [cueId, sourceText]),
+    [['first', 'first-3'], ['second', 'second-1']]);
+  assert.equal(detail.hostCursor.sequence, 4);
+  assert.equal(mergeHostViewerEnvelope(detail, packet('cue.append', 5, {
+    cue: { ...cue('third', segments[0]), sessionId: 'wrong' },
+  })), detail);
+});
+test('local-only Host snapshot rejects conflicting session ownership for one Segment', () => {
+  const detail = { meeting: { id: meetingId }, segments: [], cues: [] };
+  const snapshot = packet('snapshot', 1, { cues: [
+    cue('first'), { ...cue('second'), sessionId: 'another-session' },
+  ] });
+  assert.equal(mergeHostViewerEnvelope(detail, snapshot), detail);
 });
 
 test('invalid replay Cue cannot acknowledge later sequence or switch source', () => {

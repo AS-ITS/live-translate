@@ -817,3 +817,82 @@ test('IndexedDB reload adopts committed Stop and Rollover without resubmitting',
   assert.deepEqual(result.statuses, ['committed', 'committed', 'committed', 'committed']);
   assert.equal(result.resubmissions, 0);
 });
+
+test('browser IndexedDB commits Segment predecessor, successor, pointer and operation atomically', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://local-segment-ledger.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://local-segment-ledger.test/');
+  const storageUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalStorageSource()).toString('base64')}`;
+  const dbName = `segment-ledger-${Date.now()}`;
+  const beforeReload = await page.evaluate(async ({ storageUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const recording = { meetingId: 'meeting-1', recordingId: 'recording-1', segmentId: 'segment-1',
+      segmentNumber: 1, captureEpoch: 1, providerEpoch: 0, state: 'capturing',
+      integrityVersion: 2, pcmEnabled: true };
+    await store.commitRecordingOperation({ recording, operation: {
+      meetingId: 'meeting-1', operationId: 'start-1', type: 'start', result: recording
+    } });
+    const transition = { meetingId: 'meeting-1', recordingId: 'recording-1', operationId: 'rollover-1',
+      predecessorId: 'segment-1', predecessorSequence: 1, successorId: 'segment-2', successorSequence: 2 };
+    await store.prepareSegmentTransition(transition);
+    let invalidCode = null;
+    try { await store.commitSegmentTransition({ ...transition, boundary: { recordingId: 'wrong' } }); }
+    catch (error) { invalidCode = error.code; }
+    const before = { recording: await store.getRecording('meeting-1'),
+      segments: await store.listSegments('meeting-1'),
+      operation: await store.getSegmentTransition('meeting-1', 'rollover-1') };
+    const boundary = { recordingId: 'recording-1', transitionOperationId: 'rollover-1',
+      captureEpoch: 2, endSample: 1600, offset: 42, sha256: 'a'.repeat(64) };
+    const originalPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value, ...args) {
+      if (this.name === 'recordings' && value.segmentId === 'segment-2') {
+        throw new Error('SIMULATED_IDB_WRITE_FAILURE');
+      }
+      return originalPut.call(this, value, ...args);
+    };
+    let writeFailure = null;
+    try { await store.commitSegmentTransition({ ...transition, boundary }); }
+    catch (error) { writeFailure = error.message; }
+    finally { IDBObjectStore.prototype.put = originalPut; }
+    const afterFailedWrite = { recording: await store.getRecording('meeting-1'),
+      segments: await store.listSegments('meeting-1'),
+      operation: await store.getSegmentTransition('meeting-1', 'rollover-1') };
+    await store.commitSegmentTransition({ ...transition, boundary });
+    await store.saveRetention({ meetingId: 'meeting-1', recordingId: 'recording-1',
+      expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() });
+    return { invalidCode, before, writeFailure, afterFailedWrite };
+  }, { storageUrl, dbName });
+  assert.equal(beforeReload.invalidCode, 'local_segment_boundary_invalid');
+  assert.equal(beforeReload.before.recording.segmentId, 'segment-1');
+  assert.deepEqual(beforeReload.before.segments.map((segment) => segment.status), ['ACTIVE']);
+  assert.equal(beforeReload.before.operation.phase, 'PREPARED');
+  assert.equal(beforeReload.writeFailure, 'SIMULATED_IDB_WRITE_FAILURE');
+  assert.equal(beforeReload.afterFailedWrite.recording.segmentId, 'segment-1');
+  assert.equal(beforeReload.afterFailedWrite.recording.captureEpoch, 1);
+  assert.deepEqual(beforeReload.afterFailedWrite.segments.map((segment) => segment.status), ['ACTIVE']);
+  assert.equal(beforeReload.afterFailedWrite.operation.phase, 'PREPARED');
+  await page.reload();
+  const restored = await page.evaluate(async ({ storageUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const recording = await store.getRecording('meeting-1');
+    const segments = await store.listSegments('meeting-1');
+    const operation = await store.getSegmentTransition('meeting-1', 'rollover-1');
+    const retention = await store.getRetention('meeting-1');
+    await store.clearMeetingContent('meeting-1');
+    return { recording, segments, operation, retention,
+      afterClear: await store.listSegments('meeting-1') };
+  }, { storageUrl, dbName });
+  assert.equal(restored.recording.segmentId, 'segment-2');
+  assert.equal(restored.recording.captureEpoch, 3);
+  assert.equal(restored.operation.result.captureEpoch, 3);
+  assert.deepEqual(restored.segments.map((segment) => [segment.status, segment.firstJournalEpoch,
+    segment.lastJournalEpoch]), [['ENDED', 1, 2], ['ACTIVE', 3, null]]);
+  assert.equal(restored.operation.phase, 'COMMITTED');
+  assert.equal(restored.retention.deleted, false);
+  assert.ok(Date.parse(restored.retention.expiresAt) > Date.now());
+  assert.deepEqual(restored.afterClear, []);
+});

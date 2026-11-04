@@ -22,12 +22,20 @@ export class GoogleGenAI {
         const session = {
           closed: false,
           sentInputs: [],
+          audioInputCount: 0,
+          inputCount: 0,
           sentClientContent: [],
           sendRealtimeInput(input) {
-            this.sentInputs.push(input);
+            this.inputCount += 1;
+            if (window.__issue41BoundMockPcm && input?.audio) {
+              this.audioInputCount += 1;
+              if (this.audioInputCount === 1) this.sentInputs.push({ audio: true });
+            } else {
+              this.sentInputs.push(input);
+            }
             if (input?.audioStreamEnd === true || input?.activityEnd) {
               setTimeout(() => request.callbacks?.onmessage?.({
-                eventId: `mock-provider-boundary-${this.sentInputs.length}`,
+                eventId: `mock-provider-boundary-${this.inputCount}`,
                 serverContent: { turnComplete: true, generationComplete: true }
               }), 0);
             }

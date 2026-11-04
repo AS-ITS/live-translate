@@ -44,3 +44,15 @@ test('lifecycle v2 write headers include the authoritative lifecycle version', (
   );
   clearMeetingLifecycleWriteFence('meeting-2');
 });
+
+test('Host local-only token headers carry local identity without a cloud lease', () => {
+  setMeetingLifecycleWriteFence({
+    localOnly: true, meetingId: 'meeting-3', sessionId: 'local-session', segmentId: 'local-segment'
+  });
+  assert.deepEqual(meetingLifecycleWriteHeaders('meeting-3', 'local-segment'), {
+    'x-host-local-recording': '1',
+    'x-meeting-session-id': 'local-session',
+    'x-meeting-segment-id': 'local-segment'
+  });
+  clearMeetingLifecycleWriteFence('meeting-3');
+});

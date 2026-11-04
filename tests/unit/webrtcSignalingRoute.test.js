@@ -3,6 +3,7 @@ import { Readable } from 'node:stream';
 import test from 'node:test';
 import { createDefaultWebRtcDeviceAuthorizer, createDefaultWebRtcShareResolver, createVercelWebRtcSignalingHandler, parseWebRtcIceServersJson } from '../../api/webrtc/[...path].js';
 import { createRedisRestAdapter } from '../../server/webrtc/signalingRoute.js';
+import { routeNodeRequest } from '../../server/index.js';
 
 class FakeRedis {
   constructor(clock) {
@@ -87,6 +88,24 @@ function setup(overrides = {}) {
   const options = { redis, resolveShareToken: resolver, clock, participantTtlMs: 100, messageTtlMs: 20, revocationTtlMs: 100, maxParticipantsPerMeeting: 3, maxMessageBytes: 32, ...overrides };
   return { one: createVercelWebRtcSignalingHandler(options), two: createVercelWebRtcSignalingHandler(options), setNow(value) { now = value; }, redis };
 }
+
+test('Node API forwards WebRTC requests to the shared signaling handler', async () => {
+  const ctx = setup();
+  const nodeHandler = (req, res) => routeNodeRequest(req, res, {
+    webRtcHandler: ctx.one,
+    applicationHandler: () => { throw new Error('WebRTC request reached the application handler.'); },
+  });
+  const joined = await request(nodeHandler, {
+    method: 'POST', url: '/api/webrtc/meeting-1/join',
+    body: { participantId: 'host-1', role: 'host', shareToken: 'host' },
+  });
+  assert.equal(joined.status, 200);
+  const denied = await request(nodeHandler, {
+    method: 'POST', url: '/api/webrtc/meeting-1/join',
+    body: { participantId: 'viewer-1', role: 'viewer', shareToken: 'denied' },
+  });
+  assert.equal(denied.status, 403);
+});
 
 test('two Vercel handler instances share Redis-backed join, signal, and polling state', async () => {
   const ctx = setup();

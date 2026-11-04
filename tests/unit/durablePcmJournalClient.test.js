@@ -31,6 +31,53 @@ test('meeting identity is required and is sent to the worker', async () => {
   assert.equal(f.terminated, true);
 });
 
+test('Pause END and CLOSE release ownership before verifier and next writer OPEN', async () => {
+  const calls = [];
+  let locked = false;
+  let highestEpoch = 0;
+  const workerFactory = () => {
+    const worker = {
+      onmessage: null,
+      postMessage({ id, command, args }) {
+        calls.push({ command, captureEpoch: args.captureEpoch ?? null });
+        queueMicrotask(() => {
+          if (command === 'OPEN' && locked) {
+            worker.onmessage({ data: { id, ok: false,
+              error: { code: 7, message: 'OPFS file locked' } } });
+            return;
+          }
+          if (command === 'OPEN') locked = true;
+          if (command === 'END') highestEpoch = args.captureEpoch;
+          if (command === 'CLOSE') locked = false;
+          worker.onmessage({ data: { id, ok: true, result: command === 'OPEN'
+            ? { highestEpoch, tailState: 'CLEAN' } : { state: 'COMMITTED' } } });
+        });
+      },
+      terminate() {}
+    };
+    return worker;
+  };
+  const options = { meetingId: 'meeting-a', recordingId: 'recording-a', workerFactory,
+    gapStore: { append: async () => {} }, commitIntervalMs: 60_000 };
+  const first = createDurablePcmJournalClient(options);
+  await first.open();
+  first.offer(new Uint8Array(3200), { connectionEpoch: 1 });
+  await first.flush({ endEpoch: true, transitionOperationId: 'pause-1' });
+  await first.close();
+  const verifier = createDurablePcmJournalClient({ ...options, existingOnly: true, readOnly: true });
+  await verifier.open();
+  await verifier.close();
+  const next = createDurablePcmJournalClient(options);
+  await next.open();
+  next.offer(new Uint8Array(3200), { connectionEpoch: 2 });
+  await next.flush();
+  await next.close();
+  assert.deepEqual(calls.filter(({ command }) => command === 'END').map(({ captureEpoch }) => captureEpoch), [1, 2]);
+  assert.deepEqual(calls.filter(({ command }) => command === 'BEGIN').map(({ captureEpoch }) => captureEpoch), [1, 2]);
+  assert.deepEqual(calls.filter(({ command }) => ['OPEN', 'CLOSE'].includes(command)).map(({ command }) => command),
+    ['OPEN', 'CLOSE', 'OPEN', 'CLOSE', 'OPEN', 'CLOSE']);
+});
+
 test('provider metadata keeps one capture range; pause starts a new epoch', async () => {
   const f = fixture();
   await f.client.open();
@@ -44,6 +91,23 @@ test('provider metadata keeps one capture range; pause starts a new epoch', asyn
     [[1, 0, 6400], [2, 0, 3200]]);
   assert.deepEqual(appends.map(({ args }) => args.operationId), ['r1_0_3200', 'r2_0_1600']);
   assert.equal(f.terminated, true);
+});
+
+test('duplicate or late capture callback cannot acquire a new sample range after END', async () => {
+  const f = fixture();
+  await f.client.open();
+  const first = f.client.offer(new Uint8Array(3200), {
+    captureSourceId: 'source-1', sequence: 1, connectionEpoch: 1
+  });
+  assert.equal(first.state, 'QUEUED');
+  await f.client.flush({ endEpoch: true });
+  assert.deepEqual(f.client.offer(new Uint8Array(3200), {
+    captureSourceId: 'source-1', sequence: 1, connectionEpoch: 1
+  }), { state: 'REJECTED', code: 'DUPLICATE_OR_LATE_PCM' });
+  f.client.offer(new Uint8Array(3200), { captureSourceId: 'source-1', sequence: 2, connectionEpoch: 1 });
+  await f.client.close();
+  assert.deepEqual(f.calls.filter(({ command }) => command === 'APPEND')
+    .map(({ args }) => [args.captureEpoch, args.startSample]), [[1, 0], [2, 0]]);
 });
 
 test('Journal backpressure does not delay or duplicate Live provider sends', async () => {

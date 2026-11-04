@@ -19,10 +19,11 @@ const finalCue = {
 };
 const cueCheckpoint = { nextSequence: 2 };
 
-function createFixture(manifestStore = createInMemoryLocalMeetingManifestStore()) {
+async function createFixture(manifestStore = createInMemoryLocalMeetingManifestStore()) {
   const persistence = createLocalMeetingPersistence({
     manifestStore, cryptoImpl: webcrypto, recordAudio: false, trace: () => {}
   });
+  await persistence.saveCue({ meetingId, segmentId, sessionId: finalCue.sessionId, cue: finalCue });
   const returned = [];
   const coordinator = createMeetingCheckpointSyncCoordinator({
     updateCheckpoint: async (payload) => {
@@ -39,7 +40,7 @@ function createFixture(manifestStore = createInMemoryLocalMeetingManifestStore()
 }
 
 test('real adapter returns committed identity and coordinator confirms Cue coverage', async () => {
-  const { persistence, coordinator, returned } = createFixture();
+  const { persistence, coordinator, returned } = await createFixture();
   coordinator.enqueueCues([finalCue], cueCheckpoint);
   assert.equal(await coordinator.flush(), true);
 
@@ -62,6 +63,7 @@ test('mismatched identity and insufficient Cue content cannot acknowledge a flus
       manifestStore: createInMemoryLocalMeetingManifestStore(),
       cryptoImpl: webcrypto, recordAudio: false, trace: () => {}
     });
+    await persistence.saveCue({ meetingId, segmentId, sessionId: finalCue.sessionId, cue: finalCue });
     const coordinator = createMeetingCheckpointSyncCoordinator({
       updateCheckpoint: (payload) => persistence.updateCheckpoint(mutate(payload)),
       getCheckpoint: (scope) => persistence.getCheckpoint(scope),
@@ -80,7 +82,7 @@ test('failed storage and abnormal response after commit remain non-success', asy
     ...backing,
     async saveCheckpoint() { throw new Error('injected storage failure'); }
   };
-  const failed = createFixture(failedStore);
+  const failed = await createFixture(failedStore);
   failed.coordinator.enqueueCues([finalCue], cueCheckpoint);
   assert.equal(await failed.coordinator.flush(), false);
   assert.equal(await backing.getCheckpoint(meetingId, segmentId), null);
@@ -89,6 +91,7 @@ test('failed storage and abnormal response after commit remain non-success', asy
     manifestStore: createInMemoryLocalMeetingManifestStore(),
     cryptoImpl: webcrypto, recordAudio: false, trace: () => {}
   });
+  await persistence.saveCue({ meetingId, segmentId, sessionId: finalCue.sessionId, cue: finalCue });
   const coordinator = createMeetingCheckpointSyncCoordinator({
     updateCheckpoint: async (payload) => {
       const committed = await persistence.updateCheckpoint(payload);
@@ -143,6 +146,7 @@ test('isolated IndexedDB persists the real adapter flush across reload', async (
     const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
     const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
     const persistence = createLocalMeetingPersistence({ manifestStore: store, recordAudio: false, trace: () => {} });
+    await persistence.saveCue({ meetingId, segmentId, sessionId: finalCue.sessionId, cue: finalCue });
     let envelope = null;
     const coordinator = createMeetingCheckpointSyncCoordinator({
       updateCheckpoint: async (payload) => {

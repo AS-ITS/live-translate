@@ -1,6 +1,7 @@
 export async function installHostViewerHarness(page, { code, meetingId, meetingName = 'Viewer test', cues = [], segments = [], lifecycle } = {}) {
   const state = { joins: 0, ready: 0, metadataReads: 0, cloudContentReads: 0,
-    hostAvailable: true, lifecycleVersion: 1, recordingState: 'active', ...lifecycle };
+    hostAvailable: true, lifecycleVersion: 1, lifecycleContractVersion: 1,
+    recordingState: 'active', ...lifecycle };
   const initialCues = cues.map((cue) => ({ ...cue, meetingId,
     sessionId: cue.sessionId || segments.find((segment) => segment.id === cue.segmentId)?.sessionId }));
   await page.addInitScript(({ meetingId: id, initialCues: initial }) => {
@@ -75,8 +76,10 @@ export async function installHostViewerHarness(page, { code, meetingId, meetingN
     }
     await route.fulfill({ json: { recordKind: 'meetingViewerMetadata',
       capability: { role: 'viewer', meetingId },
-      meeting: { id: meetingId, name: meetingName, status: state.recordingState === 'ended' ? 'completed' : 'active',
-        lifecycleVersion: state.lifecycleVersion }, recordingState: state.recordingState,
+        meeting: { id: meetingId, name: meetingName,
+          status: state.cloudStatus || (state.recordingState === 'ended' ? 'completed' : 'active'),
+          lifecycleVersion: state.lifecycleVersion, lifecycleContractVersion: state.lifecycleContractVersion },
+        recordingState: state.recordingState,
       segments: state.segments || segments } });
   });
   let signalSequence = 0;
@@ -98,7 +101,8 @@ export async function installHostViewerHarness(page, { code, meetingId, meetingN
       await route.fulfill({ json: { accepted: true, sequence: ++signalSequence } }); return;
     }
     if (pathname.endsWith('/signal')) {
-      const sendOffer = state.recordingState === 'active' && state.hostAvailable
+      const sendOffer = (state.recordingState === 'active' || state.lifecycleContractVersion >= 2)
+        && state.hostAvailable
         && negotiation && !offered.has(negotiation.negotiationId);
       const messages = sendOffer ? [{ sequence: ++signalSequence, participantId: 'host-1',
         targetParticipantId: negotiation.participantId, negotiationId: negotiation.negotiationId,

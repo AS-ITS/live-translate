@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { analyzeExportRam, analyzeRamGate } from './issue41-ram-gate.mjs';
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(project, 'test-results/issue41-runner');
@@ -47,6 +48,7 @@ function status(state = 'RUNNING', exitCode = null) {
 function setPhase(value) { phase = value; write('state', value); status(); }
 function summarize(finalState, exitCode) {
   const evidencePath = join(runDir, 'evidence.json');
+  const options = readJson(join(runDir, 'options.json')) || {};
   if (!existsSync(evidencePath)) atomicJson(evidencePath, { result: finalState, phase });
   const evidence = readJson(evidencePath) || {};
   const resourcesPath = join(runDir, 'resources.ndjson');
@@ -60,8 +62,24 @@ function summarize(finalState, exitCode) {
     const values = measured(key);
     return values.length ? { min: Math.min(...values), max: Math.max(...values), last: values.at(-1) } : 'NOT_MEASURED';
   };
+  const ramGate = analyzeRamGate(rows, evidence.barrierCompletedAt, {
+    minimumCaptureMs: (options.ramGateMinutes || 40) * 60_000
+  });
+  const gateExitCode = options.ramGateMinutes && exitCode === 0 && ramGate.verdict !== 'PASS' ? 1 : exitCode;
+  const gateFinalState = gateExitCode !== exitCode ? `ram-gate-${ramGate.verdict.toLowerCase()}` : finalState;
+  const allowedCheckStates = new Set(['PASS', 'FAIL', 'UNVERIFIED', 'NOT_RUN', 'BLOCKED']);
+  const evidenceChecks = Object.fromEntries(Object.entries(evidence.evidenceChecks || {})
+    .map(([name, state]) => [name, allowedCheckStates.has(state) ? state : 'UNVERIFIED']));
+  const evidenceVerdict = ['precheck-blocked', 'environment-blocked'].includes(finalState) ? 'BLOCKED'
+    : gateExitCode !== 0 ? 'FAIL'
+      : !options.ramGateMinutes ? 'NOT_RUN'
+        : !Object.keys(evidenceChecks).length ? 'UNVERIFIED'
+          : Object.values(evidenceChecks).some((state) => state === 'FAIL') ? 'FAIL'
+            : Object.values(evidenceChecks).some((state) => state !== 'PASS') ? 'UNVERIFIED' : 'PASS';
+  const fullScans = evidence.fullScans || [];
   atomicJson(join(runDir, 'summary.json'), {
-    runId, state: exitCode === 0 ? 'PASS' : 'FAIL', finalState, exitCode,
+    runId, state: gateFinalState === 'environment-blocked' ? 'BLOCKED' : gateExitCode === 0 ? 'PASS' : 'FAIL',
+    finalState: gateFinalState, exitCode: gateExitCode,
     startedAt, finishedAt: new Date().toISOString(), result: evidence.result || null,
     captureElapsedMs: evidence.captureElapsedMs ?? null, pcm: evidence.pcm ?? null,
     rollovers: evidence.rolloverObservations?.length ?? 0,
@@ -73,12 +91,30 @@ function summarize(finalState, exitCode) {
     reloadedState: evidence.restored?.recordingState ?? null,
     exported: evidence.exported ? { audio: evidence.exported.audio, perSegment: evidence.exported.perSegment } : null,
     cloudBefore: evidence.cloudBefore ?? null, cloudAfter: evidence.cloudAfter ?? null,
+    cloudZeroWrite: evidence.cloudZeroWrite ?? { status: 'NOT_RUN' },
+    evidenceChecks, EVIDENCE_VERDICT: evidenceVerdict,
+    observerConfiguration: evidence.ramConfiguration ?? { observer: 'UNVERIFIED' },
+    ramComparisonPolicy: 'Compare only runs with the same observer configuration; profile changes do not prove a product memory fix.',
+    fullScanOverhead: { count: fullScans.length,
+      intervalMs: evidence.ramConfiguration?.fullScanIntervalMs ?? null,
+      actualIntervalsMs: fullScans.slice(1).map((scan, index) =>
+        Date.parse(scan.at) - Date.parse(fullScans[index].at)),
+      durationsMs: fullScans.map((scan) => scan.durationMs),
+      phases: fullScans.map((scan) => scan.phase) },
+    RECORDING_SOAK_VERDICT: evidence.result ?? (exitCode === 0 ? 'UNDETERMINED' : 'FAIL'),
+    RAM_GATE_VERDICT: ramGate.verdict,
+    ramGate,
+    EXPORT_RAM_VERDICT: 'UNDETERMINED',
+    exportRam: analyzeExportRam(rows),
+    wavValidationRam: analyzeExportRam(rows, { phase: 'wav_validation' }),
+    segmentValidationRam: analyzeExportRam(rows, { phase: 'segment_validation' }),
     resources: { samples: rows.length, chromiumRssBytes: range('chromiumRssBytes'),
       jsHeapBytes: range('jsHeapBytes'), opfsBytes: range('opfsBytes'),
       opfsFiles: range('opfsFiles'), audioChunks: range('audioChunks'),
       pcmJournalPendingWrites: range('pcmJournalPendingWrites'),
       pcmJournalPendingScope: 'worker_requests_only' }
   });
+  return { exitCode: gateExitCode, finalState: gateFinalState };
 }
 function latest() { return runId || (existsSync(join(root, 'latest')) ? readFileSync(join(root, 'latest'), 'utf8').trim() : ''); }
 function psIsOurs(pid) {
@@ -89,7 +125,7 @@ function psIsOurs(pid) {
 async function freePort(port) {
   return new Promise((resolvePort) => {
     const server = createServer();
-    server.once('error', () => resolvePort(false));
+    server.once('error', (error) => resolvePort(error.code || 'LISTEN_FAILED'));
     server.listen(port, '127.0.0.1', () => server.close(() => resolvePort(true)));
   });
 }
@@ -166,12 +202,15 @@ async function run() {
   try {
     const options = JSON.parse(read('options.json'));
     for (const port of options.recordingOnly ? [3000, 5174] : [3000, 3001, 5174]) {
-      if (!await freePort(port)) throw new Error(`Port ${port} is occupied; refusing to reuse another service.`);
+      const availability = await freePort(port);
+      if (availability !== true) throw new Error(`${availability === 'EPERM' ? 'ENVIRONMENT_BLOCKED' : 'PRECHECK_BLOCKED'}: Port ${port} unavailable (${availability}).`);
     }
+    let databaseContainer = null;
     if (options.supabase) {
       const base = options.supabasePortBase;
       for (const port of [base, base + 1, base + 2, base + 3, base + 6, base + 7]) {
-        if (!await freePort(port)) throw new Error(`Supabase port ${port} is occupied.`);
+        const availability = await freePort(port);
+        if (availability !== true) throw new Error(`${availability === 'EPERM' ? 'ENVIRONMENT_BLOCKED' : 'PRECHECK_BLOCKED'}: Supabase port ${port} unavailable (${availability}).`);
       }
       mkdirSync(join(runDir, 'supabase'));
       cpSync(join(project, 'supabase/migrations'), join(runDir, 'supabase/migrations'), { recursive: true });
@@ -180,7 +219,7 @@ async function run() {
         .replace(/\[api\]\nenabled = true/, `[api]\nenabled = true\nport = ${base}`)
         .replace(/\[db\]\nport = \d+/, `[db]\nport = ${base + 1}`)
         .replace(/\[studio\]\nport = \d+/, `[studio]\nport = ${base + 2}`);
-      config += `\n[inbucket]\nport = ${base + 3}\n[db.pooler]\nport = ${base + 6}\n[analytics]\nport = ${base + 7}\n`;
+    config += `\n[local_smtp]\nport = ${base + 3}\n[db.pooler]\nport = ${base + 6}\n[analytics]\nport = ${base + 7}\n`;
       writeFileSync(join(runDir, 'supabase/config.toml'), config);
       supabaseStarted = true; // Also clean up a partially started stack.
       const code = await execute('supabase-start', 'supabase', ['start', '--workdir', runDir, '--yes'], process.env, runDir);
@@ -193,7 +232,7 @@ async function run() {
       }
       write('supabase-url', localUrl);
       const containers = spawnSync('docker', ['ps', '--format', '{{.Names}}'], { encoding: 'utf8' });
-      const databaseContainer = `supabase_db_issue41-${runId}`;
+      databaseContainer = `supabase_db_issue41-${runId}`;
       if (containers.status !== 0 || !containers.stdout.split('\n').includes(databaseContainer)) {
         throw new Error('Isolated Supabase database container was not found.');
       }
@@ -271,10 +310,20 @@ async function run() {
       if (!auth?.token || !auth.anonKey || !auth.serviceKey || auth.url !== read('verified-auth-url')) {
         throw new Error('PRECHECK_BLOCKED: isolated Auth fixture is incomplete.');
       }
+      const auditNamespace = `issue41_audit_${randomBytes(12).toString('hex')}`;
+      const auditCheck = spawnSync('docker', ['exec', databaseContainer, 'psql', '-U', 'postgres', '-At', '-c',
+        `select to_regnamespace('${auditNamespace}') is null`], { cwd: project, encoding: 'utf8' });
+      if (auditCheck.status !== 0 || auditCheck.stdout.trim() !== 't') {
+        throw new Error('PRECHECK_BLOCKED: this run\'s audit namespace already exists or could not be checked.');
+      }
+      write('audit-namespace', auditNamespace);
       const realEnv = { ...env, SUPABASE_URL: auth.url, SUPABASE_SECRET_KEY: auth.serviceKey,
         SUPABASE_JWKS_URL: `${auth.url}/auth/v1/.well-known/jwks.json`,
         VITE_SUPABASE_URL: auth.url, VITE_SUPABASE_PUBLISHABLE_KEY: auth.anonKey,
         ISSUE41_ISOLATED_SUPABASE_URL: auth.url,
+        ISSUE41_ISOLATED_DB_CONTAINER: databaseContainer,
+        ISSUE41_AUDIT_NAMESPACE: auditNamespace,
+        ISSUE41_ZERO_WRITE_AUDIT: options.zeroWriteAudit ? 'true' : 'false',
       ...(options.recordingOnly ? { ISSUE41_RECORDING_ONLY: 'true' } : {
         ISSUE41_SIGNALING_URL: 'http://127.0.0.1:3001',
         ISSUE41_REDIS_URL: 'redis://127.0.0.1:16379',
@@ -284,6 +333,12 @@ async function run() {
         E2E_LOCAL_ACCESS_TOKEN: auth.token, AUTH_ALLOWED_EMAIL_DOMAINS: 'example.com',
         ISSUE41_SHORT_VALIDATION: options.shortValidation ? 'true' : 'false',
         ISSUE41_ROLLOVER_CONTRACT: options.recordingContract ? 'true' : 'false',
+        ISSUE41_RAM2_DIAGNOSTIC: options.ram2Diagnostic ? 'true' : 'false',
+      ISSUE41_RAM10_DIAGNOSTIC: options.ram10Diagnostic ? 'true' : 'false',
+        ISSUE41_RAM_ATTRIBUTION_SMOKE: options.ramAttributionSmoke ? 'true' : 'false',
+        ISSUE41_RAM_ABC_SMOKE: options.ramAbcSmoke ? 'true' : 'false',
+        ISSUE41_RAM_ABC_MODE: options.ramAbcMode || '',
+        ISSUE41_RAM_3C_PROFILE: options.ramProfileC ? 'true' : 'false',
         ISSUE41_EVIDENCE_FILE: join(runDir, 'evidence.json'),
         ISSUE41_RESOURCE_FILE: join(runDir, 'resources.ndjson'),
         ISSUE41_RECORDING_SOAK_MINUTES: String(options.soakMinutes || 20) };
@@ -292,13 +347,13 @@ async function run() {
         throw new Error('Isolated signaling authorization preflight failed; short smoke was not started.');
       }
       write('soak-started-at', new Date().toISOString());
-    const code = await test(options.recordingOnly ? (options.recordingContract ? 'recording-rollover-contract' : options.shortValidation ? 'recording-smoke' : `recording-${options.soakMinutes || 20}min-soak`) : options.shortValidation ? 'short-validation' : 'real-time-soak',
-      options.recordingOnly ? (options.recordingContract ? 'issue41 recording-only controlled rollover contract' : options.shortValidation ? 'issue41 recording-only local smoke' : `issue41 recording-only ${options.soakMinutes || 20}-minute real-time soak`) : realTimeName,
+    const code = await test(options.ramProfileC ? 'ram-3c-profile' : options.ramAbcSmoke ? 'ram-abc-smoke' : options.ramAbcMode ? `ram-abc-${options.ramAbcMode}` : options.ramAttributionSmoke ? 'ram-attribution-smoke' : options.zeroWriteAudit ? 'zero-write-audit' : options.recordingOnly ? (options.recordingContract ? 'recording-rollover-contract' : options.shortValidation ? 'recording-smoke' : `recording-${options.soakMinutes || 20}min-soak`) : options.shortValidation ? 'short-validation' : 'real-time-soak',
+      options.ramProfileC ? 'issue41 RAM-3C isolated profile' : options.ramAbcSmoke ? 'issue41 A/B/C RAM mode smoke' : options.ramAbcMode ? `issue41 RAM diagnostic ${options.ramAbcMode}` : options.ramAttributionSmoke ? 'issue41 Host RAM attribution smoke' : options.zeroWriteAudit ? 'issue41 isolated zero recording write audit' : options.recordingOnly ? (options.recordingContract ? 'issue41 recording-only controlled rollover contract' : options.shortValidation ? 'issue41 recording-only local smoke' : `issue41 recording-only ${options.soakMinutes || 20}-minute real-time soak`) : realTimeName,
         'tests/e2e/issue41RealtimeSoak.spec.js', realEnv);
       if (code) throw new Error(`Real-time E2E failed (${code}).`);
       write('soak-ended-at', new Date().toISOString());
       exitCode = 0;
-      finalState = options.recordingOnly ? (options.recordingContract ? 'recording-rollover-contract-passed' : options.shortValidation ? 'recording-smoke-passed' : `recording-${options.soakMinutes || 20}min-soak-passed`) : options.shortValidation ? 'short-validation-passed' : 'passed';
+    finalState = options.ramProfileC ? 'ram-3c-profile-passed' : options.ramAbcSmoke ? 'ram-abc-smoke-passed' : options.ramAbcMode ? `ram-abc-${options.ramAbcMode}-passed` : options.ramAttributionSmoke ? 'ram-attribution-smoke-passed' : options.recordingOnly ? (options.recordingContract ? 'recording-rollover-contract-passed' : options.shortValidation ? 'recording-smoke-passed' : `recording-${options.soakMinutes || 20}min-soak-passed`) : options.shortValidation ? 'short-validation-passed' : 'passed';
       return;
     }
     if (await test('smoke', smokeName)) throw new Error('Smoke failed; soak was not started.');
@@ -316,7 +371,8 @@ async function run() {
     finalState = 'passed';
   } catch (error) {
     console.error(`${new Date().toISOString()} ${error.message}`);
-    finalState = interrupted ? 'stopped' : error.message.startsWith('PRECHECK_BLOCKED:') ? 'precheck-blocked' : 'failed';
+    finalState = interrupted ? 'stopped' : error.message.startsWith('ENVIRONMENT_BLOCKED:') ? 'environment-blocked'
+      : error.message.startsWith('PRECHECK_BLOCKED:') ? 'precheck-blocked' : 'failed';
     if (interrupted) exitCode = 143;
   } finally {
     if (supabaseStarted) {
@@ -326,13 +382,13 @@ async function run() {
     }
     try { if (secrets.length) redactReport(secrets); }
     catch (error) { console.error(error.message); exitCode = 1; finalState = 'evidence-redaction-failed'; }
-    try { summarize(finalState, exitCode); }
+    try { ({ exitCode, finalState } = summarize(finalState, exitCode)); }
     catch (error) { console.error(`Could not write summary: ${error.message}`); exitCode = 1; finalState = 'summary-failed'; }
     clearInterval(heartbeat);
     write('state', finalState);
     write('exit-code', exitCode);
     phase = finalState;
-    status(exitCode === 0 ? 'PASS' : 'FAIL', exitCode);
+    status(finalState === 'environment-blocked' ? 'BLOCKED' : exitCode === 0 ? 'PASS' : 'FAIL', exitCode);
     console.log(`${new Date().toISOString()} finished exit=${exitCode}`);
     process.exitCode = exitCode;
   }
@@ -344,10 +400,19 @@ if (command === 'start') {
   const dir = join(root, id);
   mkdirSync(dir);
   const recordingContract = args.includes('--recording-contract');
+  const ram2Diagnostic = args.includes('--ram2-diagnostic');
+  const ram10Diagnostic = args.includes('--ram10-diagnostic');
+  const ramAttributionSmoke = args.includes('--ram-attribution-smoke');
+    const ramAbcSmoke = args.includes('--ram-abc-smoke');
+    const ramProfileC = args.includes('--ram-3c-profile');
+    const ramAbcArg = args.find((arg) => arg.startsWith('--ram-abc='));
+    const ramAbcMode = ramAbcArg?.slice('--ram-abc='.length) || null;
+    if (ramAbcMode && !['A', 'B', 'C'].includes(ramAbcMode)) fail('RAM ABC mode must be A, B, or C.');
   const ramGateMinutes = args.includes('--ram-gate-40') ? 40 : args.includes('--ram-gate-130') ? 130 : null;
-  const recordingOnly = recordingContract || args.includes('--recording-only') || args.includes('--recording-soak') || ramGateMinutes !== null;
+    const zeroWriteAudit = args.includes('--zero-write-audit');
+    const recordingOnly = zeroWriteAudit || recordingContract || ram2Diagnostic || ram10Diagnostic || ramAttributionSmoke || ramAbcSmoke || ramProfileC || Boolean(ramAbcMode) || args.includes('--recording-only') || args.includes('--recording-soak') || ramGateMinutes !== null;
   const realTime = recordingOnly || args.includes('--real-time');
-  const shortValidation = args.includes('--recording-soak') || ramGateMinutes !== null ? false : recordingOnly || args.includes('--short-validation');
+    const shortValidation = args.includes('--recording-soak') || ram10Diagnostic || ramAbcMode || ramGateMinutes !== null ? false : recordingOnly || args.includes('--short-validation');
   const supabase = realTime || args.includes('--supabase');
   const baseArg = args.find((arg) => arg.startsWith('--supabase-port-base='));
   const supabasePortBase = Number(baseArg?.split('=')[1] || 55421);
@@ -356,7 +421,7 @@ if (command === 'start') {
   } else if (supabase && (!Number.isInteger(supabasePortBase) || supabasePortBase < 1024 || supabasePortBase > 65528)) {
     fail('Invalid --supabase-port-base.');
   } else {
-    writeFileSync(join(dir, 'options.json'), JSON.stringify({ supabase, supabasePortBase, realTime, shortValidation, recordingOnly, recordingContract, soakMinutes: ramGateMinutes || 20 }));
+      writeFileSync(join(dir, 'options.json'), JSON.stringify({ supabase, supabasePortBase, realTime, shortValidation, recordingOnly, zeroWriteAudit, recordingContract: recordingContract || ram2Diagnostic || zeroWriteAudit, ram2Diagnostic, ram10Diagnostic, ramAttributionSmoke, ramAbcSmoke, ramAbcMode, ramProfileC, soakMinutes: ram10Diagnostic || ramAbcMode ? 10 : ramGateMinutes || 20, ramGateMinutes }));
     writeFileSync(join(root, 'latest'), id);
     writeFileSync(join(dir, 'state'), 'queued');
     atomicJson(join(dir, 'status.json'), { runId: id, state: 'RUNNING', startedAt: new Date().toISOString(), phase: 'queued', lastHeartbeat: new Date().toISOString(), workerPid: null, exitCode: null });
@@ -401,5 +466,5 @@ if (command === 'start') {
     else { process.kill(pid, 'SIGTERM'); console.log(`Sent stop to run ${id} (pid ${pid}).`); }
   }
 } else {
-  fail('Usage: node scripts/issue41-local-runner.mjs start [--recording-only | --recording-soak | --ram-gate-40 | --ram-gate-130] [--supabase-port-base=55421] | status [id] | report [id] | analyze [id] | stop [id]');
+  fail('Usage: node scripts/issue41-local-runner.mjs start [--ram-attribution-smoke | --recording-only | --recording-soak | --ram10-diagnostic | --ram-gate-40 | --ram-gate-130] [--supabase-port-base=55421] | status [id] | report [id] | analyze [id] | stop [id]');
 }

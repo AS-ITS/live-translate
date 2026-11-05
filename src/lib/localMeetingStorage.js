@@ -1124,6 +1124,8 @@ function projectLocalRecording(value = {}) {
     schemaVersion: value.integrityVersion === 2 ? LOCAL_MEETING_SCHEMA_VERSION : (value.schemaVersion || 5),
     meetingId: value.meetingId,
     recordingId: value.recordingId,
+    ownerUserId: value.ownerUserId ?? null,
+    storageIdentity: value.storageIdentity ?? null,
     segmentId: value.segmentId,
     segmentNumber: normalizeSegmentNumber(value.segmentNumber, value.segmentId),
     integrityVersion: value.integrityVersion === 2 ? 2 : null,

@@ -2,6 +2,7 @@ import { Download } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { createMeetingAudioDownload } from '../../lib/meetingAudioStorage.js';
 import { resolveInputAudioDownloadState } from '../../lib/audioArtifactDownloadState.js';
+import { createLocalMeetingObjectUrl, revokeLocalMeetingObjectUrl } from '../../lib/localMeetingObjectUrls.js';
 
 export function audioArtifactDownloadUrl(artifact, localUrl = '') {
   return artifact?.downloadUrl || localUrl || '';
@@ -75,12 +76,12 @@ export function AudioArtifactDownloads({
     try {
       const artifact = await onDownloadLocalAudio(kind);
       if (!artifact?.blob?.size) throw new Error('Empty local audio export.');
-      const url = URL.createObjectURL(artifact.blob);
+      const url = createLocalMeetingObjectUrl(artifact.blob);
       const anchor = document.createElement('a');
       anchor.href = url;
       anchor.download = artifact.fileName || `${kind}-audio.wav`;
       anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      window.setTimeout(() => revokeLocalMeetingObjectUrl(url), 1_000);
     } catch (error) {
       setLocalDownloadError(error?.status === 410 ? '錄製資料已到期，無法下載。' : '本機語音匯出失敗，請重試。');
     } finally {

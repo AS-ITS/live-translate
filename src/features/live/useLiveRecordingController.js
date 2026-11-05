@@ -191,6 +191,7 @@ export async function completeMeetingAfterRecordingFinalize({
   flushCheckpoint,
   flushCuePublishes,
   completeMeeting,
+  completeMeetingMetadata,
   alreadyCompleted = false
 } = {}) {
   if (alreadyCompleted) return true;
@@ -205,6 +206,7 @@ export async function completeMeetingAfterRecordingFinalize({
   const cueResult = await flushCuePublishes?.();
   if (cueResult?.localSaved === false) throw new Error('Local Cue persistence failed before completion.');
   await completeMeeting?.();
+  await completeMeetingMetadata?.();
   return true;
 }
 
@@ -1501,10 +1503,10 @@ export function useLiveRecordingController({
           ),
           completeMeeting: () => audio.getLocalMeetingPersistence().endLifecycle({
             operationId: `end:${resumeDraft.meetingId}:${resumeDraft.sessionId}`
-          })
+          }),
+          completeMeetingMetadata: () => recovery.meetingCheckpointApiClientRef.current.completeMeeting({ meetingId: currentMeetingId })
         });
         recovery.setResumeDraft(null);
-        stopMeetingLifecycleHeartbeats();
         clearMeetingLifecycleWriteFence(currentMeetingId);
         meetingLifecycleRef.current = null;
         recovery.activeMeetingCheckpointRef.current = null;
@@ -1516,7 +1518,7 @@ export function useLiveRecordingController({
           cloud_synced: 'synced'
         }[cloudState] || 'synced');
         await recovery.refreshMeetingRecords();
-        window.location.hash = '#meetings';
+        window.location.hash = `#meeting-detail?meetingId=${encodeURIComponent(currentMeetingId)}&from=history`;
       } catch {
         recovery.setError('無法結束會議，請稍後再試。');
       }
@@ -1530,7 +1532,7 @@ export function useLiveRecordingController({
       }).catch(() => {});
       return operation;
     },
-    async endCurrentSessionLifecycle({ redirectHash = '#meetings', completeMeeting = false } = {}) {
+  async endCurrentSessionLifecycle({ redirectHash, completeMeeting = false } = {}) {
       const endedMeetingId = recovery.activeMeetingCheckpointRef.current?.meetingId || recovery.resumeDraft?.meetingId || '';
       if (completeMeeting && endedMeetingId) recovery.setMeetingCheckpointStatus?.('ending');
       recovery.sessionStopRequestedRef.current = true;
@@ -1574,8 +1576,15 @@ export function useLiveRecordingController({
           recovery.setMeetingCheckpointErrorMessage?.('本機內容已保存，但會議生命週期同步失敗。請保留本機資料並重試。');
           throw error;
         }
-        stopMeetingLifecycleHeartbeats();
       }
+    if (completeMeeting && endedMeetingId) {
+      try { await recovery.meetingCheckpointApiClientRef.current.completeMeeting({ meetingId: endedMeetingId }); }
+      catch (error) {
+        recovery.setMeetingCheckpointStatus?.('error');
+        recovery.setMeetingCheckpointErrorMessage?.('本機內容已保存，但會議完成狀態同步失敗。請保留本機資料並重試。');
+        throw error;
+      }
+    }
       recovery.pendingMicrophoneStreamRef.current = null;
       recovery.setResumeDraft(null);
       await controller.finalizeCurrentSessionRecord({
@@ -1584,21 +1593,17 @@ export function useLiveRecordingController({
         failureCategory: 'user_intent',
         audioStates: { input: inputAudioState }
       });
-      if (completeMeeting && endedMeetingId && !meetingLifecycleRef.current?.localOnly) {
-        try { await recovery.meetingCheckpointApiClientRef.current.completeMeeting({ meetingId: endedMeetingId }); }
-        catch (error) {
-          recovery.setMeetingCheckpointStatus?.('error');
-          recovery.setMeetingCheckpointErrorMessage?.('本機內容已保存，但會議結束狀態尚未同步。請保留本機資料並重試。');
-          throw error;
-        }
-        recovery.setMeetingCheckpointStatus?.('synced');
-      }
       if (meetingLifecycleRef.current?.localOnly) recovery.setMeetingCheckpointStatus?.('synced');
       meetingLifecycleRef.current = null;
       clearMeetingLifecycleWriteFence(endedMeetingId);
       recovery.setStatus('stopped');
       clearMeetingAudioPreference(endedMeetingId);
-      if (redirectHash) window.location.hash = redirectHash;
+    const destination = redirectHash === undefined
+      ? completeMeeting && endedMeetingId
+        ? `#meeting-detail?meetingId=${encodeURIComponent(endedMeetingId)}&from=history`
+        : '#meetings'
+      : redirectHash;
+    if (destination) window.location.hash = destination;
     },
     async continuePausedSession() {
       if (state.status !== 'paused' || continueInFlightRef.current) return;

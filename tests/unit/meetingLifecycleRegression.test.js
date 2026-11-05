@@ -60,7 +60,8 @@ test('end meeting awaits every local write before metadata and stays idempotent 
     flushTranscriptQueue: flush('transcript'),
     flushCheckpoint: flush('checkpoint'),
     flushCuePublishes: async () => { calls.push('local-cues:done'); return { localSaved: true, cloudSynced: false }; },
-    completeMeeting: async () => { completed += 1; calls.push('meeting:complete'); }
+    completeMeeting: async () => { completed += 1; calls.push('meeting:complete'); },
+    completeMeetingMetadata: async () => { calls.push('metadata:complete'); }
   });
   const second = await completeMeetingAfterRecordingFinalize({
     flushAudio: flush('audio-retry'),
@@ -81,7 +82,8 @@ test('end meeting awaits every local write before metadata and stays idempotent 
     'transcript:start', 'transcript:done',
     'checkpoint:start', 'checkpoint:done',
     'local-cues:done',
-    'meeting:complete'
+    'meeting:complete',
+    'metadata:complete'
   ]);
 });
 
@@ -119,4 +121,19 @@ test('End accepts a durable local seal without a decoded audio Blob', async () =
     completeMeeting: async () => { completed = true; }
   });
   assert.equal(completed, true);
+});
+
+test('End keeps metadata incomplete when local finalize fails or metadata sync rejects', async () => {
+  let metadataCalls = 0;
+  await assert.rejects(completeMeetingAfterRecordingFinalize({
+    completeMeeting: async () => { throw new Error('local finalize failed'); },
+    completeMeetingMetadata: async () => { metadataCalls += 1; }
+  }), /local finalize failed/);
+  assert.equal(metadataCalls, 0);
+
+  await assert.rejects(completeMeetingAfterRecordingFinalize({
+    completeMeeting: async () => {},
+    completeMeetingMetadata: async () => { metadataCalls += 1; throw new Error('metadata sync failed'); }
+  }), /metadata sync failed/);
+  assert.equal(metadataCalls, 1);
 });

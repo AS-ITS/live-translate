@@ -15,7 +15,8 @@ export function createLocalMeetingPersistence({
   recordAudio = true,
   composeAudioArtifact = composeLocalMeetingAudioArtifact,
   trace = recordLivePipelineTrace,
-  journalClientFactory = createDurablePcmJournalClient
+  journalClientFactory = createDurablePcmJournalClient,
+  ownerAccess = null
 } = {}) {
   if (!cryptoImpl?.subtle || typeof cryptoImpl.subtle.digest !== 'function') throw new Error('Web Crypto is unavailable.');
   const createRecorder = () => createLocalMeetingRecorder({ manifestStore, chunkStore, now, onTrace: trace });
@@ -35,8 +36,9 @@ export function createLocalMeetingPersistence({
   let translatedAudioError = null;
   let nextTranslatedAudioSequence = null;
 
-  return Object.freeze({
+  const api = Object.freeze({
     async startLifecycle({ meetingId, recordingId, segmentId, operationId, pcmEnabled = false } = {}) {
+      const ownerBinding = ownerAccess ? await ownerAccess.bindingForStart(meetingId, manifestStore) : null;
       await retention.check(meetingId);
       await retention.assertReadable(meetingId);
       await appendQueue;
@@ -51,7 +53,10 @@ export function createLocalMeetingPersistence({
       localLifecycleActive = true;
       const chunks = await manifestStore.list(meetingId);
       nextAudioSequence = chunks.reduce((next, chunk) => Math.max(next, chunk.sequence + 1), 1);
-      return recorder.start(meetingId, { recordingId, segmentId, operationId, pcmEnabled });
+      const started = await recorder.start(meetingId, { recordingId, segmentId, operationId, pcmEnabled,
+        ...ownerBinding });
+      if (ownerAccess) await ownerAccess.assertOwner(meetingId, manifestStore);
+      return started;
     },
   pauseLifecycle({ operationId, boundaryReceipt } = {}) {
     return recorder.pause({ operationId, boundaryReceipt });
@@ -610,6 +615,30 @@ export function createLocalMeetingPersistence({
 
     snapshot: () => recorder.snapshot()
   });
+  if (!ownerAccess) return api;
+  const guardedMethods = new Set([
+    'getLifecycleIntent', 'listPendingLifecycleIntents', 'getPendingContinueOperation',
+    'getSegmentTransition', 'getLocalRecording', 'listPendingSegmentTransitions',
+    'recoverSegmentTransitions', 'verifySegmentPcmOwnership', 'listLocalSegments',
+    'start', 'continueLifecycle', 'pauseLifecycle', 'endLifecycle', 'restore',
+    'finalizeAudio', 'finalizeTranslatedAudio',
+    'listFinalizedAudioArtifactMetadata', 'listFinalizedAudioArtifacts', 'getLocalAudioStatus',
+    'getUnassignedCue', 'listUnassignedCues', 'countUnassignedCues', 'listCues',
+    'listTranscriptItems', 'contentSnapshot', 'getCheckpoint'
+  ]);
+  const protectedApi = {};
+  for (const [name, method] of Object.entries(api)) {
+    if (!guardedMethods.has(name)) continue;
+    protectedApi[name] = (...args) => {
+      const input = args[0];
+      const meetingId = (name === 'getLifecycleIntent' || name === 'listPendingLifecycleIntents')
+        ? args[1]
+        : typeof input === 'string' ? input
+          : input?.meetingId || input?.upserts?.[0]?.meetingId || input?.removals?.[0]?.meetingId || activeMeetingId;
+      return ownerAccess.withOwner(meetingId, manifestStore, () => method.apply(api, args));
+    };
+  }
+  return Object.freeze({ ...api, ...protectedApi });
 
   async function readTranslatedAudioArtifact(meetingId) {
     const chunks = await manifestStore.listTranslatedAudioChunks(meetingId);

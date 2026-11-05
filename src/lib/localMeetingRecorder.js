@@ -35,6 +35,8 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
   let integrityVersion = null;
   let pcmEnabled = null;
   let pauseBoundary = null;
+  let ownerUserId = null;
+  let storageIdentity = null;
   const operations = new Map();
   let stopBarrier = null;
 
@@ -44,7 +46,13 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       if (meetingId && meetingId !== nextMeetingId && state !== 'idle') throw conflict('local_recorder_active');
       const durable = await manifestStore.getRecording(nextMeetingId);
       meetingId = nextMeetingId;
-      if (!durable) return snapshot();
+      if (!durable) {
+        ownerUserId = null;
+        storageIdentity = null;
+        return snapshot();
+      }
+      ownerUserId = durable.ownerUserId ?? null;
+      storageIdentity = durable.storageIdentity ?? null;
       recordingId = durable.recordingId;
       segmentId = durable.segmentId;
       segmentNumber = durable.segmentNumber;
@@ -60,7 +68,8 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
     },
 
     async start(nextMeetingId, { operationId, recordingId: requestedRecordingId, segmentId: requestedSegmentId,
-      pcmEnabled: requestedPcmEnabled = false } = {}) {
+      pcmEnabled: requestedPcmEnabled = false, ownerUserId: requestedOwnerUserId = null,
+      storageIdentity: requestedStorageIdentity = null } = {}) {
       if (!nextMeetingId) throw invalid('meetingId is required.');
       if (meetingId !== nextMeetingId) await this.restore(nextMeetingId);
       const replayed = await replay(operationId, 'start');
@@ -72,6 +81,8 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       }
       meetingId = nextMeetingId;
       recordingId = requestedRecordingId || globalThis.crypto?.randomUUID?.() || `recording:${meetingId}:${now()}`;
+      ownerUserId = requestedOwnerUserId;
+      storageIdentity = requestedStorageIdentity;
       segmentId = requestedSegmentId || `segment:${recordingId}:1`;
       segmentNumber = 1;
       captureEpoch += 1;
@@ -438,7 +449,9 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       segmentNumber,
       integrityVersion,
       pcmEnabled,
-    pauseBoundary,
+      pauseBoundary,
+      ownerUserId,
+      storageIdentity,
       terminal: state === 'stopped_local',
       finalized: state === 'stopped_local'
     };

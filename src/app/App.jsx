@@ -13,6 +13,7 @@ import { createSessionCommandApiClient } from '../lib/sessionCommandApiClient.js
 import { createMeetingCheckpointApiClient } from '../lib/meetingCheckpointApiClient.js';
 import { createCloudSaveCoordinator } from '../lib/cloudSaveCoordinator.js';
 import { createLocalMeetingPersistence } from '../lib/localMeetingPersistence.js';
+import { createLocalMeetingOwnerAccess } from '../lib/localMeetingOwnerAccess.js';
 import { createLocalMeetingRetention } from '../lib/localMeetingRetention.js';
 import { mergeMeetingDetailWithLocalCues, persistFinalMeetingCues } from '../lib/meetingLocalTranscript.js';
 import { mergeCuesById } from '../lib/cueMerge.js';
@@ -701,7 +702,7 @@ const activeMeetingCheckpointRef = useRef(null);
       return;
     }
 
-    if (selectedMeetingIdRef.current !== info.meetingId) {
+    if (selectedMeetingIdRef.current !== info.meetingId || page === 'meeting-detail') {
       void loadMeetingDetail(info.meetingId);
     }
   }, [page, routeMeetingId, locationVersion]);
@@ -1690,7 +1691,9 @@ const activeMeetingCheckpointRef = useRef(null);
 
   function getLocalMeetingPersistence() {
     if (!localMeetingPersistenceRef.current) {
-      localMeetingPersistenceRef.current = createLocalMeetingPersistence();
+      localMeetingPersistenceRef.current = createLocalMeetingPersistence({
+        ownerAccess: createLocalMeetingOwnerAccess()
+      });
     }
     localMeetingPersistenceRef.current.setRecordingEnabled?.(shouldRecordInputAudio);
     return localMeetingPersistenceRef.current;
@@ -1713,11 +1716,12 @@ const activeMeetingCheckpointRef = useRef(null);
           flushCuePublishes: () => flushMeetingCuePublishes(activeSessionRecordIdRef.current),
           completeMeeting: () => getLocalMeetingPersistence().endLifecycle({
             operationId: `end:${meetingId}`
-          })
+        }),
+        completeMeetingMetadata: () => meetingCheckpointApiClientRef.current.completeMeeting({ meetingId })
         });
         applyCloudSaveSnapshot(cloudSaveCoordinatorRef.current.snapshot());
         setNavigationNotice('會議已結束。');
-        window.location.hash = '#meetings';
+      window.location.hash = `#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=meetings`;
         return true;
       } catch {
         setMeetingCheckpointStatus('error');

@@ -11,6 +11,7 @@ export function createMeetingCheckpointSyncCoordinator({
   getCheckpoint,
   onStatusChange,
   onError,
+  onDiagnostic,
   delayMs = DEFAULT_CHECKPOINT_SYNC_DELAY_MS,
   retryDelayMs = DEFAULT_CHECKPOINT_RETRY_DELAY_MS,
   setTimeoutFn = globalThis.setTimeout,
@@ -139,6 +140,7 @@ export function createMeetingCheckpointSyncCoordinator({
 
     onStatusChange?.('syncing');
 
+    let checkpointCoverageRejected = false;
     try {
       const payload = {
         meetingId: flushContext.meetingId,
@@ -154,6 +156,7 @@ export function createMeetingCheckpointSyncCoordinator({
       payload.idempotencyKey = checkpointOperationKey(flushContext.segmentId, payload);
       const committed = await updateCheckpoint(payload);
       if (!committed?.checkpoint || !checkpointCoversFlush(committed, flushContext, chunks, cues, payloadCheckpoint)) {
+        checkpointCoverageRejected = true;
         throw checkpointConflict('committed checkpoint does not cover the requested flush');
       }
 
@@ -178,6 +181,16 @@ export function createMeetingCheckpointSyncCoordinator({
       }
       return true;
     } catch (error) {
+      try {
+        const cueId = error?.cueConflict?.cueId;
+        onDiagnostic?.({
+          reason: checkpointCoverageRejected ? 'committed_checkpoint_not_covering_flush' : 'flush_pending_write_exception',
+          ...(error?.code === 'subtitle_cue_conflict' ? {
+            rejectReason: error.rejectReason,
+            cueConflict: { cueId: typeof cueId === 'string' && /^[A-Za-z0-9:_-]{1,128}$/.test(cueId) ? cueId : null }
+          } : {})
+        });
+      } catch { /* Diagnostics must not affect checkpoint persistence. */ }
       if (error?.status === 409 && getCheckpoint) {
         try {
           const latest = await getCheckpoint({

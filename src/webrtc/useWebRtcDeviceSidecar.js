@@ -16,6 +16,26 @@ export function hostViewerCuesFromLocalRecords(meetingId, records = []) {
       sessionId: record.sessionId, segmentId: record.segmentId, sequence: record.sequence })));
 }
 
+export function createWebRtcDeviceSidecarLease(transportRef, lifecycleStatusRef) {
+  let transport = null;
+  let disposed = false;
+  return {
+    get disposed() { return disposed; },
+    attach(nextTransport) {
+      if (disposed) return false;
+      transport = nextTransport;
+      transportRef.current = nextTransport;
+      return true;
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      if (transportRef.current === transport) transportRef.current = null;
+      if (transport) void transport.stop({ revoke: lifecycleStatusRef.current === 'stopped' });
+    }
+  };
+}
+
 export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = 'idle', cues = [],
   segmentId = null, segmentSequence = null, segments = [], loadLocalCues } = {}) {
   const [connection, setConnection] = useState({ value: 'idle' });
@@ -57,14 +77,14 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
       setConnection({ value: 'idle' });
       return undefined;
     }
-    let disposed = false;
+    const lease = createWebRtcDeviceSidecarLease(transportRef, lifecycleStatusRef);
     let transport = null;
     let getStats = null;
     let publishTestCue = null;
     void (async () => {
       try {
         const records = await loadLocalCuesRef.current?.(meetingId) || [];
-        if (disposed) return;
+        if (lease.disposed) return;
         rememberCues(hostViewerCuesFromLocalRecords(meetingId, records), segmentMetaRef.current);
         rememberCues(cuesRef.current, segmentMetaRef.current);
         transport = createWebRtcSubtitleTransport({
@@ -72,10 +92,10 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
           role: 'device',
           fetchImpl: authenticatedFetch(),
           initialCues: cueHistoryRef.current.cues,
-          onStatus: (next) => { if (!disposed) setConnection(next); },
+          onStatus: (next) => { if (!lease.disposed) setConnection(next); },
           onError: () => {},
         });
-        transportRef.current = transport;
+        lease.attach(transport);
         const initialTransitionStatus = lifecycleStatusRef.current === 'switching-segment' ? 'switching'
           : lifecycleStatusRef.current === 'listening' ? 'ready' : null;
         if (initialTransitionStatus && segmentMetaRef.current.segmentId
@@ -92,15 +112,13 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
         if (import.meta.env.DEV) globalThis.__liveTranslateWebRtcPublishTestCue = publishTestCue;
         transport.start();
       } catch {
-        if (!disposed) setConnection({ value: 'failed' });
+        if (!lease.disposed) setConnection({ value: 'failed' });
       }
     })();
     return () => {
-      disposed = true;
+      lease.dispose();
       if (globalThis.__liveTranslateWebRtcGetStats === getStats) delete globalThis.__liveTranslateWebRtcGetStats;
       if (globalThis.__liveTranslateWebRtcPublishTestCue === publishTestCue) delete globalThis.__liveTranslateWebRtcPublishTestCue;
-      if (transportRef.current === transport) transportRef.current = null;
-      void transport.stop({ revoke: lifecycleStatusRef.current === 'stopped' });
     };
   }, [enabled, meetingId, retryVersion]);
 

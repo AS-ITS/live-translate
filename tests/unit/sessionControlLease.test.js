@@ -63,3 +63,37 @@ test('destroy releases the tab control lease', () => {
 
   second.destroy();
 });
+
+test('an expired foreign lease clears the subscribed readonly state without taking control', async () => {
+  const sharedStorage = storage();
+  sharedStorage.setItem('live-translate:session-control', JSON.stringify({
+    sessionId: 'old-session', tabId: 'closed-tab', updatedAt: Date.now()
+  }));
+  const lease = createSessionControlLease({ storage: sharedStorage, eventTarget: eventTarget(), tabId: 'new-tab', ttlMs: 30 });
+  const snapshots = [];
+  lease.subscribe((snapshot) => snapshots.push(snapshot));
+
+  assert.equal(snapshots.at(-1)?.sessionId, 'old-session');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(snapshots.at(-1), null);
+  assert.equal(lease.isHeldByAnotherTab(), false);
+  assert.equal(lease.tryAcquire('new-session'), true);
+  lease.destroy();
+});
+
+test('a live owner heartbeat keeps the second tab readonly', async () => {
+  const sharedStorage = storage();
+  const first = createSessionControlLease({ storage: sharedStorage, eventTarget: eventTarget(), tabId: 'tab-1', heartbeatMs: 10, ttlMs: 40 });
+  const second = createSessionControlLease({ storage: sharedStorage, eventTarget: eventTarget(), tabId: 'tab-2', ttlMs: 40 });
+  assert.equal(first.tryAcquire('first-meeting-session'), true);
+  const snapshots = [];
+  second.subscribe((snapshot) => snapshots.push(snapshot));
+
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(snapshots.at(-1)?.sessionId, 'first-meeting-session');
+  assert.equal(second.tryAcquire('second-meeting-session'), false);
+  first.release();
+  assert.equal(first.tryAcquire('new-meeting-session'), true);
+  first.destroy();
+  second.destroy();
+});

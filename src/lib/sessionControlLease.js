@@ -14,6 +14,7 @@ export function createSessionControlLease({
   const listeners = new Set();
   let ownedSessionId = null;
   let heartbeatTimer = null;
+  let expiryTimer = null;
 
   function readLease() {
     try {
@@ -56,8 +57,13 @@ export function createSessionControlLease({
   }
 
   function notify(value = readLease()) {
+    if (expiryTimer !== null) clearTimeout(expiryTimer);
+    expiryTimer = null;
     const snapshot = value && !isExpired(value) ? { ...value } : null;
     for (const listener of listeners) listener(snapshot);
+    if (snapshot && snapshot.tabId !== tabId) {
+      expiryTimer = setTimeout(() => notify(), Math.max(1, ttlMs - (clock() - snapshot.updatedAt)));
+    }
   }
 
   function stopHeartbeat() {
@@ -106,6 +112,7 @@ export function createSessionControlLease({
   function subscribe(listener) {
     if (typeof listener !== 'function') throw new TypeError('listener must be a function.');
     listeners.add(listener);
+    notify();
     return () => listeners.delete(listener);
   }
 
@@ -128,6 +135,7 @@ export function createSessionControlLease({
     destroy() {
       release();
       stopHeartbeat();
+      if (expiryTimer !== null) clearTimeout(expiryTimer);
       eventTarget?.removeEventListener?.('storage', handleStorage);
       listeners.clear();
     }

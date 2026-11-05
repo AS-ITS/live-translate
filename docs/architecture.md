@@ -95,6 +95,12 @@ translation/refinement values, versions, status, and safe execution metadata
 may change. Stale or duplicate worker output is ignored by Cue version and
 input-hash checks.
 
+Local Final Cue checkpoints retain a supplied positive Cue revision. A newer
+revision may update `finalizedReason` only while side and refinement state
+remains monotonic. A legacy Checkpoint Cue without revision can adopt a
+reason-only update only when the same revision and normalized Cue are already
+durable in the local Cue store; otherwise the reason conflict remains.
+
 Lifecycle protection applies at every boundary: start and pre-roll establish
 the session/segment checkpoint before audio is accepted; pause/resume flushes
 final boundaries before replacing the Live connection; reconnect and rollover

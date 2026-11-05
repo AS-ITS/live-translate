@@ -1,4 +1,5 @@
 import { mergeCheckpoint } from '../application/meetingCheckpointService.js';
+import { validateFinalCue } from '../domain/subtitleCue/index.js';
 import { checkCheckpointOperation, checkpointConflict, recordCheckpointOperation } from './checkpointOperation.js';
 import { lifecycleIntentKey, projectLifecycleOperationIntent, sameLifecycleIntentIdentity } from './lifecycleOperationIntent.js';
 
@@ -380,9 +381,9 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     async saveCheckpoint(input) {
       const checkpoint = projectLocalCheckpoint(input);
       assertLocalRetentionWritable({ deleted: deletedMeetings.has(checkpoint.meetingId) });
-      await assertCheckpointCueProgress(checkpoint, (key) => cues.get(key));
+      const verifiedLegacyCueIds = await assertCheckpointCueProgress(checkpoint, (key) => cues.get(key));
       const existing = checkpoints.get(checkpoint.key);
-      const saved = mergeLocalCheckpoint(existing, checkpoint);
+      const saved = mergeLocalCheckpoint(existing, checkpoint, verifiedLegacyCueIds);
       checkpoints.set(checkpoint.key, saved);
       return saved;
     },
@@ -874,12 +875,12 @@ export function createIndexedDbLocalMeetingManifestStore({
       const database = await openDatabase();
       return runNamedTransaction(database, ['checkpoints', 'cues', 'retentions'], 'readwrite', async (transaction) => {
         assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(checkpoint.meetingId)));
-        await assertCheckpointCueProgress(checkpoint,
+        const verifiedLegacyCueIds = await assertCheckpointCueProgress(checkpoint,
           (key) => request(transaction.objectStore('cues').get(key)));
         const store = transaction.objectStore('checkpoints');
         const existing = await request(store.get(checkpoint.key));
         const projected = existing ? projectLocalCheckpoint(existing) : null;
-        const saved = mergeLocalCheckpoint(projected, checkpoint);
+        const saved = mergeLocalCheckpoint(projected, checkpoint, verifiedLegacyCueIds);
         if (saved !== projected) await request(store.put(saved));
         return saved;
       });
@@ -1471,7 +1472,11 @@ function assertCheckpointCueProgress(checkpoint, lookup) {
       || (cue.revision != null && (stored.cue?.revision ?? 0) < cue.revision)) {
       throw conflict('local_checkpoint_cue_not_durable');
     }
-  }));
+    return Number.isSafeInteger(cue.revision) && cue.revision > 0 &&
+      stored.cue?.revision === cue.revision &&
+      sameCanonicalValue(validateFinalCue(stored.cue), validateFinalCue(cue))
+      ? cue.cueId : null;
+  })).then((ids) => new Set(ids.filter(Boolean)));
 }
 
 function mergeUnassignedCue(existing, incoming) {
@@ -1536,7 +1541,7 @@ function sameCanonicalValue(left, right) {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
-function mergeLocalCheckpoint(existing, incoming) {
+function mergeLocalCheckpoint(existing, incoming, verifiedLegacyCueIds = new Set()) {
   const payload = incoming.checkpoint;
   if (typeof payload.idempotencyKey !== 'string' || !payload.idempotencyKey) {
     if (existing) throw checkpointConflict('legacy checkpoint update has no operation key');
@@ -1554,7 +1559,8 @@ function mergeLocalCheckpoint(existing, incoming) {
     incoming: delta,
     meetingId: incoming.meetingId,
     segmentId: incoming.segmentId,
-    updatedAt: incoming.updatedAt
+    updatedAt: incoming.updatedAt,
+    verifiedLegacyCueIds
   });
   return projectLocalCheckpoint({
     ...incoming,

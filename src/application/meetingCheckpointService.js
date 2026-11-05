@@ -566,7 +566,7 @@ export function validateCheckpointInput(input, meetingId, segmentId) {
   };
 }
 
-export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, sessionRepository, updatedAt } = {}) {
+export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, sessionRepository, updatedAt, verifiedLegacyCueIds = new Set() } = {}) {
   const normalizedExisting = normalizeStoredCheckpoint(existing, meetingId, segmentId);
   if (incoming.cueCheckpoint && normalizedExisting.cueCheckpoint) {
     const prior = normalizedExisting.cueCheckpoint;
@@ -621,7 +621,9 @@ export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, sess
   const existingCues = normalizedExisting.finalCues;
   const mergedCues = [...existingCues];
   for (const cue of incoming.finalCues) {
-    const result = mergeFinalCue(mergedCues, cue);
+    const result = mergeFinalCue(mergedCues, cue, {
+      verifiedLegacyReasonUpdate: verifiedLegacyCueIds.has(cue.cueId)
+    });
     if (result.updated) {
       const index = mergedCues.findIndex((existingCue) => existingCue.cueId === result.cue.cueId);
       if (index >= 0) mergedCues[index] = result.cue;

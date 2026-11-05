@@ -1,4 +1,4 @@
-import { normalizeCueCheckpoint, validateFinalCue } from '../domain/subtitleCue/index.js';
+import { mergeFinalCue, normalizeCueCheckpoint, validateFinalCue } from '../domain/subtitleCue/index.js';
 import { checkpointOperationKey, checkpointConflict } from './checkpointOperation.js';
 
 const DEFAULT_CHECKPOINT_SYNC_DELAY_MS = 5000;
@@ -75,8 +75,7 @@ export function createMeetingCheckpointSyncCoordinator({
         const existing = pendingCues.get(key);
         const candidates = [...(existing ? [existing] : []), ...(pendingCueVariants.get(key) || []), { ...cue }];
         const maximal = candidates.filter((candidate, index) => !candidates.some((other, otherIndex) =>
-          otherIndex !== index && cueCovers(other, candidate) &&
-          (!cueCovers(candidate, other) || otherIndex > index)));
+          otherIndex !== index && pendingCueDominates(other, candidate, otherIndex, index)));
         pendingCues.set(key, maximal[0]);
         if (maximal.length > 1) pendingCueVariants.set(key, maximal.slice(1));
         else pendingCueVariants.delete(key);
@@ -356,6 +355,21 @@ function cueKey(context, cue) {
   return `${scopeKey(context)}:${JSON.stringify([cue.sessionId, cue.cueId])}`;
 }
 
+function pendingCueDominates(other, candidate, otherIndex, candidateIndex) {
+  const otherRevision = Number.isSafeInteger(other.revision) && other.revision > 0 ? other.revision : null;
+  const candidateRevision = Number.isSafeInteger(candidate.revision) && candidate.revision > 0 ? candidate.revision : null;
+  if (candidateRevision !== null && otherRevision === null) return false;
+  if (otherRevision !== null && candidateRevision !== null && otherRevision < candidateRevision) return false;
+  if (otherRevision !== null && (candidateRevision === null || otherRevision > candidateRevision)) {
+    try {
+      return mergeFinalCue([candidate], other).updated === true;
+    } catch {
+      return false;
+    }
+  }
+  return cueCovers(other, candidate) && (!cueCovers(candidate, other) || otherIndex > candidateIndex);
+}
+
 function sortedChunks(chunks) {
   return [...chunks].sort((left, right) => (
     streamOrder(left.stream) - streamOrder(right.stream) ||
@@ -409,6 +423,8 @@ function cueCovers(persisted, pending) {
   const identity = ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs',
     'sourceLanguageCode', 'targetLanguageCode', 'mode', 'status', 'finalizedReason'];
   if (!identity.every((field) => remote[field] === local[field])) return false;
+  if (local.revision !== undefined &&
+      (remote.revision === undefined || remote.revision < local.revision)) return false;
   if (remote.endTimeMs < local.endTimeMs) return false;
   if (!sideCovers(remote, local, 'source') || !sideCovers(remote, local, 'translation')) return false;
   if (remote.endTimeMs > local.endTimeMs &&

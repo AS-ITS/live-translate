@@ -1,10 +1,13 @@
 import { mergeCheckpoint } from '../application/meetingCheckpointService.js';
-import { validateFinalCue } from '../domain/subtitleCue/index.js';
+import { mergeFinalCue, validateFinalCue } from '../domain/subtitleCue/index.js';
+import { applyCueMutation } from '../domain/subtitleCue/cueMutation.js';
+import { advancePendingCue, classifyCueAuthority, MAX_PENDING_CUES_PER_MEETING,
+  pendingCueKey, pendingOwnershipIsProven, projectPendingCue } from '../domain/subtitleCue/pendingCue.js';
 import { checkCheckpointOperation, checkpointConflict, recordCheckpointOperation } from './checkpointOperation.js';
 import { lifecycleIntentKey, projectLifecycleOperationIntent, sameLifecycleIntentIdentity } from './lifecycleOperationIntent.js';
 
 export const LOCAL_MEETING_SCHEMA_VERSION = 6;
-export const LOCAL_MEETING_DATABASE_VERSION = 9;
+export const LOCAL_MEETING_DATABASE_VERSION = 12;
 const UNASSIGNED_CUE_SCHEMA_VERSION = 1;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
@@ -143,6 +146,11 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
   const operations = new Map();
   const segments = new Map();
   const cues = new Map();
+  const cueOperations = new Map();
+  const cueConflicts = new Map();
+  const legacyCueBackups = new Map();
+ const pendingCues = new Map();
+ const cueAuthorities = new Map();
   const unassignedCues = new Map();
   const checkpoints = new Map();
   const transcripts = new Map();
@@ -314,40 +322,146 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
       operations.set(key, operation);
       return operation.result;
     },
-    async saveCue(input) {
-      const cue = projectLocalCue(input);
-      assertLocalRetentionWritable({ deleted: deletedMeetings.has(cue.meetingId) });
-      assertCueSegmentOwnership([...cues.values()], cue);
-      const existing = cues.get(cue.key);
-      const saved = mergeLocalCue(existing, cue);
-      if (saved !== existing) cues.set(cue.key, saved);
-      return saved;
-    },
-    async saveUnassignedCue(input) {
-      const cue = projectUnassignedCue(input);
-      assertLocalRetentionWritable({ deleted: deletedMeetings.has(cue.meetingId) });
-      const saved = mergeUnassignedCue(unassignedCues.get(cue.key), cue);
-      unassignedCues.set(cue.key, saved);
-      return saved;
-    },
-    async reconcileUnassignedCues({ upserts = [], removals = [] } = {}) {
-      const projected = upserts.map(projectUnassignedCue);
-      for (const cue of projected) assertLocalRetentionWritable({ deleted: deletedMeetings.has(cue.meetingId) });
-      const staged = new Map(unassignedCues);
-      for (const cue of projected) staged.set(cue.key, mergeUnassignedCue(staged.get(cue.key), cue));
-      for (const input of removals) {
-        const removal = projectUnassignedRemoval(input, projected);
-        const existing = staged.get(removal.key);
-        assertUnassignedRemoval(existing, removal);
-        const survivor = staged.get(removal.survivorKey);
-        if (!survivor) throw conflict('local_unassigned_cue_survivor_missing');
-        staged.set(removal.survivorKey, Object.freeze({ ...survivor,
-          allocationFloor: Math.max(survivor.allocationFloor || 1, existing.sequence + 1) }));
-        staged.delete(removal.key);
+    async commitCueMutation(input) {
+      const meetingId = normalizeRequiredString(input.meetingId, 'meetingId');
+      const authority = classifyCueAuthority({ marker: cueAuthorities.get(meetingId),
+        cues: [...cues.values()].filter((item) => item.meetingId === meetingId),
+        checkpoints: [...checkpoints.values()].filter((item) => item.meetingId === meetingId),
+        unassigned: [...unassignedCues.values()].filter((item) => item.meetingId === meetingId) });
+      if (authority === 'legacy_readonly') return { status: 'rejected', reason: 'cue_legacy_readonly' };
+      if (input.side === 'pending') {
+        assertLocalRetentionWritable({ deleted: deletedMeetings.has(meetingId) });
+        const projected = projectPendingCue(input);
+        if (projected.status === 'rejected') return projected;
+        const committed = [...cues.values()].find((item) => item.meetingId === meetingId
+          && item.cueId === projected.record.cueId);
+        if (committed) return { status: 'duplicate', cue: committed.cue };
+        const existingPending = pendingCues.get(projected.record.key);
+        if (!existingPending && [...pendingCues.values()].filter((item) => item.meetingId === meetingId).length
+          >= MAX_PENDING_CUES_PER_MEETING) return { status: 'rejected', reason: 'cue_pending_meeting_limit' };
+        const result = advancePendingCue(existingPending, projected.record,
+          input.eventKey, JSON.stringify(input.cue));
+        if (result.status === 'pending') {
+          pendingCues.set(projected.record.key, result.pending);
+          cueAuthorities.set(meetingId, { meetingId, mode: 'b2' });
+        }
+        return result;
       }
-      unassignedCues.clear();
-      for (const [key, value] of staged) unassignedCues.set(key, value);
-      return projected;
+      const segmentId = normalizeRequiredString(input.segmentId, 'segmentId');
+      const eventKey = normalizeRequiredString(input.eventKey, 'eventKey');
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(meetingId) });
+      const operationKey = JSON.stringify([meetingId, segmentId, eventKey]);
+      const fingerprint = JSON.stringify([input.side, input.cue]);
+      const priorOperation = cueOperations.get(operationKey);
+      if (priorOperation) return priorOperation.fingerprint === fingerprint
+        ? { ...priorOperation.result,
+          status: priorOperation.result.status === 'rejected' ? 'rejected' : 'duplicate' }
+        : { status: 'rejected', reason: 'cue_event_key_conflict' };
+      const cueId = normalizeRequiredString(input.cue?.cueId, 'cueId');
+      const foreignPending = [...pendingCues.values()].find((item) => item.meetingId === meetingId
+        && item.cueId === cueId && item.sessionId !== input.cue?.sessionId);
+      if (foreignPending) return { status: 'rejected', reason: 'cue_pending_identity_conflict' };
+      const pendingKey = pendingCueKey(meetingId, input.cue?.sessionId, cueId);
+      const pending = pendingCues.get(pendingKey);
+      if (pending) {
+        const matchingSegments = [...segments.values()].filter((item) => item.meetingId === meetingId
+          && item.recordingId === input.cue.sessionId);
+        const segment = matchingSegments.find((item) => item.segmentId === segmentId);
+        if (!pendingOwnershipIsProven(pending, input.cue, segment, matchingSegments)) {
+          return { status: 'rejected', reason: 'cue_pending_ownership_unproven' };
+        }
+      }
+      const key = localCueKey(meetingId, segmentId, cueId);
+      const existing = cues.get(key);
+      const owner = [...cues.values()].find((record) => record.meetingId === meetingId
+        && record.cueId === cueId && record.segmentId !== segmentId);
+      const result = owner ? { status: 'rejected', reason: 'cue_segment_owner_conflict' }
+        : applyCueMutation(existing?.cue ?? null, input);
+      if (result.status === 'committed') {
+        const record = projectLocalCue({ meetingId, segmentId, sessionId: input.cue.sessionId,
+          cue: result.cue });
+        const sequenceOwner = [...cues.values()].find((item) => item.meetingId === meetingId
+          && item.segmentId === segmentId && item.sequence === record.sequence && item.cueId !== cueId);
+        if (sequenceOwner) return recordCueRejection(cueConflicts, input, 'cue_sequence_owner_conflict', existing);
+        cues.set(key, record);
+        const checkpointKey = localCheckpointKey(meetingId, segmentId);
+        const priorCheckpoint = checkpoints.get(checkpointKey)?.checkpoint ?? {};
+        checkpoints.set(checkpointKey, projectLocalCheckpoint({ meetingId, segmentId,
+          checkpoint: { ...priorCheckpoint, durableChunks: priorCheckpoint.durableChunks ?? [],
+            finalCues: [], cueCheckpoint: null,
+            cueCursor: { sequence: Math.max(priorCheckpoint.cueCursor?.sequence ?? 0, record.sequence),
+              commitCount: (priorCheckpoint.cueCursor?.commitCount ?? 0) + 1 } }
+        }));
+      }
+      if (result.status === 'rejected') recordCueRejection(cueConflicts, input, result.reason, existing);
+      const response = result.status === 'committed'
+        ? { status: 'committed', cue: result.cue, revision: result.cue.revision }
+        : result;
+      cueOperations.set(operationKey, { meetingId, fingerprint, result: response });
+      if (result.status === 'committed') {
+        cueAuthorities.set(meetingId, { meetingId, mode: 'b2' });
+        if (pending) pendingCues.delete(pendingKey);
+      }
+      return response;
+    },
+    async listPendingCues(meetingId) {
+      return [...pendingCues.values()].filter((item) => item.meetingId === meetingId);
+    },
+    async inspectCueAuthority(meetingId) {
+      return classifyCueAuthority({ marker: cueAuthorities.get(meetingId),
+        cues: [...cues.values()].filter((item) => item.meetingId === meetingId),
+        checkpoints: [...checkpoints.values()].filter((item) => item.meetingId === meetingId),
+        unassigned: [...unassignedCues.values()].filter((item) => item.meetingId === meetingId) });
+    },
+    async saveCheckpointCursor(input) {
+      const incoming = projectLocalCheckpoint(input);
+      assertLocalRetentionWritable({ deleted: deletedMeetings.has(incoming.meetingId) });
+      const existing = checkpoints.get(incoming.key);
+      const saved = mergeCursorCheckpoint(existing, incoming);
+      checkpoints.set(incoming.key, saved);
+      return saved;
+    },
+    async listCueConflicts(meetingId) {
+      return [...cueConflicts.values()].filter((item) => item.meetingId === meetingId);
+    },
+    async upgradeLegacyCues(meetingId) {
+      if (legacyCueBackups.has(meetingId)) return { status: 'upgraded' };
+      const legacy = [...checkpoints.values()].filter((item) => item.meetingId === meetingId
+        && (item.checkpoint?.finalCues?.length || item.checkpoint?.cueCheckpoint));
+      const existingRecords = [...cues.values()].filter((item) => item.meetingId === meetingId);
+      const needsRevisionUpgrade = existingRecords.some((item) => !Number.isSafeInteger(item.cue?.revision));
+      if (legacy.length === 0 && !needsRevisionUpgrade) return { status: 'current' };
+      if ([...unassignedCues.values()].some((item) => item.meetingId === meetingId && !item.cue?.dismissed)) {
+        return { status: 'blocked', reason: 'cue_legacy_unassigned' };
+      }
+      const staged = new Map(cues);
+      try {
+        for (const record of existingRecords) staged.set(record.key, upgradeLegacyCueRecord(record));
+        for (const item of legacy) {
+          for (const cue of item.checkpoint.finalCues || []) {
+            validateFinalCue(cue);
+            const record = projectLocalCue({ meetingId, segmentId: item.segmentId,
+              sessionId: cue.sessionId, cue });
+            const original = cues.get(record.key);
+            if (original && !sameCanonicalValue(original.cue, record.cue)) {
+              const newer = mergeFinalCue([cue], original.cue).cue;
+              if (!sameCanonicalValue(newer, original.cue)) throw conflict('cue_legacy_migration_conflict');
+            }
+            if (!original) staged.set(record.key, upgradeLegacyCueRecord(record));
+          }
+        }
+      } catch {
+        return { status: 'blocked', reason: 'cue_legacy_migration_conflict' };
+      }
+      legacyCueBackups.set(meetingId, { meetingId, checkpoints: legacy, cues: existingRecords, at: Date.now() });
+      for (const [key, record] of staged) cues.set(key, record);
+      for (const item of legacy) checkpoints.set(item.key, projectLocalCheckpoint({
+        ...item, checkpoint: { ...item.checkpoint, finalCues: [], cueCheckpoint: null,
+          cueCursor: { sequence: Math.max(0, ...[...staged.values()]
+            .filter((record) => record.meetingId === meetingId && record.segmentId === item.segmentId)
+            .map((record) => record.sequence)), commitCount: 0 } }
+      }));
+      return { status: 'upgraded' };
     },
     async getUnassignedCue(meetingId, sessionId, cueId) {
       return unassignedCues.get(unassignedCueKey(meetingId, sessionId, cueId)) || null;
@@ -378,15 +492,6 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
       return [...transcripts.values()].filter((item) => item.meetingId === meetingId)
         .sort(compareLocalTranscripts);
     },
-    async saveCheckpoint(input) {
-      const checkpoint = projectLocalCheckpoint(input);
-      assertLocalRetentionWritable({ deleted: deletedMeetings.has(checkpoint.meetingId) });
-      const verifiedLegacyCueIds = await assertCheckpointCueProgress(checkpoint, (key) => cues.get(key));
-      const existing = checkpoints.get(checkpoint.key);
-      const saved = mergeLocalCheckpoint(existing, checkpoint, verifiedLegacyCueIds);
-      checkpoints.set(checkpoint.key, saved);
-      return saved;
-    },
     async getCheckpoint(meetingId, segmentId) {
       const value = checkpoints.get(localCheckpointKey(meetingId, segmentId));
       return value ? projectLocalCheckpoint(value) : null;
@@ -396,7 +501,7 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     async clearMeetingContent(meetingId) {
       deletedMeetings.add(meetingId);
-      for (const collection of [records, recordings, operations, segments, cues, unassignedCues, checkpoints, transcripts, translatedAudioChunks]) {
+    for (const collection of [records, recordings, operations, segments, cues, cueOperations, cueConflicts, legacyCueBackups, pendingCues, cueAuthorities, unassignedCues, checkpoints, transcripts, translatedAudioChunks]) {
         for (const [key, value] of collection) {
           if (value.meetingId === meetingId) collection.delete(key);
         }
@@ -495,8 +600,8 @@ export function createIndexedDbLocalMeetingManifestStore({
     },
     async listLocalMeetingIds() {
       const database = await openDatabase();
-      return runNamedTransaction(database, ['recordings', 'segments', 'chunks', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readonly', async (transaction) => {
-        const records = await Promise.all(['recordings', 'segments', 'chunks', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']
+      return runNamedTransaction(database, ['recordings', 'segments', 'chunks', 'cues', 'pendingCues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readonly', async (transaction) => {
+        const records = await Promise.all(['recordings', 'segments', 'chunks', 'cues', 'pendingCues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']
           .map((name) => request(transaction.objectStore(name).getAll())));
         return [...new Set(records.flat().map((row) => row.meetingId).filter(Boolean))];
       });
@@ -504,13 +609,15 @@ export function createIndexedDbLocalMeetingManifestStore({
     async clearMeetingContent(meetingId) {
       const database = await openDatabase();
       return runNamedTransaction(database,
-        ['recordings', 'segments', 'chunks', 'operations', 'cues', 'checkpoints', 'retentions', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readwrite',
+      ['recordings', 'segments', 'chunks', 'operations', 'cues', 'cueOperations', 'cueConflicts', 'legacyCueBackups', 'pendingCues', 'cueAuthorities', 'checkpoints', 'retentions', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readwrite',
         async (transaction) => {
-          for (const name of ['recordings', 'segments', 'chunks', 'operations', 'cues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']) {
+        for (const name of ['recordings', 'segments', 'chunks', 'operations', 'cues', 'cueOperations', 'cueConflicts', 'legacyCueBackups', 'pendingCues', 'cueAuthorities', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']) {
             const store = transaction.objectStore(name);
             const records = await request(store.getAll());
             for (const row of records) {
-              if (row.meetingId === meetingId) await request(store.delete(name === 'recordings' ? meetingId : row.key || row.chunkId));
+              if (row.meetingId === meetingId) await request(store.delete(
+                name === 'recordings' || name === 'legacyCueBackups' || name === 'cueAuthorities'
+                  ? meetingId : row.key || row.chunkId));
             }
           }
           const retentions = transaction.objectStore('retentions');
@@ -747,57 +854,219 @@ export function createIndexedDbLocalMeetingManifestStore({
         return operation.result;
       });
     },
-    async saveCue(input) {
-      const cue = projectLocalCue(input);
+    async commitCueMutation(input) {
+      const meetingId = normalizeRequiredString(input.meetingId, 'meetingId');
+      const segmentId = input.side === 'pending' ? null : normalizeRequiredString(input.segmentId, 'segmentId');
+      const eventKey = normalizeRequiredString(input.eventKey, 'eventKey');
+      const cueId = normalizeRequiredString(input.cue?.cueId, 'cueId');
       const database = await openDatabase();
-      return runNamedTransaction(database, ['cues', 'retentions'], 'readwrite', async (transaction) => {
-        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(cue.meetingId)));
-        const store = transaction.objectStore('cues');
-        assertCueSegmentOwnership(await request(store.index('meeting-cue-id').getAll([cue.meetingId, cue.cueId])), cue);
-        const existing = await request(store.get(cue.key));
-        const projectedExisting = existing && projectLocalCue(existing);
-        const saved = mergeLocalCue(projectedExisting, cue);
-        if (saved !== projectedExisting) await request(store.put(saved));
-        return saved;
-      });
+      return runNamedTransaction(database,
+        ['cues', 'checkpoints', 'retentions', 'cueOperations', 'cueConflicts',
+          'pendingCues', 'cueAuthorities', 'unassignedCues', 'segments'], 'readwrite',
+        async (transaction) => {
+          assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(meetingId)));
+          const cueStore = transaction.objectStore('cues');
+          const pendingStore = transaction.objectStore('pendingCues');
+          const authorityStore = transaction.objectStore('cueAuthorities');
+          const marker = await request(authorityStore.get(meetingId));
+          if (!marker) {
+            const [priorCues, priorCheckpoints, priorUnassigned] = await Promise.all([
+              request(cueStore.getAll()),
+              request(transaction.objectStore('checkpoints').getAll()),
+              request(transaction.objectStore('unassignedCues').index('meetingId').getAll(meetingId))
+            ]);
+            if (classifyCueAuthority({ cues: priorCues.filter((item) => item.meetingId === meetingId),
+              checkpoints: priorCheckpoints.filter((item) => item.meetingId === meetingId),
+              unassigned: priorUnassigned }) === 'legacy_readonly') {
+              return { status: 'rejected', reason: 'cue_legacy_readonly' };
+            }
+          }
+          if (input.side === 'pending') {
+            const projected = projectPendingCue(input);
+            if (projected.status === 'rejected') return projected;
+            const committed = await request(cueStore.index('meeting-cue-id').getAll([meetingId, cueId]));
+            if (committed.length) return { status: 'duplicate', cue: committed[0].cue };
+            const prior = await request(pendingStore.get(projected.record.key));
+            if (!prior) {
+              const count = (await request(pendingStore.index('meetingId').getAll(meetingId))).length;
+              if (count >= MAX_PENDING_CUES_PER_MEETING) {
+                return { status: 'rejected', reason: 'cue_pending_meeting_limit' };
+              }
+            }
+            const result = advancePendingCue(prior, projected.record,
+              eventKey, JSON.stringify(input.cue));
+            if (result.status === 'pending') {
+              await request(pendingStore.put(result.pending));
+              await request(authorityStore.put({ meetingId, mode: 'b2' }));
+            }
+            return result;
+          }
+          const operationStore = transaction.objectStore('cueOperations');
+          const operationKey = JSON.stringify([meetingId, segmentId, eventKey]);
+          const fingerprint = JSON.stringify([input.side, input.cue]);
+          const priorOperation = await request(operationStore.get(operationKey));
+          if (priorOperation) return priorOperation.fingerprint === fingerprint
+            ? { ...priorOperation.result,
+              status: priorOperation.result.status === 'rejected' ? 'rejected' : 'duplicate' }
+            : { status: 'rejected', reason: 'cue_event_key_conflict' };
+          const key = localCueKey(meetingId, segmentId, cueId);
+          const sameMeetingPending = await request(pendingStore.index('meetingId').getAll(meetingId));
+          if (sameMeetingPending.some((item) => item.cueId === cueId
+            && item.sessionId !== input.cue?.sessionId)) {
+            return { status: 'rejected', reason: 'cue_pending_identity_conflict' };
+          }
+          const pendingKey = pendingCueKey(meetingId, input.cue?.sessionId, cueId);
+          const pending = await request(pendingStore.get(pendingKey));
+          if (pending) {
+            const candidateSegments = (await request(transaction.objectStore('segments').getAll()))
+              .filter((item) => item.meetingId === meetingId && item.recordingId === input.cue.sessionId);
+            const segment = candidateSegments.find((item) => item.segmentId === segmentId);
+            if (!pendingOwnershipIsProven(pending, input.cue, segment, candidateSegments)) {
+              return { status: 'rejected', reason: 'cue_pending_ownership_unproven' };
+            }
+          }
+          const existing = await request(cueStore.get(key));
+          const owners = await request(cueStore.index('meeting-cue-id').getAll([meetingId, cueId]));
+          let result = owners.some((record) => record.segmentId !== segmentId)
+            ? { status: 'rejected', reason: 'cue_segment_owner_conflict' }
+            : applyCueMutation(existing?.cue ?? null, input);
+          if (result.status === 'committed') {
+            const record = projectLocalCue({ meetingId, segmentId,
+              sessionId: input.cue.sessionId, cue: result.cue });
+            const sequenceOwners = await request(cueStore.index('meeting-segment-sequence').getAll(
+              [meetingId, segmentId, record.sequence]));
+            if (sequenceOwners.some((owner) => owner.cueId !== cueId)) {
+              result = { status: 'rejected', reason: 'cue_sequence_owner_conflict' };
+            } else {
+              await request(cueStore.put(record));
+              const checkpointStore = transaction.objectStore('checkpoints');
+              const checkpointKey = localCheckpointKey(meetingId, segmentId);
+              const priorCheckpoint = await request(checkpointStore.get(checkpointKey));
+              const checkpoint = priorCheckpoint?.checkpoint ?? {};
+              await request(checkpointStore.put(projectLocalCheckpoint({ meetingId, segmentId,
+                checkpoint: { ...checkpoint, durableChunks: checkpoint.durableChunks ?? [],
+                  finalCues: [], cueCheckpoint: null,
+                  cueCursor: { sequence: Math.max(checkpoint.cueCursor?.sequence ?? 0, record.sequence),
+                    commitCount: (checkpoint.cueCursor?.commitCount ?? 0) + 1 } }
+              })));
+            }
+          }
+          if (result.status === 'rejected') {
+            const conflictStore = transaction.objectStore('cueConflicts');
+            const item = cueRejectionRecord(input, result.reason, existing);
+            await request(conflictStore.put(item));
+            const all = await request(conflictStore.index('meetingId').getAll(meetingId));
+            for (const old of all.sort((a, b) => a.at - b.at).slice(0, Math.max(0, all.length - 100))) {
+              await request(conflictStore.delete(old.key));
+            }
+          }
+          const response = result.status === 'committed'
+            ? { status: 'committed', cue: result.cue, revision: result.cue.revision }
+            : result;
+          await request(operationStore.put({ key: operationKey, meetingId, fingerprint, result: response }));
+          if (result.status === 'committed') {
+            await request(authorityStore.put({ meetingId, mode: 'b2' }));
+            if (pending) await request(pendingStore.delete(pendingKey));
+          }
+          return response;
+        });
     },
-    async saveUnassignedCue(input) {
-      const cue = projectUnassignedCue(input);
+    async listPendingCues(meetingId) {
       const database = await openDatabase();
-      return runNamedTransaction(database, ['unassignedCues', 'retentions'], 'readwrite', async (transaction) => {
-        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(cue.meetingId)));
-        const store = transaction.objectStore('unassignedCues');
-        const existing = await request(store.get(cue.key));
-        const saved = mergeUnassignedCue(existing && projectUnassignedCue(existing), cue);
+      return runNamedTransaction(database, ['pendingCues'], 'readonly', (transaction) =>
+        request(transaction.objectStore('pendingCues').index('meetingId').getAll(meetingId)));
+    },
+    async inspectCueAuthority(meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database,
+        ['cueAuthorities', 'cues', 'checkpoints', 'unassignedCues'], 'readonly',
+        async (transaction) => {
+          const [marker, cues, checkpoints, unassigned] = await Promise.all([
+            request(transaction.objectStore('cueAuthorities').get(meetingId)),
+            request(transaction.objectStore('cues').getAll()),
+            request(transaction.objectStore('checkpoints').getAll()),
+            request(transaction.objectStore('unassignedCues').index('meetingId').getAll(meetingId))
+          ]);
+          return classifyCueAuthority({ marker,
+            cues: cues.filter((item) => item.meetingId === meetingId),
+            checkpoints: checkpoints.filter((item) => item.meetingId === meetingId), unassigned });
+        });
+    },
+    async saveCheckpointCursor(input) {
+      const incoming = projectLocalCheckpoint(input);
+      const database = await openDatabase();
+      return runNamedTransaction(database, ['checkpoints', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(incoming.meetingId)));
+        const store = transaction.objectStore('checkpoints');
+        const raw = await request(store.get(incoming.key));
+        const existing = raw ? projectLocalCheckpoint(raw) : null;
+        const saved = mergeCursorCheckpoint(existing, incoming);
         if (saved !== existing) await request(store.put(saved));
         return saved;
       });
     },
-    async reconcileUnassignedCues({ upserts = [], removals = [] } = {}) {
-      const projected = upserts.map(projectUnassignedCue);
-      const projectedRemovals = removals.map((input) => projectUnassignedRemoval(input, projected));
+    async listCueConflicts(meetingId) {
       const database = await openDatabase();
-      return runNamedTransaction(database, ['unassignedCues', 'retentions'], 'readwrite', async (transaction) => {
-        for (const meetingId of new Set([...projected, ...projectedRemovals].map((item) => item.meetingId))) {
-          assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(meetingId)));
-        }
-        const store = transaction.objectStore('unassignedCues');
-        for (const cue of projected) {
-          const existing = await request(store.get(cue.key));
-          const saved = mergeUnassignedCue(existing && projectUnassignedCue(existing), cue);
-          if (saved !== existing) await request(store.put(saved));
-        }
-        for (const removal of projectedRemovals) {
-          const existing = await request(store.get(removal.key));
-          assertUnassignedRemoval(existing, removal);
-          const survivor = await request(store.get(removal.survivorKey));
-          if (!survivor) throw conflict('local_unassigned_cue_survivor_missing');
-          await request(store.put({ ...survivor,
-            allocationFloor: Math.max(survivor.allocationFloor || 1, existing.sequence + 1) }));
-          await request(store.delete(removal.key));
-        }
-        return projected;
-      });
+      return runNamedTransaction(database, 'cueConflicts', 'readonly', async (transaction) =>
+        request(transaction.objectStore('cueConflicts').index('meetingId').getAll(meetingId)));
+    },
+    async upgradeLegacyCues(meetingId) {
+      normalizeRequiredString(meetingId, 'meetingId');
+      const database = await openDatabase();
+      return runNamedTransaction(database,
+        ['cues', 'checkpoints', 'unassignedCues', 'legacyCueBackups'], 'readwrite',
+        async (transaction) => {
+          const backups = transaction.objectStore('legacyCueBackups');
+          if (await request(backups.get(meetingId))) return { status: 'upgraded' };
+          const checkpointStore = transaction.objectStore('checkpoints');
+          const legacy = (await request(checkpointStore.getAll()))
+            .filter((item) => item.meetingId === meetingId
+              && (item.checkpoint?.finalCues?.length || item.checkpoint?.cueCheckpoint));
+          const unassigned = (await request(transaction.objectStore('unassignedCues').getAll()))
+            .filter((item) => item.meetingId === meetingId);
+          if (unassigned.some((item) => !item.cue?.dismissed)) {
+            return { status: 'blocked', reason: 'cue_legacy_unassigned' };
+          }
+          const cueStore = transaction.objectStore('cues');
+          const existingRecords = (await request(cueStore.getAll()))
+            .filter((item) => item.meetingId === meetingId).map(projectLocalCue);
+          const needsRevisionUpgrade = existingRecords.some((item) => !Number.isSafeInteger(item.cue?.revision));
+          if (legacy.length === 0 && !needsRevisionUpgrade) return { status: 'current' };
+          const staged = new Map(existingRecords.map((item) => [item.key, item]));
+          try {
+            for (const record of existingRecords) staged.set(record.key, upgradeLegacyCueRecord(record));
+            for (const item of legacy) {
+              for (const cue of item.checkpoint.finalCues || []) {
+                validateFinalCue(cue);
+                const record = projectLocalCue({ meetingId, segmentId: item.segmentId,
+                  sessionId: cue.sessionId, cue });
+                const original = existingRecords.find((item) => item.key === record.key);
+                if (original && !sameCanonicalValue(original.cue, record.cue)) {
+                  const newer = mergeFinalCue([cue], original.cue).cue;
+                  if (!sameCanonicalValue(newer, original.cue)) throw conflict('cue_legacy_migration_conflict');
+                }
+                if (!original) staged.set(record.key, upgradeLegacyCueRecord(record));
+              }
+            }
+          } catch {
+            return { status: 'blocked', reason: 'cue_legacy_migration_conflict' };
+          }
+          await request(backups.put({ meetingId, checkpoints: legacy, cues: existingRecords,
+            unassigned, at: Date.now() }));
+          for (const [key, record] of staged) {
+            const original = existingRecords.find((item) => item.key === key);
+            if (!original || !sameCanonicalValue(original.cue, record.cue)) await request(cueStore.put(record));
+          }
+          for (const item of legacy) {
+            await request(checkpointStore.put(projectLocalCheckpoint({
+              ...item, checkpoint: { ...item.checkpoint, finalCues: [], cueCheckpoint: null,
+                cueCursor: { sequence: Math.max(0, ...[...staged.values()]
+                  .filter((record) => record.segmentId === item.segmentId)
+                  .map((record) => record.sequence)), commitCount: 0 } }
+            })));
+          }
+          return { status: 'upgraded' };
+        });
     },
     async getUnassignedCue(meetingId, sessionId, cueId) {
       const database = await openDatabase();
@@ -869,21 +1138,6 @@ export function createIndexedDbLocalMeetingManifestStore({
         (await request(transaction.objectStore('translatedAudioChunks').index('meetingId').getAll(meetingId)))
           .map(projectTranslatedAudioChunk)
           .sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.sequence - right.sequence));
-    },
-    async saveCheckpoint(input) {
-      const checkpoint = projectLocalCheckpoint(input);
-      const database = await openDatabase();
-      return runNamedTransaction(database, ['checkpoints', 'cues', 'retentions'], 'readwrite', async (transaction) => {
-        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(checkpoint.meetingId)));
-        const verifiedLegacyCueIds = await assertCheckpointCueProgress(checkpoint,
-          (key) => request(transaction.objectStore('cues').get(key)));
-        const store = transaction.objectStore('checkpoints');
-        const existing = await request(store.get(checkpoint.key));
-        const projected = existing ? projectLocalCheckpoint(existing) : null;
-        const saved = mergeLocalCheckpoint(projected, checkpoint, verifiedLegacyCueIds);
-        if (saved !== projected) await request(store.put(saved));
-        return saved;
-      });
     },
     async getCheckpoint(meetingId, segmentId) {
       const key = localCheckpointKey(meetingId, segmentId);
@@ -998,6 +1252,21 @@ export function createIndexedDbLocalMeetingManifestStore({
           if (!cueStore.indexNames.contains('meeting-cue-id')) {
             cueStore.createIndex('meeting-cue-id', ['meetingId', 'cueId']);
           }
+      if (!database.objectStoreNames.contains('cueOperations')) {
+        database.createObjectStore('cueOperations', { keyPath: 'key' }).createIndex('meetingId', 'meetingId');
+      }
+      if (!database.objectStoreNames.contains('cueConflicts')) {
+        database.createObjectStore('cueConflicts', { keyPath: 'key' }).createIndex('meetingId', 'meetingId');
+      }
+      if (!database.objectStoreNames.contains('legacyCueBackups')) {
+        database.createObjectStore('legacyCueBackups', { keyPath: 'meetingId' });
+      }
+      if (!database.objectStoreNames.contains('pendingCues')) {
+        database.createObjectStore('pendingCues', { keyPath: 'key' }).createIndex('meetingId', 'meetingId');
+      }
+      if (!database.objectStoreNames.contains('cueAuthorities')) {
+        database.createObjectStore('cueAuthorities', { keyPath: 'meetingId' });
+      }
           if (!database.objectStoreNames.contains('unassignedCues')) {
             const store = database.createObjectStore('unassignedCues', { keyPath: 'key' });
             store.createIndex('meetingId', 'meetingId');
@@ -1372,8 +1641,7 @@ function compareLocalTranscripts(left, right) {
   return left.sequence - right.sequence || left.id.localeCompare(right.id);
 }
 
-// A caller must supply a stable Cue identity and revision. This store never
-// infers ownership from the currently active Segment.
+// Project pre-B2 unassigned records for isolated read-only access.
 function projectUnassignedCue(value = {}) {
   const meetingId = normalizeRequiredString(value.meetingId, 'meetingId');
   const sessionId = normalizeRequiredString(value.sessionId, 'sessionId');
@@ -1421,40 +1689,34 @@ function projectUnassignedSourceIdentity(input) {
   return Object.keys(result).length ? Object.freeze(result) : null;
 }
 
-function mergeLocalCue(existing, incoming) {
-  if (!existing) return incoming;
-  if (!sameCueIdentity(existing, incoming)) throw conflict('local_cue_identity_conflict');
-  const storedRevision = existing.cue?.revision ?? 0;
-  const incomingRevision = incoming.cue?.revision ?? 0;
-  if (incomingRevision < storedRevision) throw conflict('local_cue_stale_revision');
-  if (incomingRevision === storedRevision) {
-    if (storedRevision === 0) {
-      const storedSource = existing.cue?.sourceVersion ?? 0;
-      const storedTranslation = existing.cue?.translationVersion ?? 0;
-      const nextSource = incoming.cue?.sourceVersion ?? 0;
-      const nextTranslation = incoming.cue?.translationVersion ?? 0;
-      if (storedSource || storedTranslation || nextSource || nextTranslation) {
-        if (nextSource < storedSource || nextTranslation < storedTranslation) {
-          throw conflict('local_cue_stale_revision');
-        }
-        if (nextSource === storedSource && nextTranslation === storedTranslation) {
-          if (!sameCanonicalValue(existing.cue, incoming.cue)) throw conflict('local_cue_revision_conflict');
-          return existing;
-        }
-      }
-      return incoming; // Preserve legacy writes without either version contract.
-    }
-    if (!sameCanonicalValue(existing.cue, incoming.cue)) throw conflict('local_cue_revision_conflict');
-    return existing;
-  }
-  return incoming;
+function upgradeLegacyCueRecord(record) {
+  if (Number.isSafeInteger(record.cue?.revision) && record.cue.revision > 0) return record;
+  if (record.cue?.status !== 'final') throw conflict('cue_legacy_migration_conflict');
+  const cue = { ...record.cue, revision: 1 };
+  validateFinalCue(cue);
+  return projectLocalCue({ ...record, cue });
 }
 
-function assertCueSegmentOwnership(records, cue) {
-  if (records.some((record) => record.meetingId === cue.meetingId
-    && record.cueId === cue.cueId && record.segmentId !== cue.segmentId)) {
-    throw conflict('local_cue_segment_conflict');
+function cueRejectionRecord(input, reason, existing) {
+  const meetingId = normalizeRequiredString(input.meetingId, 'meetingId');
+  const segmentId = normalizeRequiredString(input.segmentId, 'segmentId');
+  const eventKey = normalizeRequiredString(input.eventKey, 'eventKey');
+  return Object.freeze({
+    key: JSON.stringify([meetingId, segmentId, eventKey]), meetingId, segmentId,
+    cueId: input.cue?.cueId ?? null, eventKey, reason, at: Date.now(),
+    storedCue: existing?.cue ?? null, incomingCue: input.cue ?? null
+  });
+}
+
+function recordCueRejection(conflicts, input, reason, existing) {
+  const item = cueRejectionRecord(input, reason, existing);
+  conflicts.set(item.key, item);
+  for (const old of [...conflicts.values()].filter((value) => value.meetingId === item.meetingId)
+    .sort((a, b) => a.at - b.at).slice(0, Math.max(0,
+      [...conflicts.values()].filter((value) => value.meetingId === item.meetingId).length - 100))) {
+    conflicts.delete(old.key);
   }
+  return { status: 'rejected', reason };
 }
 
 function assertLocalRetentionWritable(retention) {
@@ -1462,74 +1724,6 @@ function assertLocalRetentionWritable(retention) {
     || (retention?.expiresAt && Date.parse(retention.expiresAt) <= Date.now())) {
     throw conflict('meeting_content_expired');
   }
-}
-
-function assertCheckpointCueProgress(checkpoint, lookup) {
-  const finalCues = checkpoint.checkpoint?.finalCues || [];
-  return Promise.all(finalCues.map(async (cue) => {
-    if (cue.segmentId !== checkpoint.segmentId) throw conflict('local_checkpoint_cue_segment_conflict');
-    const stored = await lookup(localCueKey(checkpoint.meetingId, checkpoint.segmentId, cue.cueId));
-    if (!stored || stored.sessionId !== cue.sessionId || stored.sequence !== cue.sequence
-      || stored.cue?.status !== 'final'
-      || (cue.revision != null && (stored.cue?.revision ?? 0) < cue.revision)) {
-      throw conflict('local_checkpoint_cue_not_durable');
-    }
-    return Number.isSafeInteger(cue.revision) && cue.revision > 0 &&
-      stored.cue?.revision === cue.revision &&
-      sameCanonicalValue(validateFinalCue(stored.cue), validateFinalCue(cue))
-      ? cue.cueId : null;
-  })).then((ids) => new Set(ids.filter(Boolean)));
-}
-
-function mergeUnassignedCue(existing, incoming) {
-  if (!existing) return incoming;
-  if (existing.meetingId !== incoming.meetingId || existing.sessionId !== incoming.sessionId ||
-      existing.cueId !== incoming.cueId || existing.sequence !== incoming.sequence ||
-      existing.reason !== incoming.reason) {
-    throw conflict('local_unassigned_cue_identity_conflict');
-  }
-  const sourceIdentity = { ...existing.sourceIdentity };
-  for (const [key, value] of Object.entries(incoming.sourceIdentity || {})) {
-    if (sourceIdentity[key] != null && sourceIdentity[key] !== value) {
-      throw conflict('local_unassigned_cue_identity_conflict');
-    }
-    sourceIdentity[key] = value;
-  }
-  if (incoming.revision < existing.revision) throw conflict('local_unassigned_cue_stale_revision');
-  if (incoming.revision === existing.revision) {
-    if (!sameCanonicalValue(existing.cue, incoming.cue) ||
-        !sameCanonicalValue(existing.sourceIdentity, Object.keys(sourceIdentity).length ? sourceIdentity : null)) {
-      throw conflict('local_unassigned_cue_revision_conflict');
-    }
-    return existing;
-  }
-  if (existing.cue.status === 'final' && incoming.cue.status !== 'final') {
-    throw conflict('local_unassigned_cue_revision_conflict');
-  }
-  return Object.freeze({ ...incoming,
-    allocationFloor: Math.max(existing.allocationFloor || existing.sequence + 1, incoming.allocationFloor),
-    sourceIdentity: Object.keys(sourceIdentity).length ? Object.freeze(sourceIdentity) : null,
-    updatedAt: Math.max(existing.updatedAt, incoming.updatedAt)
-  });
-}
-
-function projectUnassignedRemoval(input, upserts) {
-  const meetingId = normalizeRequiredString(input.meetingId, 'meetingId');
-  const sessionId = normalizeRequiredString(input.sessionId, 'sessionId');
-  const cueId = normalizeRequiredString(input.cueId, 'cueId');
-  const revision = normalizePositiveInteger(input.revision, 'revision');
-  const survivorCueId = normalizeRequiredString(input.survivorCueId, 'survivorCueId');
-  if (!upserts.some((cue) => cue.meetingId === meetingId &&
-      cue.sessionId === sessionId && cue.cueId === survivorCueId)) {
-    throw conflict('local_unassigned_cue_survivor_missing');
-  }
-  return { key: unassignedCueKey(meetingId, sessionId, cueId),
-    survivorKey: unassignedCueKey(meetingId, sessionId, survivorCueId), revision };
-}
-
-function assertUnassignedRemoval(existing, removal) {
-  if (!existing) throw conflict('local_unassigned_cue_missing');
-  if (existing.revision !== removal.revision) throw conflict('local_unassigned_cue_stale_revision');
 }
 
 function sameCanonicalValue(left, right) {
@@ -1543,31 +1737,34 @@ function sameCanonicalValue(left, right) {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
-function mergeLocalCheckpoint(existing, incoming, verifiedLegacyCueIds = new Set()) {
-  const payload = incoming.checkpoint;
-  if (typeof payload.idempotencyKey !== 'string' || !payload.idempotencyKey) {
-    if (existing) throw checkpointConflict('legacy checkpoint update has no operation key');
-    return incoming;
-  }
-  const operation = checkCheckpointOperation(existing?.checkpoint, payload);
-  if (operation.duplicate) return existing;
-  const delta = {
-    ...payload,
-    durableChunks: Array.isArray(payload.durableChunks) ? payload.durableChunks : [],
-    finalCues: Array.isArray(payload.finalCues) ? payload.finalCues : []
-  };
-  const merged = mergeCheckpoint({
-    existing: existing?.checkpoint,
-    incoming: delta,
-    meetingId: incoming.meetingId,
-    segmentId: incoming.segmentId,
-    updatedAt: incoming.updatedAt,
-    verifiedLegacyCueIds
-  });
-  return projectLocalCheckpoint({
-    ...incoming,
-    checkpoint: recordCheckpointOperation(existing?.checkpoint, payload, merged, operation.canonical)
-  });
+function mergeCursorCheckpoint(existing, incoming) {
+ const payload = incoming.checkpoint;
+ if (payload.finalCues?.length || payload.cueCheckpoint || payload.refinedSubtitleCues?.length) {
+  throw conflict('local_checkpoint_cue_content_forbidden');
+ }
+ const cursorOnly = projectLocalCheckpoint({
+  ...incoming,
+  checkpoint: { ...payload, finalCues: [], cueCheckpoint: null, refinedSubtitleCues: [] }
+ });
+ if (typeof payload.idempotencyKey !== 'string' || !payload.idempotencyKey) {
+  if (existing) throw checkpointConflict('legacy checkpoint update has no operation key');
+  return cursorOnly;
+ }
+ const operation = checkCheckpointOperation(existing?.checkpoint, payload);
+ const merged = operation.duplicate ? existing.checkpoint : mergeCheckpoint({
+  existing: existing?.checkpoint,
+  incoming: { ...cursorOnly.checkpoint,
+   durableChunks: Array.isArray(payload.durableChunks) ? payload.durableChunks : [] },
+  meetingId: incoming.meetingId,
+  segmentId: incoming.segmentId,
+  updatedAt: incoming.updatedAt,
+  verifiedLegacyCueIds: new Set()
+ });
+ const clean = { ...merged, finalCues: [], cueCheckpoint: null, refinedSubtitleCues: [] };
+ if (existing?.checkpoint?.cueCursor) clean.cueCursor = existing.checkpoint.cueCursor;
+ return projectLocalCheckpoint({ ...incoming,
+  checkpoint: operation.duplicate ? clean
+   : recordCheckpointOperation(existing?.checkpoint, payload, clean, operation.canonical) });
 }
 
 function projectLocalCheckpoint(value = {}) {

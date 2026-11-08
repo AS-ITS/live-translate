@@ -94,108 +94,6 @@ test('recording and operation persistence project secrets from writes and reads'
   assert.equal(persistedOperation.result.segmentId, 'segment-2');
 });
 
-test('local cues and checkpoints survive updates without persisting credentials', async () => {
-  const store = createInMemoryLocalMeetingManifestStore();
-  await store.saveCue({
-    meetingId: 'meeting-1',
-    sessionId: 'session-1',
-    segmentId: 'segment-1',
-    cue: {
-      cueId: 'cue-1', sequence: 1, sourceText: 'hello', translatedText: '哈囉',
-      refinement: { status: 'pending', accessToken: 'must-not-persist' },
-      apiKey: 'must-not-persist'
-    },
-    producedAt: 100
-  });
-  await store.saveCue({
-    meetingId: 'meeting-1',
-    sessionId: 'session-1',
-    segmentId: 'segment-1',
-    cue: {
-      cueId: 'cue-1', sequence: 1, sourceText: 'hello', translatedText: '您好',
-      refinement: { status: 'completed', jwt: 'must-not-persist' }
-    },
-    producedAt: 200
-  });
-  await store.saveCheckpoint({
-    meetingId: 'meeting-1',
-    segmentId: 'segment-1',
-    checkpoint: {
-      durableChunks: [{ idempotencyKey: 'chunk-1', text: 'hello' }],
-      cueCheckpoint: { nextSequence: 2, ephemeralToken: 'must-not-persist' },
-      authorization: 'must-not-persist'
-    }
-  });
-
-  const [cue] = await store.listCues('meeting-1', { segmentId: 'segment-1' });
-  const checkpoint = await store.getCheckpoint('meeting-1', 'segment-1');
-  assert.equal(cue.cue.translatedText, '您好');
-  assert.equal(cue.cue.apiKey, undefined);
-  assert.equal(cue.cue.refinement.jwt, undefined);
-  assert.equal(checkpoint.checkpoint.authorization, undefined);
-  assert.equal(checkpoint.checkpoint.cueCheckpoint.ephemeralToken, undefined);
-  assert.equal(checkpoint.checkpoint.durableChunks[0].text, 'hello');
-});
-
-test('local cue identity cannot move between sessions or sequences', async () => {
-  const store = createInMemoryLocalMeetingManifestStore();
-  const input = {
-    meetingId: 'meeting-1', sessionId: 'session-1', segmentId: 'segment-1',
-    cue: { cueId: 'cue-1', sequence: 1, sourceText: 'hello' }
-  };
-  await store.saveCue(input);
-  await assert.rejects(
-    store.saveCue({ ...input, sessionId: 'session-2' }),
-    (error) => error.code === 'local_cue_identity_conflict'
-  );
-});
-
-test('local Cue revisions preserve order and cannot move to a rollover Segment', async () => {
-  const store = createInMemoryLocalMeetingManifestStore();
-  const base = { meetingId: 'meeting-1', sessionId: 'session-1', segmentId: 'segment-1' };
-  await store.saveCue({ ...base, cue: { cueId: 'cue-1', sequence: 1, revision: 1,
-    sourceText: 'hello', translatedText: '你好', status: 'final' } });
-  await store.saveCue({ ...base, cue: { cueId: 'cue-1', sequence: 1, revision: 2,
-    sourceText: 'hello', translatedText: '您好', status: 'final' } });
-  await store.saveCue({ ...base, cue: { cueId: 'cue-2', sequence: 2, revision: 1,
-    sourceText: 'world', translatedText: '世界', status: 'final' } });
-  assert.deepEqual((await store.listCues('meeting-1')).map((row) =>
-    [row.segmentId, row.sequence, row.cue.revision, row.cue.translatedText]),
-  [['segment-1', 1, 2, '您好'], ['segment-1', 2, 1, '世界']]);
-  await assert.rejects(store.saveCue({ ...base, segmentId: 'segment-2',
-    cue: { cueId: 'cue-1', sequence: 1, revision: 3, status: 'final' } }),
-  { code: 'local_cue_segment_conflict' });
-  await assert.rejects(store.saveCue({ ...base, cue: { cueId: 'cue-1', sequence: 1,
-    revision: 1, status: 'final' } }), { code: 'local_cue_stale_revision' });
-});
-
-test('late unversioned Cue cannot overwrite newer source and translation versions', async () => {
-  const store = createInMemoryLocalMeetingManifestStore();
-  const base = { meetingId: 'meeting-1', sessionId: 'session-1', segmentId: 'segment-1' };
-  await store.saveCue({ ...base, cue: { cueId: 'cue-1', sequence: 1,
-    sourceVersion: 2, translationVersion: 2, sourceText: 'hello', translatedText: '您好' } });
-  await assert.rejects(store.saveCue({ ...base, cue: { cueId: 'cue-1', sequence: 1,
-    sourceVersion: 1, translationVersion: 2, sourceText: 'hello', translatedText: '你好' } }),
-  { code: 'local_cue_stale_revision' });
-  assert.equal((await store.listCues('meeting-1'))[0].cue.translatedText, '您好');
-});
-
-test('checkpoint confirms only Cue progress committed to local storage', async () => {
-  const store = createInMemoryLocalMeetingManifestStore();
-  const cue = { cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1',
-    sequence: 1, revision: 1, startTimeMs: 0, endTimeMs: 100,
-    sourceLanguageCode: 'en', targetLanguageCode: 'zh-Hant',
-    sourceText: 'hello', translatedText: '你好', status: 'final' };
-  const checkpoint = { meetingId: 'meeting-1', segmentId: 'segment-1',
-    checkpoint: { idempotencyKey: 'checkpoint-1', durableChunks: [], finalCues: [cue] } };
-  await assert.rejects(store.saveCheckpoint(checkpoint), { code: 'local_checkpoint_cue_not_durable' });
-  assert.equal(await store.getCheckpoint('meeting-1', 'segment-1'), null);
-  await store.saveCue({ meetingId: 'meeting-1', segmentId: 'segment-1',
-    sessionId: 'session-1', cue });
-  await store.saveCheckpoint(checkpoint);
-  assert.equal((await store.getCheckpoint('meeting-1', 'segment-1')).checkpoint.finalCues[0].cueId, 'cue-1');
-});
-
 test('local Transcript updates retain sequence and original Segment through reload snapshots', async () => {
   const store = createInMemoryLocalMeetingManifestStore();
   const base = { meetingId: 'meeting-1', sessionId: 'session-1' };
@@ -212,15 +110,19 @@ test('local Transcript updates retain sequence and original Segment through relo
     text: 'late old cue', segmentId: 'segment-2' } }), { code: 'local_transcript_identity_conflict' });
 });
 
-test('meeting deletion removes local content and rejects late writes', async () => {
+test('meeting deletion removes B2 Cue content and rejects late writes', async () => {
   const store = createInMemoryLocalMeetingManifestStore();
-  const cue = { meetingId: 'meeting-1', segmentId: 'segment-1', sessionId: 'session-1',
-    cue: { cueId: 'cue-1', sequence: 1, revision: 1, status: 'final' } };
-  await store.saveCue(cue);
+  const input = { meetingId: 'meeting-1', segmentId: 'segment-1', eventKey: 'cue-1',
+    side: 'initial', cue: { cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1',
+      sequence: 1, startTimeMs: 0, endTimeMs: 100, status: 'final',
+      sourceText: 'hello', translatedText: 'world', sourceLanguageCode: 'en',
+      targetLanguageCode: 'fr', sourceStatus: 'finalized', translationStatus: 'finalized' } };
+  assert.equal((await store.commitCueMutation(input)).status, 'committed');
   await store.clearMeetingContent('meeting-1');
   assert.deepEqual(await store.listCues('meeting-1'), []);
-  await assert.rejects(store.saveCue(cue), { code: 'meeting_content_expired' });
-  await assert.rejects(store.saveCheckpoint({ meetingId: 'meeting-1', segmentId: 'segment-1',
+  await assert.rejects(store.commitCueMutation({ ...input, eventKey: 'late' }),
+    { code: 'meeting_content_expired' });
+  await assert.rejects(store.saveCheckpointCursor({ meetingId: 'meeting-1', segmentId: 'segment-1',
     checkpoint: { idempotencyKey: 'late', durableChunks: [], finalCues: [] } }),
   { code: 'meeting_content_expired' });
 });
@@ -323,45 +225,6 @@ test('browser IndexedDB hydration projects and cleans credential-shaped pollutio
   assert.equal(result.hydrated.ephemeralToken, undefined);
   assert.equal(result.raw.geminiApiKey, undefined);
   assert.equal(result.raw.ephemeralToken, undefined);
-});
-
-test('browser IndexedDB restores local cues and checkpoints after reload', async (t) => {
-  const browser = await chromium.launch({ headless: true });
-  t.after(() => browser.close());
-  const page = await browser.newPage();
-  await page.route('https://local-state-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
-  await page.goto('https://local-state-reload.test/');
-  const source = await bundledLocalStorageSource();
-  const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-  const dbName = `local-state-${Date.now()}`;
-
-  await page.evaluate(async ({ moduleUrl, dbName }) => {
-    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
-    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
-    await store.saveCue({
-      meetingId: 'meeting-browser', sessionId: 'session-1', segmentId: 'segment-1',
-      cue: { cueId: 'cue-1', sequence: 1, sourceText: 'hello', secret: 'drop-me' }
-    });
-    await store.saveCheckpoint({
-      meetingId: 'meeting-browser', segmentId: 'segment-1',
-      checkpoint: { cueCheckpoint: { nextSequence: 2 }, accessToken: 'drop-me' }
-    });
-  }, { moduleUrl, dbName });
-
-  await page.reload();
-  const restored = await page.evaluate(async ({ moduleUrl, dbName }) => {
-    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
-    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
-    return {
-      cues: await store.listCues('meeting-browser', { segmentId: 'segment-1' }),
-      checkpoint: await store.getCheckpoint('meeting-browser', 'segment-1')
-    };
-  }, { moduleUrl, dbName });
-
-  assert.equal(restored.cues[0].cue.sourceText, 'hello');
-  assert.equal(restored.cues[0].cue.secret, undefined);
-  assert.equal(restored.checkpoint.checkpoint.cueCheckpoint.nextSequence, 2);
-  assert.equal(restored.checkpoint.checkpoint.accessToken, undefined);
 });
 
 test('browser IndexedDB retains translated audio manifest across reload and removes it at retention cleanup', async (t) => {

@@ -65,6 +65,30 @@ export function createSupabaseMeetingRepository(options = {}) {
       const rows = await client.request('meetings', { method: 'PATCH', query: `?select=${MEETING_METADATA_COLUMNS}&${eq('id', entity.id)}&${eq('owner_user_id', owner())}`, body: meetingRow(entity, owner()) });
       return rows[0] ? meetingFromRow(rows[0]) : null;
     },
+    async updateMeetingSettings(input) {
+      const entity = new Meeting(input);
+      const rows = await client.request('meetings', {
+        method: 'PATCH',
+        query: `?select=${MEETING_METADATA_COLUMNS}&${eq('id', entity.id)}&${eq('owner_user_id', owner())}&status=neq.completed`,
+        body: {
+          name: entity.name,
+          source_language_code: entity.sourceLanguageCode,
+          target_language_code: entity.targetLanguageCode,
+          updated_at: toSupabaseTimestamp(entity.updatedAt),
+          settings: meetingRow(entity, owner()).settings
+        }
+      });
+      return rows[0] ? meetingFromRow(rows[0]) : null;
+    },
+    async completeLocalMeeting(meetingId) {
+      if (!privileged) throw capabilityUnavailable();
+      const result = await privileged.rpc('complete_local_only_meeting', {
+        p_owner_user_id: owner(),
+        p_meeting_id: meetingId
+      });
+      const row = Array.isArray(result) ? result[0] : result;
+      return row ? meetingFromRow(row) : null;
+    },
     async deleteMeeting(id) {
       const existing = await this.getMeeting(id);
       if (!existing) return null;
@@ -236,6 +260,12 @@ export function createSupabaseMeetingRepository(options = {}) {
     }
   };
   const exposed = Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method].bind(repository)]));
+  Object.defineProperty(exposed, 'updateMeetingSettings', {
+    value: repository.updateMeetingSettings.bind(repository), enumerable: false
+  });
+  Object.defineProperty(exposed, 'completeLocalMeeting', {
+    value: repository.completeLocalMeeting.bind(repository), enumerable: false
+  });
   Object.defineProperty(exposed, 'createMeetingWithInitialSegment', {
     value: repository.createMeetingWithInitialSegment.bind(repository),
     enumerable: false

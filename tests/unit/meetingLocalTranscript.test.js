@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  mergeMeetingDetailWithLocalCues,
-  persistFinalMeetingCues
+  mergeMeetingDetailWithLocalCues
 } from '../../src/lib/meetingLocalTranscript.js';
 import { exportCuesToTxt } from '../../src/lib/subtitleCueExport.js';
 
@@ -23,7 +22,6 @@ const cue = (overrides = {}) => ({
   finalizedReason: 'stop',
   ...overrides
 });
-
 const localRecord = (value, overrides = {}) => ({
   meetingId: 'meeting-1',
   sessionId: value.sessionId,
@@ -34,6 +32,18 @@ const localRecord = (value, overrides = {}) => ({
   producedAt: value.finalizedAt ?? 1_000,
   updatedAt: 1_000,
   ...overrides
+});
+
+test('B2 detail uses only committed Local Cues and does not fall back to cloud content', () => {
+  const stale = cue({ sourceText: 'stale cloud', revision: 1 });
+  const local = cue({ sourceText: 'committed local', revision: 2 });
+  const detail = { ...emptyDetail(), cues: [stale] };
+  const recovered = mergeMeetingDetailWithLocalCues(detail, [localRecord(local)], { authoritative: true });
+  assert.deepEqual(recovered.cues, [local]);
+  assert.deepEqual(recovered.readingContent.sourceTranscript.paragraphs, ['committed local']);
+  const empty = mergeMeetingDetailWithLocalCues(detail, [], { authoritative: true });
+  assert.deepEqual(empty.cues, []);
+  assert.deepEqual(empty.readingContent.sourceTranscript.paragraphs, []);
 });
 
 const emptyDetail = () => ({
@@ -124,42 +134,4 @@ test('late text updates the same cue instead of duplicating it', () => {
   assert.equal(detail.cues.length, 1);
   assert.equal(detail.cues[0].sourceText, '第一句原文');
   assert.equal(detail.cues[0].translatedText, 'Late translation');
-});
-
-test('stop persistence waits for durable saves and keeps cues retryable after failure', async () => {
-  const stored = new Map();
-  let releaseFirstSave;
-  let shouldFail = false;
-  const persistence = {
-    async saveCue(record) {
-      if (shouldFail) throw Object.assign(new Error('IndexedDB unavailable'), { code: 'local_save_failed' });
-      if (!releaseFirstSave) await new Promise((resolve) => { releaseFirstSave = resolve; });
-      stored.set(`${record.segmentId}:${record.cue.cueId}`, record);
-      return record;
-    }
-  };
-  const cues = [cue(), cue({ cueId: 'cue-2', sequence: 2, startTimeMs: 1_000, endTimeMs: 2_000 })];
-  const pending = persistFinalMeetingCues({ persistence, meetingId: 'meeting-1', cues });
-  let completed = false;
-  void pending.then(() => { completed = true; });
-
-  await Promise.resolve();
-  assert.equal(completed, false);
-  releaseFirstSave();
-  await pending;
-  assert.equal(stored.size, 2);
-
-  shouldFail = true;
-  await assert.rejects(
-    persistFinalMeetingCues({ persistence, meetingId: 'meeting-1', cues }),
-    (error) => error.code === 'local_save_failed'
-  );
-  assert.equal(cues.length, 2);
-  assert.equal(stored.size, 2);
-
-  shouldFail = false;
-  await persistFinalMeetingCues({ persistence, meetingId: 'meeting-1', cues });
-  await persistFinalMeetingCues({ persistence, meetingId: 'meeting-1', cues });
-  assert.equal(stored.size, 2);
-  assert.equal(stored.get('segment-1:cue-2').cue.status, 'final');
 });

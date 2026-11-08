@@ -66,18 +66,14 @@ import { createInMemoryDomainEventBus } from '../src/infrastructure/inMemoryDoma
 import { createTranslationRepositoryAdapter } from '../src/infrastructure/translationRepositoryAdapter.js';
 import { createMemorySessionRepository } from '../src/lib/sessionRepository.js';
 import { createSessionReadRepository } from '../src/repositories/sessionReadRepository.js';
-import { createSubtitleCueRepository } from '../src/repositories/subtitleCueRepository.js';
 import { createSupabaseMeetingRepository } from '../src/infrastructure/supabaseMeetingRepository.js';
 import { createSupabaseMeetingDeletionRepository } from '../src/infrastructure/supabaseMeetingDeletionRepository.js';
 import { createSupabaseSessionRepository } from '../src/infrastructure/supabaseSessionRepository.js';
 import { createSupabaseMeetingAudioService } from '../src/infrastructure/supabaseMeetingAudioService.js';
 import { createSupabaseMeetingShareService } from '../src/infrastructure/supabaseMeetingShareService.js';
-import { createSupabaseMeetingCueService } from '../src/infrastructure/supabaseMeetingCueService.js';
 import { createSupabaseMeetingEventRepository } from '../src/infrastructure/supabaseMeetingEventRepository.js';
 import { createSupabaseGlossary } from '../src/infrastructure/supabaseGlossary.js';
 import { createSupabaseRecorderLeaseService } from '../src/infrastructure/supabaseRecorderLeaseService.js';
-import { createSupabaseMeetingLifecycleService } from '../src/infrastructure/supabaseMeetingLifecycleService.js';
-import { createSupabaseLegacyResumeService } from '../src/infrastructure/supabaseLegacyResumeService.js';
 import { createSupabaseDurableTranslationExecutionQueueRepository } from '../src/infrastructure/supabaseDurableTranslationExecutionQueueRepository.js';
 import { createSupabaseDeadLetterQueueRepository } from '../src/infrastructure/supabaseDeadLetterQueueRepository.js';
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
@@ -173,7 +169,6 @@ export function createApplicationDependencies(options = {}) {
     sessionAudioArtifactFileSystem = fileSystem,
     sessionShareService,
     recorderLeaseService,
-    meetingLifecycleService,
     sessionApplicationService,
     sessionApplicationServiceFactory = createSessionApplicationService,
     meetingRepository,
@@ -186,7 +181,6 @@ export function createApplicationDependencies(options = {}) {
     ...sessionReadOptions
   } = options;
   const meetingAudioService = options.meetingAudioService;
-  const meetingCueService = options.meetingCueService;
   const meetingEventRepository = options.meetingEventRepository;
   const viewerRealtimeTokenService = options.viewerRealtimeTokenService;
   const resolvedTranslationExecutionMetrics = translationExecutionMetrics ?? createTranslationExecutionMetrics();
@@ -396,13 +390,10 @@ export function createApplicationDependencies(options = {}) {
       meetingDeletionService,
       sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
       ...(meetingAudioService ? { meetingAudioService } : {}),
-      ...(meetingCueService ? { meetingCueService } : {}),
-      ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
+        ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
       ...(exportArtifactService ? { exportArtifactService } : {}),
       ...(sessionShareService !== undefined ? { sessionShareService } : {}),
       recorderLeaseService,
-      ...(meetingLifecycleService ? { meetingLifecycleService } : {}),
-      ...(options.legacyResumeService ? { legacyResumeService: options.legacyResumeService } : {}),
       ...(resolvedSessionApplicationService !== undefined
         ? { sessionApplicationService: resolvedSessionApplicationService }
         : {}),
@@ -434,13 +425,10 @@ export function createApplicationDependencies(options = {}) {
     meetingReadController,
     sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
     ...(meetingAudioService ? { meetingAudioService } : {}),
-    ...(meetingCueService ? { meetingCueService } : {}),
     ...(meetingEventRepository ? { meetingEventRepository } : {}),
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
     ...(exportArtifactService ? { exportArtifactService } : {}),
     recorderLeaseService,
-    ...(meetingLifecycleService ? { meetingLifecycleService } : {}),
-    ...(options.legacyResumeService ? { legacyResumeService: options.legacyResumeService } : {}),
     meetingRepository: resolvedMeetingRepository,
     meetingCheckpointService,
     meetingDeletionService,
@@ -568,11 +556,6 @@ export function createProductionApplicationDependencies(options = {}) {
     : cloudDataMode
       ? createSupabaseMeetingDeletionRepository({ env })
       : undefined;
-  const meetingCueService = Object.prototype.hasOwnProperty.call(applicationOptions, 'meetingCueService')
-    ? applicationOptions.meetingCueService
-    : cloudDataMode
-      ? createSupabaseMeetingCueService({ env })
-      : undefined;
   const meetingEventRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'meetingEventRepository')
     ? applicationOptions.meetingEventRepository
     : cloudDataMode
@@ -588,16 +571,6 @@ export function createProductionApplicationDependencies(options = {}) {
     : cloudDataMode
       ? createSupabaseRecorderLeaseService({ env })
       : createFileRecorderLeaseService({ filePath: recorderLeasesFilePathFor(env), fileSystem: sessionShareServiceFileSystem });
-  const meetingLifecycleService = Object.prototype.hasOwnProperty.call(applicationOptions, 'meetingLifecycleService')
-    ? applicationOptions.meetingLifecycleService
-    : cloudDataMode
-      ? createSupabaseMeetingLifecycleService({ env })
-      : undefined;
-  const legacyResumeService = Object.prototype.hasOwnProperty.call(applicationOptions, 'legacyResumeService')
-    ? applicationOptions.legacyResumeService
-    : cloudDataMode
-      ? createSupabaseLegacyResumeService({ env })
-      : undefined;
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = canCreateProductionProviderComposition
     ? geminiEnvironmentFactory({ env })
@@ -714,12 +687,9 @@ export function createProductionApplicationDependencies(options = {}) {
     sessionShareService,
     ...(meetingAudioService ? { meetingAudioService } : {}),
     ...(meetingDeletionRepository ? { meetingDeletionRepository } : {}),
-    ...(meetingCueService ? { meetingCueService } : {}),
     ...(meetingEventRepository ? { meetingEventRepository } : {}),
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
     recorderLeaseService,
-    ...(meetingLifecycleService ? { meetingLifecycleService } : {}),
-    ...(legacyResumeService ? { legacyResumeService } : {}),
     ...(activeTranslationExecutionQueue !== undefined
       ? { translationExecutionQueue: activeTranslationExecutionQueue }
       : {}),
@@ -1008,7 +978,6 @@ export function createTranslationCommandDependencies({
           translationRepository,
           translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
           retranslationSessionMaterializer,
-          ...(meetingRepository !== undefined ? { subtitleCueRepository: createSubtitleCueRepository({ sessionRepository, meetingRepository }) } : {})
         });
   const resolvedTranslationExecutionWorker =
     translationExecutionWorker ??
@@ -1178,49 +1147,9 @@ function createResolverBackedTranslationExecutionProvider(translationExecutionPr
   });
 }
 
-function createWorkerTranslationExecutionRunner({ translationExecutionRunner, translationRepository, translationExecutionProviderResolver, retranslationSessionMaterializer, subtitleCueRepository }) {
+function createWorkerTranslationExecutionRunner({ translationExecutionRunner, translationRepository, translationExecutionProviderResolver, retranslationSessionMaterializer }) {
   const onTranslationOutputCreated = async ({ output }) => {
     if (retranslationSessionMaterializer !== undefined) await retranslationSessionMaterializer.materialize({ output });
-    if (subtitleCueRepository !== undefined && output?.operation === 'transcript_polishing' && output.sessionId) {
-      const snapshot = output.sourceTranscriptMetadata?.sourceTranscriptSnapshot || {};
-      const targets = output.refinementTargets || snapshot.refinementTargets || [];
-      const targetByCueId = new Map(targets.map((target) => [target.targetCueId, target]));
-      const results = [
-        ...(Array.isArray(output.polishedItems) ? output.polishedItems.map((item) => ({ ...item, targetCueId: item.targetCueId || targetByCueId.get(item.cueId)?.targetCueId, fields: item.fields || targetByCueId.get(item.targetCueId || item.cueId)?.fields || ['translation'] })) : []),
-        ...(Array.isArray(output.refinedItems) ? output.refinedItems.map((item) => ({ ...item, targetCueId: item.targetCueId || targetByCueId.get(item.cueId)?.targetCueId, fields: item.fields || targetByCueId.get(item.targetCueId || item.cueId)?.fields || ['source', 'translation'] })) : [])
-      ].filter((item) => item.targetCueId && targetByCueId.has(item.targetCueId)).map((item) => ({
-        ...item,
-        sessionId: targetByCueId.get(item.targetCueId)?.sessionId || output.sessionId,
-        segmentId: targetByCueId.get(item.targetCueId)?.segmentId || snapshot.segmentId || snapshot.items?.find((candidate) => candidate.cueId === item.targetCueId)?.segmentId,
-        refinementJobId: targetByCueId.get(item.targetCueId)?.refinementJobId || output.executionId,
-        requestId: targetByCueId.get(item.targetCueId)?.requestId || output.requestId,
-        connectionEpoch: targetByCueId.get(item.targetCueId)?.connectionEpoch ?? null,
-        version: item.version ?? targetByCueId.get(item.targetCueId)?.version,
-        inputHash: item.inputHash ?? targetByCueId.get(item.targetCueId)?.inputHash
-      }));
-      if (results.length > 0) {
-        await subtitleCueRepository.applyRefinementResults({
-          sessionId: output.sessionId,
-          refinementJobId: output.executionId,
-          requestId: output.requestId,
-          connectionEpoch: targets[0]?.connectionEpoch ?? null,
-          results,
-          completedAt: output.completedAt
-        });
-      }
-    }
-    if (subtitleCueRepository !== undefined && output?.operation === 'transcript_polishing' && Array.isArray(output.refinedCues)) {
-      const snapshot = output.sourceTranscriptMetadata?.sourceTranscriptSnapshot || {};
-      if (output.sessionId) {
-        await subtitleCueRepository.saveRefinedSubtitleCues({
-          sessionId: output.sessionId,
-          sourceCueIds: snapshot.items?.map((item) => item.cueId) || [],
-          refinedCues: output.refinedCues,
-          inputHash: output.inputHash,
-          completedAt: output.completedAt
-        });
-      }
-    }
   };
 
   return Object.freeze({

@@ -9,8 +9,9 @@ import { fileURLToPath } from 'node:url';
 
 const project = resolve(fileURLToPath(new URL('../', import.meta.url)));
 const args = process.argv.slice(2);
-if (args.length && (args.length !== 1 || args[0] !== '--plan')) {
-  throw new Error('Only --plan is supported.');
+const finalGate = args.length === 1 && args[0] === '--final-gate';
+if (args.length && !finalGate && (args.length !== 1 || args[0] !== '--plan')) {
+  throw new Error('Only --plan or --final-gate is supported.');
 }
 
 function loopbackUrl(value, protocol) {
@@ -126,7 +127,8 @@ function verdict(evidence, testExitCode, localUrl, auditNamespace) {
       && evidence.localAfterReload?.opfs?.pcmBytes > 0 && evidence.localAfterReload?.opfs?.chunkBytes > 0
       ? 'PASS' : 'UNVERIFIED',
     localOnlyDb: evidence.result === 'LOCAL_CORE_E2E_PASS'
-      && evidence.writeEvents?.filter((row) => row.relation_name !== 'public.observability_metric_buckets').length === 0
+    && evidence.cloudZeroWrite?.status === 'PASS'
+    && evidence.writeEvents?.filter((row) => !['public.meetings', 'public.observability_metric_buckets'].includes(row.relation_name)).length === 0
       && evidence.recordingHttpWrites?.length === 0 ? 'PASS' : 'UNVERIFIED'
   };
   return { LOCAL_CORE_E2E_VERDICT: testExitCode === 0 && Object.values(checks).every((value) => value === 'PASS')
@@ -176,22 +178,31 @@ async function main() {
     ISSUE41_SIGNALING_REQUEST_LOG: join(runDir, 'signaling-requests.ndjson'),
     ISSUE41_ZERO_WRITE_AUDIT: 'true', ISSUE41_SHORT_VALIDATION: 'true',
     ISSUE41_CORE_ACCEPTANCE: 'true', ISSUE41_AUDIT_NAMESPACE: auditNamespace,
-    ISSUE41_EVIDENCE_FILE: join(runDir, 'evidence.json')
+    ISSUE41_EVIDENCE_FILE: join(runDir, 'evidence.json'),
+    ISSUE41_FINAL_GATE: finalGate ? 'true' : 'false'
   });
   console.log(`Isolated identity verified: ${id}; Auth issuer ${local.API_URL}/auth/v1.`);
-  console.log(`Starting short Chromium acceptance; evidence: ${runDir}`);
+  console.log(`Starting ${finalGate ? 'B2-L final gate' : 'short Chromium acceptance'}; evidence: ${runDir}`);
   const child = spawn(playwright, [
-    'test', 'tests/e2e/issue41RealtimeSoak.spec.js', '--config=tests/e2e/playwright.config.js',
+    'test', ...(finalGate
+      ? ['tests/e2e/issue41RealEndRecovery.spec.js', 'tests/e2e/issue41SignalingAuth.spec.js',
+        '--grep', 'B2-L real API End|issue41 isolated signaling']
+      : ['tests/e2e/issue41RealtimeSoak.spec.js']), '--config=tests/e2e/playwright.config.js',
     '--project=chromium', '--reporter=line', '--retries=0', '--trace=off',
     '--output', join(runDir, 'artifacts')
   ], { cwd: project, env, stdio: 'inherit' });
   let timedOut = false;
-  const timeout = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); }, 8 * 60_000);
+  const timeout = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); }, finalGate ? 2 * 60_000 : 8 * 60_000);
   const exitCode = await new Promise((done) => {
     child.once('error', () => done(127));
     child.once('exit', (code) => done(code ?? 1));
   });
   clearTimeout(timeout);
+  if (finalGate) {
+    console.log(`B2_L_FINAL_CHROMIUM: ${exitCode === 0 && !timedOut ? 'PASS' : 'FAIL'}; artifacts: ${runDir}`);
+    if (exitCode !== 0 || timedOut) process.exitCode = 1;
+    return;
+  }
   const evidence = existsSync(env.ISSUE41_EVIDENCE_FILE)
     ? JSON.parse(readFileSync(env.ISSUE41_EVIDENCE_FILE, 'utf8')) : {};
   const files = ['scripts/issue41-local-core-acceptance.mjs', 'scripts/issue41-webrtc-signaling-harness.mjs',

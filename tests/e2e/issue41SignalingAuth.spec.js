@@ -7,10 +7,11 @@ test('issue41 isolated signaling authorizes independent Host and Viewer through 
   test.setTimeout(90_000);
   const auth = localE2EAuthSession();
   expect(auth).toBeTruthy();
-  expect(process.env.ISSUE41_SIGNALING_URL).toBe('http://127.0.0.1:3001');
-  expect(process.env.ISSUE41_REDIS_URL).toBe('redis://127.0.0.1:16379');
-  const host = await browser.newContext({ baseURL: 'http://127.0.0.1:5174' });
-  const viewer = await browser.newContext({ baseURL: 'http://127.0.0.1:5174' });
+  expect(process.env.ISSUE41_SIGNALING_URL).toBe(`http://127.0.0.1:${process.env.ISSUE41_SIGNALING_PORT || 3001}`);
+  expect(process.env.ISSUE41_REDIS_URL).toBe(`redis://127.0.0.1:16379${process.env.ISSUE41_LOCAL_SMOKE === 'true' ? '/15' : ''}`);
+  const frontendUrl = `http://127.0.0.1:${process.env.ISSUE41_E2E_FRONTEND_PORT || 5174}`;
+  const host = await browser.newContext({ baseURL: frontendUrl });
+  const viewer = await browser.newContext({ baseURL: frontendUrl });
   const hostHeaders = { Authorization: `Bearer ${auth.token}` };
   const meetingId = randomUUID();
   try {
@@ -24,6 +25,9 @@ test('issue41 isolated signaling authorizes independent Host and Viewer through 
   expect(sessions.status()).toBe(200);
     const meeting = await created.json();
     const id = meeting.meeting.id;
+    const detail = await host.request.get(`/api/meetings/${id}`, { headers: hostHeaders });
+    expect(detail.status()).toBe(200);
+    expect((await detail.json()).meeting.id).toBe(id);
     const createShare = async (expiresAt) => {
       const response = await host.request.post(`/api/meetings/${id}/shares`, { headers: hostHeaders,
         data: { role: 'viewer', ...(expiresAt === undefined ? {} : { expiresAt }) } });
@@ -32,6 +36,77 @@ test('issue41 isolated signaling authorizes independent Host and Viewer through 
     };
     const share = await createShare();
     expect(share.share?.token).toBeTruthy();
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const serviceKey = process.env.SUPABASE_SECRET_KEY;
+    const anonKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    const otherEmail = `issue41-other-${randomUUID()}@example.com`;
+    const otherPassword = randomUUID() + randomUUID();
+    const otherCreated = await fetch(`${supabaseUrl}/auth/v1/admin/users`, {
+      method: 'POST',
+      headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: otherEmail, password: otherPassword, email_confirm: true })
+    });
+    expect(otherCreated.ok).toBe(true);
+    const otherUser = await otherCreated.json();
+    const otherLogin = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { apikey: anonKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: otherEmail, password: otherPassword })
+    });
+    expect(otherLogin.ok).toBe(true);
+    const otherToken = (await otherLogin.json()).access_token;
+    const otherHeaders = { Authorization: `Bearer ${otherToken}` };
+    expect((await host.request.get('/api/profile', { headers: otherHeaders })).status()).toBe(200);
+    expect((await host.request.get(`/api/meetings/${id}`, { headers: otherHeaders })).status()).toBe(403);
+    expect((await host.request.post(`/api/meetings/${id}/shares`, {
+      headers: otherHeaders, data: { role: 'viewer' }
+    })).status()).toBe(403);
+    const recordingBody = { meetingId: id, sessionId: randomUUID(), segmentId: randomUUID() };
+    const otherRecording = await host.request.post('/api/live-token', {
+      headers: { ...otherHeaders, 'x-host-local-recording': '1',
+        'x-meeting-session-id': recordingBody.sessionId, 'x-meeting-segment-id': recordingBody.segmentId },
+      data: recordingBody
+    });
+    expect(otherRecording.status()).toBe(403);
+    expect((await otherRecording.json()).error.code).toBe('recorder_forbidden');
+    const disabled = await fetch(`${supabaseUrl}/rest/v1/profiles?id=eq.${otherUser.id}`, {
+      method: 'PATCH',
+      headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`,
+        Prefer: 'return=representation', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'disabled' })
+    });
+    expect(disabled.status).toBe(200);
+    expect((await disabled.json())[0].status).toBe('disabled');
+    expect((await host.request.get('/api/profile', { headers: otherHeaders })).status()).toBe(403);
+    const pendingEmail = `issue41-pending-${randomUUID()}@example.com`;
+    const pendingPassword = randomUUID() + randomUUID();
+    const pendingCreated = await fetch(`${supabaseUrl}/auth/v1/admin/users`, {
+      method: 'POST',
+      headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: pendingEmail, password: pendingPassword, email_confirm: true })
+    });
+    expect(pendingCreated.ok).toBe(true);
+    const pendingUser = await pendingCreated.json();
+    const pendingStatus = await fetch(`${supabaseUrl}/rest/v1/profiles?id=eq.${pendingUser.id}`, {
+      method: 'PATCH',
+      headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`,
+        Prefer: 'return=representation', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'pending' })
+    });
+    expect(pendingStatus.status).toBe(200);
+    expect((await pendingStatus.json())[0].status).toBe('pending');
+    const pendingLogin = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { apikey: anonKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: pendingEmail, password: pendingPassword })
+    });
+    expect(pendingLogin.ok).toBe(true);
+    const pendingToken = (await pendingLogin.json()).access_token;
+    const pendingProfile = await host.request.get('/api/profile', {
+      headers: { Authorization: `Bearer ${pendingToken}` }
+    });
+    expect(pendingProfile.status()).toBe(200);
+    expect((await pendingProfile.json()).profile.status).toBe('active');
     const route = `/api/webrtc/${id}`;
     const device = await host.request.post(`${route}/join`, { headers: hostHeaders,
       data: { participantId: 'issue41-host-preflight', role: 'device' } });

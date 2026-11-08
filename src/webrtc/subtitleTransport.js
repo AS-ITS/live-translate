@@ -1112,11 +1112,12 @@ export function createWebRtcSubtitleTransport({
 
   function publishCue(cue) {
     if (!source || !cue?.cueId) return false;
+    if (cue.status === 'final' && (!Number.isSafeInteger(cue.revision) || cue.revision < 1)) return false;
     const previous = cueVersions.get(cue.cueId);
     const messageType = previous ? SUBTITLE_ENVELOPE_TYPES.cueUpdate : SUBTITLE_ENVELOPE_TYPES.cueAppend;
     try {
       const serialized = JSON.stringify(cue);
-      if (previous?.serialized === serialized) return false;
+      if (previous?.serialized === serialized || (previous && cue.revision <= previous.revision)) return false;
       recordLivePipelineTrace({
         stage: 'VIEWER_PUBLISH_STARTED',
         meetingId,
@@ -1126,8 +1127,7 @@ export function createWebRtcSubtitleTransport({
         connectionEpoch,
         dataChannelState: [...devicePeers.values()].find((context) => context.channel?.readyState === 'open')?.channel?.readyState,
       });
-      const revision = (previous?.revision || 0) + 1;
-      const normalized = { ...cue, meetingId, revision: Math.max(Number(cue.revision) || 0, revision) };
+      const normalized = { ...cue, meetingId };
       const envelope = previous ? source.update(normalized) : source.append(normalized);
       if (!envelope) return false;
       cueVersions.set(cue.cueId, { serialized, revision: normalized.revision });
@@ -1228,10 +1228,12 @@ export function createWebRtcSubtitleTransport({
       clearDevicePoll();
       clearReconnect();
       waitingForOnline = false;
-      if (revoke && role === 'device') {
+      if (role === 'device') {
         for (const context of devicePeers.values()) {
-          context.adapter?.send({ protocol: 'subtitle-webrtc/v1', type: SUBTITLE_ENVELOPE_TYPES.meetingStopped, meetingId });
+          context.adapter?.send({ protocol: 'subtitle-webrtc/v1',
+            type: revoke ? SUBTITLE_ENVELOPE_TYPES.meetingStopped : SUBTITLE_ENVELOPE_TYPES.recordingStopped, meetingId });
         }
+        if (devicePeers.size > 0) await new Promise((resolve) => setTimeout(resolve, 25));
       }
       cleanupAllPeers();
       joined = false;

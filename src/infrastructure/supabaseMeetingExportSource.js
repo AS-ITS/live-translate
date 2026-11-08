@@ -28,6 +28,12 @@ export function createSupabaseMeetingExportSource({ env = process.env, fetchImpl
       throw error;
     }
     if (isMeetingContentExpired(meetings[0])) throw meetingContentExpiredError();
+    if (Number(meetings[0].lifecycle_contract_version) >= 2) {
+      const error = new Error('Meeting content is available only on Host device.');
+      error.code = 'meeting_content_local_only';
+      error.status = 410;
+      throw error;
+    }
 
       const segmentRows = await client.request('meeting_segments', {
         query: `?select=*&${eq('meeting_id', meetingId)}&${eq('owner_user_id', ownerUserId)}&order=sequence.asc`

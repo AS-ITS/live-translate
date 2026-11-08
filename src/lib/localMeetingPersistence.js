@@ -122,6 +122,28 @@ export function createLocalMeetingPersistence({
       if (inputAudioError) throw inputAudioError;
       return recorder.finalize({ operationId });
     },
+    async savePendingCompletion({ meetingId, operationId } = {}) {
+      const recording = await manifestStore.getRecording(meetingId);
+      if (recording && recording.state !== 'stopped_local') throw new Error('Local recording must be sealed before Meeting End.');
+      const previous = await manifestStore.getRetention(meetingId);
+      const pendingCompletion = previous?.pendingCompletion || { operationId, sealedAt: new Date(now()).toISOString() };
+      await manifestStore.saveRetention({
+        meetingId,
+        pendingCompletion,
+        expiresAt: new Date(Date.parse(pendingCompletion.sealedAt) + 30 * 60 * 1000).toISOString()
+      });
+      return pendingCompletion;
+    },
+    async getPendingCompletion(meetingId) {
+      return (await manifestStore.getRetention(meetingId))?.pendingCompletion || null;
+    },
+    async clearPendingCompletion({ meetingId, meeting } = {}) {
+      await manifestStore.saveRetention({
+        meetingId,
+        pendingCompletion: null,
+        ...(meeting?.purgeAt || meeting?.expiresAt ? { expiresAt: meeting.purgeAt || meeting.expiresAt } : {})
+      });
+    },
     saveLifecycleIntent(input) {
       return manifestStore.saveLifecycleIntent(input);
     },
@@ -511,20 +533,34 @@ export function createLocalMeetingPersistence({
       return 'idle';
     },
 
-    async saveCue({ meetingId, segmentId, sessionId, cue, producedAt } = {}) {
-      await retention.assertReadable(meetingId);
-      return manifestStore.saveCue({ meetingId, segmentId, sessionId, cue, producedAt });
-    },
 
-    async saveUnassignedCue(input = {}) {
+    async commitCueMutation(input = {}) {
       await retention.assertReadable(input.meetingId);
-      return manifestStore.saveUnassignedCue(input);
+      return manifestStore.commitCueMutation(input);
     },
 
-    async reconcileUnassignedCues(input = {}) {
-      const meetingId = input.upserts?.[0]?.meetingId || input.removals?.[0]?.meetingId;
+    async listPendingCues(meetingId) {
+      await retention.check(meetingId);
       await retention.assertReadable(meetingId);
-      return manifestStore.reconcileUnassignedCues(input);
+      return manifestStore.listPendingCues(meetingId);
+    },
+
+    async inspectCueAuthority(meetingId) {
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
+      return manifestStore.inspectCueAuthority(meetingId);
+    },
+
+    async listCueConflicts(meetingId) {
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
+      return manifestStore.listCueConflicts(meetingId);
+    },
+
+    async upgradeLegacyCues(meetingId) {
+      await retention.check(meetingId);
+      await retention.assertReadable(meetingId);
+      return manifestStore.upgradeLegacyCues(meetingId);
     },
 
     async getUnassignedCue(meetingId, sessionId, cueId) {
@@ -572,10 +608,17 @@ export function createLocalMeetingPersistence({
 
     async updateCheckpoint(payload = {}) {
       await retention.assertReadable(payload.meetingId);
-      const saved = await manifestStore.saveCheckpoint({
+      const cueAuthority = await manifestStore.inspectCueAuthority(payload.meetingId);
+      if (cueAuthority === 'legacy_readonly') {
+        const error = new Error('Cue content is read only for this meeting.');
+        error.code = 'cue_legacy_readonly';
+        throw error;
+      }
+      const checkpointPayload = { ...payload, finalCues: [], cueCheckpoint: null, refinedSubtitleCues: [] };
+      const saved = await manifestStore.saveCheckpointCursor({
         meetingId: payload.meetingId,
         segmentId: payload.segmentId,
-        checkpoint: payload
+        checkpoint: checkpointPayload
       });
       return {
         meetingId: saved.meetingId,
@@ -618,6 +661,7 @@ export function createLocalMeetingPersistence({
   if (!ownerAccess) return api;
   const guardedMethods = new Set([
     'getLifecycleIntent', 'listPendingLifecycleIntents', 'getPendingContinueOperation',
+    'savePendingCompletion', 'getPendingCompletion', 'clearPendingCompletion',
     'getSegmentTransition', 'getLocalRecording', 'listPendingSegmentTransitions',
     'recoverSegmentTransitions', 'verifySegmentPcmOwnership', 'listLocalSegments',
     'start', 'continueLifecycle', 'pauseLifecycle', 'endLifecycle', 'restore',

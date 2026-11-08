@@ -96,6 +96,8 @@ function positiveSequence(value) {
 }
 
 function mergeCue(existing, incoming) {
+  if (Number.isSafeInteger(existing.revision) && existing.revision > 0
+    && (!Number.isSafeInteger(incoming.revision) || incoming.revision <= existing.revision)) return existing;
   const merged = { ...existing, ...incoming };
   const order = positiveSequence(existing.segmentSequence) ?? positiveSequence(incoming.segmentSequence);
   if (order !== null) merged.segmentSequence = order;

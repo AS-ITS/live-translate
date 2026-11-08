@@ -459,6 +459,37 @@ test('checkpoint queue keeps the newer refinement for the same cueId', async () 
   assert.equal(calls[0].finalCues[0].refinedTranslation, 'revised');
 });
 
+test('failed flush retries and accepts a newer corrected Cue ACK', async () => {
+  const previous = { cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1',
+    sequence: 1, revision: 7, startTimeMs: 0, endTimeMs: 100,
+    sourceLanguageCode: 'en', targetLanguageCode: 'zh-Hant', sourceText: 'old source',
+    translatedText: 'translation', sourceVersion: 3, translationVersion: 3,
+    status: 'final', finalizedReason: 'merged', audioTurnId: 'turn-1', providerEventSequence: 7,
+    sourceProvenance: { audioTurnId: 'turn-1', connectionEpoch: 1, providerEpoch: 1, eventSequence: 7 } };
+  const newer = { ...previous, revision: 15, sourceText: 'corrected source', sourceVersion: 6,
+    providerEventSequence: 15,
+    sourceProvenance: { audioTurnId: 'turn-1', connectionEpoch: 1, providerEpoch: 1, eventSequence: 15 } };
+  let calls = 0;
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => {
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error('temporary write failure');
+        error.status = 503;
+        throw error;
+      }
+      return committed({ ...payload, finalCues: [newer] });
+    },
+    onDiagnostic: () => {}, setTimeoutFn: () => 1, clearTimeoutFn: () => {}
+  });
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueueCues([previous]);
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls, 2);
+});
+
 test('checkpointChunksForTranscriptItems maps final transcript items only', () => {
   const chunks = checkpointChunksForTranscriptItems({
     meetingId: 'meeting-1',

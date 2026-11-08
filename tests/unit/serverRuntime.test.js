@@ -57,6 +57,12 @@ test('default server uses production dependencies when Gemini API key is configu
   );
   assert.strictEqual(
     selectDefaultApplicationDependenciesFactory({ env: {
+      NODE_ENV: 'test', GEMINI_API_KEY: '', SUPABASE_URL: 'http://127.0.0.1:55421', SUPABASE_SECRET_KEY: 'local-key'
+    } }),
+    createProductionApplicationDependencies
+  );
+  assert.strictEqual(
+    selectDefaultApplicationDependenciesFactory({ env: {
       LOCAL_SUPABASE_MODE: 'true', SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'remote-key'
     } }),
     createApplicationDependencies

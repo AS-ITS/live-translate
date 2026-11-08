@@ -1,12 +1,27 @@
 # Live Translate API and Events
 
+## Issue #41 B2-L Local-only recording authority
+
+`/api/meetings/:meetingId/recording/*` and `/api/meetings/:meetingId/heartbeat`
+return `410 meeting_content_local_only`. The Host owns recording Session, Segment,
+Cue, Checkpoint, audio, and recovery in IndexedDB/OPFS without a cloud recording
+Lease. `POST /api/live-token` retains authenticated Meeting `canRecord` permission
+and matching Host-local Session/Segment headers. `POST /api/meetings/:meetingId/complete`
+atomically sets `status=completed`, the first `ended_at`, `purge_at` 30 minutes later,
+and increments `lifecycle_version` once after local sealing. A draft Meeting uses
+`created_at` as `started_at` if it has not started. Repeated End preserves these
+values; settings updates cannot overwrite terminal fields. Viewer metadata exposes
+the new lifecycle version. Meeting settings, glossary, membership, sharing,
+and WebRTC signaling APIs remain available. Older recording routes below describe
+historical behavior and are no longer writable.
+
 ## Host Local-only Start/Stop token boundary
 
-The Host creates and persists recording Session and Segment identities in IndexedDB. `POST /api/live-token` accepts `x-host-local-recording: 1` with matching `x-meeting-session-id` and `x-meeting-segment-id` headers for this path. It validates the authenticated actor's Meeting `canRecord` permission and uses cloud Meeting language and glossary settings; it does not read or write a cloud recording Session, Segment, lease, or Checkpoint. The token endpoint retains its origin gate and rate limit. Host Start, Pause, Continue, Stop, and End persist recording state locally. Rollover, interrupted recovery, and Viewer metadata still need cutover validation.
+The Host creates and persists recording Session and Segment identities in IndexedDB. `POST /api/live-token` accepts `x-host-local-recording: 1` with matching `x-meeting-session-id` and `x-meeting-segment-id` headers for this path. It validates the authenticated actor's Meeting `canRecord` permission and uses cloud Meeting language and glossary settings; it does not read or write a cloud recording Session, Segment, lease, or Checkpoint. The token endpoint retains its origin gate and rate limit. Host Start, Pause, Continue, Stop, and End persist recording state locally. Rollover and interrupted recovery use local durable records; Viewer metadata supplies only Meeting state.
 
 ## Issue #41 Local-only Cutover contract (pending isolated acceptance)
 
-Meeting Cue, Checkpoint, transcript, translated output, audio upload, and Cloud Export content endpoints return `410 meeting_content_local_only`. Legacy shared Session content endpoints are closed. Meeting settings, glossary, sharing, lifecycle metadata, operation lookup/recovery, and Viewer WebRTC signaling remain available. Meeting detail and Segment list responses omit historical content; Host local IndexedDB/OPFS supplies transcript and audio exports after Reload. The isolated Cutover Migration also rejects direct table/RPC/Storage writes, while preserving existing historical rows for separate controlled cleanup. No Production Migration has run.
+Meeting Cue, Checkpoint, transcript, translated output, audio upload, and Cloud Export content endpoints return `410 meeting_content_local_only`. Legacy shared Session content endpoints are closed. Meeting settings, glossary, sharing, Meeting completion metadata and Viewer WebRTC signaling remain available. Meeting detail and Segment list responses omit historical content; Host local IndexedDB/OPFS supplies transcript and audio exports after Reload. The isolated Cutover Migration also rejects direct table/RPC/Storage writes, while preserving existing historical rows for separate controlled cleanup. No Production Migration has run.
 
 ## Current Meeting expiry policy (2026-10-07)
 
@@ -137,7 +152,10 @@ fail before `purge_at`; completion and failure at or after that deadline return
 
 `GET /api/shared-meetings/:token/metadata` and
 `GET /api/shared-meetings/code/:shortCode/metadata` use the existing Viewer
-share authorization and expiry checks. They return Meeting identity,
+share authorization and expiry checks. A valid Viewer token or short code is
+the credential; these GET routes do not require a login Bearer token. Invalid,
+revoked, expired, or non-Viewer shares do not authorize metadata. They return
+Meeting identity,
 configuration labels, lifecycle status/version, recording state, ordered
 Segment and Session identity, and share capability. Completed Meetings whose
 version-2 retention has expired return `410 meeting_content_expired`.
@@ -148,8 +166,10 @@ In non-cloud development/file mode, the file repository parses its complete
 local JSON store before projecting metadata; the response still excludes
 Checkpoint content. Cloud mode uses narrow Supabase Meeting and Segment selects.
 
-`GET /api/shared-meetings/:token` and
-`GET /api/shared-meetings/code/:shortCode` return the newest 100 finalized Cues
+For lifecycle v2 Meetings, `GET /api/shared-meetings/:token` and
+`GET /api/shared-meetings/code/:shortCode` return `410 meeting_content_local_only`;
+the Viewer uses `/metadata` and Host WebRTC DataChannel for live Cues.
+For legacy v1 Meetings, these detail routes return the newest 100 finalized Cues
 by default. The response includes `pagination.hasMore` and an opaque
 `pagination.nextCursor`; pass that value as `?before=<cursor>` to load the
 previous page. `limit` may be set from 1 through 100.
@@ -246,10 +266,7 @@ unit. Source and translation completion are independent.
 }
 ```
 
-`cueId`, `sessionId`, `segmentId`, `sequence`, time range, and language identity
-define immutable Cue identity. Source or translation may initially be empty;
-later versions update the same read-model row and never create a second Cue or
-alter its ordering.
+`cueId`, `sessionId`, `segmentId`, `sequence`, `startTimeMs`, and language identity define Cue identity. `endTimeMs` may extend for a proven same-turn late-final update. Source and translation versions may advance independently on the same `cueId`; a text correction requires newer provider-event evidence for that turn. Each accepted content change advances Cue revision. Local-only Final Cues and their Checkpoint cursor commit atomically in IndexedDB; the Local Cue Store is the reload authority. An equal revision with different content is a conflict.
 Consumers compute the effective translation as
 `refinedTranslation → initialTranslation → legacy translatedText`.
 

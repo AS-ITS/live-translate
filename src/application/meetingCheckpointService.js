@@ -156,10 +156,11 @@ export function createMeetingCheckpointService({
         throw codedError('meeting_settings_locked', 'Completed meeting settings cannot be changed.');
       }
       const now = clock();
-      const updated = await meetingRepository.updateMeeting(meeting.withSettings({
+      const updated = await (meetingRepository.updateMeetingSettings || meetingRepository.updateMeeting).call(meetingRepository, meeting.withSettings({
         ...settings,
         updatedAt: now
       }));
+      if (!updated) throw codedError('meeting_settings_locked', 'Completed meeting settings cannot be changed.');
       return { meeting: updated };
     },
 
@@ -185,6 +186,9 @@ export function createMeetingCheckpointService({
       if (meeting.status === 'completed') return { meeting };
       if (meeting.status === 'failed') {
         throw codedError('meeting_complete_not_allowed', 'Failed meetings cannot be completed.');
+      }
+      if (meeting.lifecycleContractVersion === 2 && typeof meetingRepository.completeLocalMeeting === 'function') {
+        return { meeting: await meetingRepository.completeLocalMeeting(normalizedMeetingId) };
       }
 
       const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId);

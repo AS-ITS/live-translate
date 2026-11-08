@@ -67,19 +67,24 @@ Install dependencies:
 npm install
 ```
 
-Start the backend:
+Start the Local Supabase, API, and Vite stack from this repository (Docker,
+Supabase CLI, and loopback Redis are required). Keep the Local Google OAuth
+client secret as `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET` in
+`supabase/.env.local` with file mode `600`. The file is ignored by Git; the
+launcher reads it and passes the secret only to the Local Supabase CLI.
+The Google client ID is configured in `supabase/config.toml`.
 
 ```bash
-npm run server
+npm run start
 ```
 
-Start the frontend in another shell:
-
-```bash
-npm run dev
-```
-
-Open the Vite URL printed by `npm run dev`.
+The script uses this repository's Supabase config and migrations, starts
+Supabase before API and Vite, and keeps Vite from loading repository `.env`
+files. Local API access remains restricted to `as.edu.tw`; Preview and
+Production use separate Supabase environments. Open the printed Vite URL.
+For isolated browser acceptance only, set `LOCAL_MOCK_PROVIDER=true`; this
+aliases the frontend Gemini client to the test fixture and still requires a
+mock token response in the browser test.
 
 ## Production
 
@@ -88,7 +93,7 @@ Build and start the production service:
 ```bash
 npm ci
 npm run build
-npm run start
+npm run start:production
 ```
 
 In production, the Node.js server provides both `/api/*` routes and the built
@@ -101,7 +106,7 @@ Deployment platform commands:
 ```text
 Install Command: npm ci
 Build Command: npm run build
-Start Command: npm run start
+Start Command: npm run start:production
 ```
 
 For Render, configure environment variables on the service instead of committing

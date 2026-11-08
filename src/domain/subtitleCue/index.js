@@ -38,6 +38,24 @@ export function validateFinalCue(input, { previousCue = null } = {}) {
     sourceVersion: normalizeSideVersion(input.sourceVersion, rawSource),
     translationVersion: normalizeSideVersion(input.translationVersion, rawTranslation),
     ...(input.revision == null ? {} : { revision: cueRevision(input.revision) }),
+    ...(typeof input.audioTurnId === 'string' && input.audioTurnId
+      ? { audioTurnId: input.audioTurnId } : {}),
+    ...(typeof input.turnKey === 'string' && input.turnKey
+      ? { turnKey: input.turnKey } : {}),
+    ...(Number.isSafeInteger(input.providerEventSequence) && input.providerEventSequence >= 0
+      ? { providerEventSequence: input.providerEventSequence } : {}),
+    ...(Number.isSafeInteger(input.providerEpoch) && input.providerEpoch >= 0
+      ? { providerEpoch: input.providerEpoch } : {}),
+    ...(Number.isSafeInteger(input.connectionEpoch) && input.connectionEpoch >= 0
+      ? { connectionEpoch: input.connectionEpoch } : {}),
+    ...(typeof input.providerEventId === 'string' && input.providerEventId
+      ? { providerEventId: input.providerEventId } : {}),
+    ...(typeof input.eventId === 'string' && input.eventId
+      ? { eventId: input.eventId } : {}),
+    ...(isRecord(input.sourceProvenance)
+      ? { sourceProvenance: normalizeCueProvenance(input.sourceProvenance) } : {}),
+    ...(isRecord(input.translationProvenance)
+      ? { translationProvenance: normalizeCueProvenance(input.translationProvenance) } : {}),
     ...(hasRefinementContract ? {
       rawSource,
       rawTranslation,
@@ -92,7 +110,11 @@ export function mergeFinalCue(existingCues = [], input, options = {}) {
       return cueConflict(`Cue ${incoming.cueId} has no proven finalized reason update.`,
         'legacy_reason_unverified', existingById, incoming, options);
     }
-    if (isPreferredRefinementUpdate(existingById, incoming)
+    if ((storedRevision !== undefined && nextRevision !== undefined && nextRevision > storedRevision &&
+        (incoming.endTimeMs === existingById.endTimeMs ||
+          incoming.sourceVersion > existingById.sourceVersion ||
+          incoming.translationVersion > existingById.translationVersion))
+      || isPreferredRefinementUpdate(existingById, incoming)
       || isInitialTranslationUpdate(existingById, incoming)
       || isSideCompletionUpdate(existingById, incoming)
       || (nextRevision !== undefined &&
@@ -179,31 +201,34 @@ function versionedCueProgresses(existing, incoming) {
     if (incoming[version] === existing[version] &&
         (incoming[content] !== existing[content] || incoming[status] !== existing[status])) return false;
     if (incoming[version] > existing[version] &&
-        (!isTextExtension(existing[content], incoming[content]) ||
+        ((existing[content] && !incoming[content]) ||
           (incoming[status] !== existing[status] &&
             !(existing[status] === 'pending' && ['finalized', 'unavailable'].includes(incoming[status]))))) return false;
+    if (incoming[version] > existing[version] && existing[content] &&
+      !incoming[content].startsWith(existing[content]) &&
+      !sameNewerProviderTurn(existing, incoming)) return false;
   }
   if (existing.refinement && !incoming.refinement) return false;
-  const lateSourceReset = existing.refinement && incoming.refinement &&
-    incoming.sourceVersion > existing.sourceVersion &&
-    incoming.rawSource === incoming.sourceText &&
-    isTextExtension(existing.rawSource, incoming.rawSource) &&
-    incoming.rawTranslation === existing.rawTranslation;
-  const lateTranslationReset = existing.refinement && incoming.refinement &&
-    incoming.translationVersion > existing.translationVersion &&
-    incoming.rawSource === existing.rawSource &&
-    incoming.rawTranslation !== existing.rawTranslation &&
-    isTextExtension(existing.rawTranslation, incoming.rawTranslation);
-  const lateInputReset = (lateSourceReset || lateTranslationReset) &&
+  const lateSource = incoming.sourceVersion > existing.sourceVersion;
+  const lateTranslation = incoming.translationVersion > existing.translationVersion;
+  const lateInputReset = existing.refinement && incoming.refinement &&
+    (lateSource || lateTranslation) &&
+    (lateSource
+      ? incoming.rawSource === incoming.sourceText && (!existing.rawSource || Boolean(incoming.rawSource))
+      : incoming.rawSource === existing.rawSource) &&
+    (lateTranslation
+      ? (!existing.rawTranslation || Boolean(incoming.rawTranslation))
+      : incoming.rawTranslation === existing.rawTranslation) &&
     incoming.refinement.inputHash !== existing.refinement.inputHash &&
     incoming.refinement.inputHash === cueRefinementInputHash(incoming) &&
     incoming.refinement.version === 1 && incoming.refinement.status === 'pending' &&
     incoming.refinedSource === null && incoming.refinedTranslation === null;
   if (existing.initialTranslation !== null && existing.initialTranslation !== undefined &&
       incoming.initialTranslation !== existing.initialTranslation &&
-      !(lateTranslationReset && lateInputReset &&
+      !(lateTranslation && lateInputReset &&
         incoming.initialTranslation === incoming.translatedText)) return false;
   if (existing.refinement && incoming.refinement) {
+    if (incoming.refinement.inputHash !== existing.refinement.inputHash && !lateInputReset) return false;
     if (incoming.refinement.version < existing.refinement.version && !lateInputReset) return false;
     if (incoming.refinement.version === existing.refinement.version && !lateInputReset) {
       const rank = { pending: 0, queued: 1, running: 2, failed: 3, completed: 4 };
@@ -211,9 +236,31 @@ function versionedCueProgresses(existing, incoming) {
       if (incoming.refinement.inputHash !== existing.refinement.inputHash ||
           (existing.refinedSource !== null && incoming.refinedSource === null) ||
           (existing.refinedTranslation !== null && incoming.refinedTranslation === null)) return false;
+      if (existing.refinement.status === 'completed' && incoming.refinement.status === 'completed' &&
+          (existing.refinedSource !== incoming.refinedSource ||
+            existing.refinedTranslation !== incoming.refinedTranslation)) return false;
     }
   }
   return true;
+}
+
+function sameNewerProviderTurn(existing, incoming) {
+  const sameTurn = (existing.audioTurnId && existing.audioTurnId === incoming.audioTurnId)
+    || (existing.turnKey && existing.turnKey === incoming.turnKey);
+  return Boolean(sameTurn && Number.isSafeInteger(existing.providerEventSequence)
+    && Number.isSafeInteger(incoming.providerEventSequence)
+    && incoming.providerEventSequence > existing.providerEventSequence);
+}
+
+function normalizeCueProvenance(value) {
+  const result = {};
+  for (const field of ['audioTurnId', 'turnKey', 'providerEventId', 'eventId']) {
+    if (typeof value[field] === 'string' && value[field]) result[field] = value[field];
+  }
+  for (const field of ['connectionEpoch', 'providerEpoch', 'eventSequence']) {
+    if (Number.isSafeInteger(value[field]) && value[field] >= 0) result[field] = value[field];
+  }
+  return result;
 }
 
 function isPreferredRefinementUpdate(existing, incoming) {

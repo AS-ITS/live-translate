@@ -141,6 +141,50 @@ test('newer Cue revision still rejects unsupported refinement reset and side reg
   (error) => error.rejectReason === 'versioned_state_regression');
 });
 
+test('revision 7 to 15 accepts simultaneous late-final source and translation extensions', () => {
+  const previous = cue({ revision: 7, endTimeMs: 29116,
+    sourceText: 'source', translatedText: 'translation',
+    rawSource: 'source', rawTranslation: 'translation', initialTranslation: 'translation',
+    sourceVersion: 3, translationVersion: 3, finalizedReason: 'merged' });
+  previous.refinement = { status: 'pending', version: 1, inputHash: cueRefinementInputHash(previous) };
+  const next = { ...previous, revision: 15, endTimeMs: 32126,
+    sourceText: 'source extended', translatedText: 'translation extended',
+    rawSource: 'source extended', rawTranslation: 'translation extended',
+    initialTranslation: 'translation extended', sourceVersion: 6, translationVersion: 6 };
+  next.refinement = { status: 'pending', version: 1, inputHash: cueRefinementInputHash(next) };
+  const merged = mergeFinalCue([previous], next);
+  assert.equal(merged.updated, true);
+  assert.equal(merged.cue.revision, 15);
+  assert.equal(mergeFinalCue(merged.cues, next).updated, undefined);
+  assert.equal(mergeFinalCue(merged.cues, previous).cue.revision, 15);
+  for (const inconsistent of [
+    { ...next, sourceText: 'rewritten source', rawSource: 'rewritten source' },
+    { ...next, refinement: { ...next.refinement, inputHash: 'forged-hash' } },
+    { ...next, sourceVersion: 2 }
+  ]) {
+    assert.throws(() => mergeFinalCue([previous], inconsistent),
+      (error) => error.code === 'subtitle_cue_conflict' && error.rejectReason === 'versioned_state_regression');
+  }
+});
+
+test('revision 7 to 15 accepts a proven same-turn source correction with unchanged translation and refinement reset', () => {
+  const previous = cue({ revision: 7, sourceText: 'source old', translatedText: 'translation',
+    rawSource: 'source old', rawTranslation: 'translation', initialTranslation: 'translation',
+    sourceVersion: 3, translationVersion: 3, finalizedReason: 'merged', audioTurnId: 'turn-1', providerEventSequence: 7,
+    sourceProvenance: { audioTurnId: 'turn-1', turnKey: 'turn-1', connectionEpoch: 1, providerEpoch: 1, eventSequence: 7 } });
+  previous.refinement = { status: 'completed', version: 2, inputHash: cueRefinementInputHash(previous) };
+  const incoming = { ...previous, revision: 15, sourceText: 'source corrected',
+    rawSource: 'source corrected', sourceVersion: 6, refinedSource: null, refinedTranslation: null, providerEventSequence: 15,
+    sourceProvenance: { audioTurnId: 'turn-1', turnKey: 'turn-1', connectionEpoch: 1, providerEpoch: 1, eventSequence: 15 } };
+  incoming.refinement = { status: 'pending', version: 1, inputHash: cueRefinementInputHash(incoming) };
+  assert.equal(mergeFinalCue([previous], incoming).cue.sourceText, 'source corrected');
+  assert.equal(mergeFinalCue([incoming], previous).cue.revision, 15);
+  assert.equal(mergeFinalCue([incoming], incoming).updated, undefined);
+  assert.throws(() => mergeFinalCue([previous], { ...incoming, sourceVersion: 3 }),
+    (error) => error.rejectReason === 'versioned_state_regression');
+  assert.throws(() => mergeFinalCue([previous], { ...incoming, sourceText: '', rawSource: '' }),
+    (error) => error.rejectReason === 'versioned_state_regression');
+});
 test('Coordinator emits only metadata from a Cue merge rejection', async () => {
   const diagnostics = [];
   const coordinator = createMeetingCheckpointSyncCoordinator({

@@ -8,7 +8,8 @@ export const SUBTITLE_ENVELOPE_TYPES = Object.freeze({
   replayResponse: 'replay.response',
   livenessPing: 'liveness.ping',
   livenessPong: 'liveness.pong',
-  meetingStopped: 'meeting.stopped'
+  meetingStopped: 'meeting.stopped',
+  recordingStopped: 'recording.stopped'
 });
 
 const CUE_TYPES = new Set([SUBTITLE_ENVELOPE_TYPES.cueAppend, SUBTITLE_ENVELOPE_TYPES.cueUpdate]);

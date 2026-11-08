@@ -8,14 +8,10 @@ export function createSupabaseReadinessCheck({ env = process.env, fetchImpl = gl
       tables: [
         'profiles',
         'meetings',
-      'meeting_segments',
-      'meeting_lifecycle_operations',
-      'sessions',
-        'subtitle_cues',
-        'export_artifacts',
+        'glossary_entries',
+        'glossary_categories',
         'meeting_members',
         'viewer_shares',
-        'audio_artifacts',
         'observability_metric_buckets'
       ],
       rpcFunctions: [
@@ -70,7 +66,7 @@ export function createSupabaseReadinessCheck({ env = process.env, fetchImpl = gl
           }
         }
       ],
-      storageBuckets: ['meeting-audio', 'meeting-exports']
+      storageBuckets: []
     });
     return true;
   };

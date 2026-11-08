@@ -33,7 +33,7 @@ async function concatenateTestArtifact({ chunks, readChunk }) {
   };
 }
 
-test('production local persistence keeps audio, cues, and checkpoints together', async () => {
+test('production local persistence keeps audio and Writer Cue with cursor-only checkpoint', async () => {
   const manifestStore = createInMemoryLocalMeetingManifestStore();
   const persistence = createLocalMeetingPersistence({
     manifestStore,
@@ -44,17 +44,18 @@ test('production local persistence keeps audio, cues, and checkpoints together',
   });
   await persistence.start({ meetingId: 'meeting-1', recordingId: 'session-1', segmentId: 'segment-1' });
   await persistence.appendAudioChunk({ data: new Blob(['one'], { type: 'audio/webm' }), mimeType: 'audio/webm', receivedAt: 10 });
-  await persistence.saveCue({
-    meetingId: 'meeting-1', sessionId: 'session-1', segmentId: 'segment-1',
-    cue: { cueId: 'cue-1', sequence: 1, sourceText: 'hello', status: 'final' }, producedAt: 11
+  await persistence.commitCueMutation({
+    meetingId: 'meeting-1', segmentId: 'segment-1', eventKey: 'cue-event-1', side: 'initial',
+    cue: { cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1', sequence: 1,
+      startTimeMs: 0, endTimeMs: 100, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
+      sourceText: 'hello', translatedText: 'world', status: 'final', finalizedReason: 'final' }
   });
   await persistence.saveTranscriptItem({ meetingId: 'meeting-1', sessionId: 'session-1',
     item: { id: 'source-1', sequence: 1, stream: 'source', text: 'hello',
       status: 'final', segmentId: 'segment-1' } });
   await persistence.updateCheckpoint({
-    meetingId: 'meeting-1', segmentId: 'segment-1', durableChunks: [],
-    finalCues: [{ cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1', sequence: 1 }],
-    cueCheckpoint: { nextSequence: 2 }
+    meetingId: 'meeting-1', segmentId: 'segment-1', idempotencyKey: 'checkpoint-1', durableChunks: [],
+    finalCues: [], cueCheckpoint: null
   });
   await persistence.pause();
   await persistence.resume();
@@ -75,7 +76,28 @@ test('production local persistence keeps audio, cues, and checkpoints together',
   assert.equal(snapshot.cues[0].cue.sourceText, 'hello');
   assert.equal(snapshot.transcripts[0].segmentId, 'segment-1');
   assert.equal(snapshot.checkpoints[0].segmentId, 'segment-1');
-  assert.equal(checkpoint.checkpoint.cueCheckpoint.nextSequence, 2);
+  assert.equal(checkpoint.checkpoint.cueCursor.commitCount, 1);
+  assert.deepEqual(checkpoint.checkpoint.finalCues, []);
+});
+
+test('B2 checkpoint payload shapes cannot write Cue content through App or Storage', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const persistence = createLocalMeetingPersistence({ manifestStore, chunkStore: fakeChunkStore(), cryptoImpl: fakeCrypto() });
+  const scope = { meetingId: 'b2-checkpoint', segmentId: 'segment-1' };
+  const cue = { cueId: 'cue-1', sessionId: 'session-1', segmentId: scope.segmentId, sequence: 1,
+    startTimeMs: 0, endTimeMs: 100, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
+    sourceText: 'committed', translatedText: 'world', status: 'final', finalizedReason: 'final' };
+  await persistence.commitCueMutation({ ...scope, eventKey: 'event-1', side: 'initial', cue });
+  const committed = await persistence.listCues(scope.meetingId);
+  for (const [index, extra] of [{ finalCues: [] }, { finalCues: [{ ...cue, sourceText: 'stale' }] }, {}].entries()) {
+    await persistence.updateCheckpoint({ ...scope, idempotencyKey: `checkpoint-${index}`, durableChunks: [], ...extra });
+    assert.deepEqual(await persistence.listCues(scope.meetingId), committed);
+    assert.deepEqual((await persistence.getCheckpoint(scope)).checkpoint.finalCues, []);
+  }
+  await assert.rejects(manifestStore.saveCheckpointCursor({ ...scope, checkpoint: {
+    idempotencyKey: 'forbidden', finalCues: [cue]
+  } }), (error) => error.code === 'local_checkpoint_cue_content_forbidden');
+  assert.deepEqual(await persistence.listCues(scope.meetingId), committed);
 });
 
 test('explicit local lifecycle operation IDs replay without advancing the segment twice', async () => {
@@ -93,6 +115,36 @@ test('explicit local lifecycle operation IDs replay without advancing the segmen
   await reloaded.start({ meetingId: 'meeting-idempotent', recordingId: 'recording-idempotent', segmentId: 'segment-1' });
   assert.deepEqual(await reloaded.resume({ operationId: 'continue-1' }), resumed);
   assert.equal((await reloaded.restore('meeting-idempotent')).recording.segmentId, 'segment:recording-idempotent:2');
+});
+
+test('End keeps a retryable local completion intent and a fixed 30 minute deadline after reload', async () => {
+  const retentions = new Map();
+  const manifestStore = {
+    ...createInMemoryLocalMeetingManifestStore(),
+    async getRetention(meetingId) { return retentions.get(meetingId) || null; },
+    async listRetentions() { return [...retentions.values()]; },
+    async saveRetention(input) {
+      const record = { ...retentions.get(input.meetingId), ...input };
+      retentions.set(input.meetingId, record);
+      return record;
+    }
+  };
+  const options = { manifestStore, chunkStore: fakeChunkStore(), cryptoImpl: fakeCrypto(), now: () => 1000 };
+  const host = createLocalMeetingPersistence(options);
+  await host.startLifecycle({ meetingId: 'meeting-end', recordingId: 'recording-end',
+    segmentId: 'segment-1', operationId: 'start-1' });
+  await host.endLifecycle({ operationId: 'stop-1' });
+  await host.savePendingCompletion({ meetingId: 'meeting-end', operationId: 'end-1' });
+
+  const reloaded = createLocalMeetingPersistence(options);
+  assert.deepEqual(await reloaded.getPendingCompletion('meeting-end'), {
+    operationId: 'end-1', sealedAt: new Date(1000).toISOString()
+  });
+  assert.equal((await manifestStore.getRetention('meeting-end')).expiresAt,
+    new Date(1000 + 30 * 60 * 1000).toISOString());
+  await reloaded.clearPendingCompletion({ meetingId: 'meeting-end', meeting: { purgeAt: new Date(1000 + 30 * 60 * 1000).toISOString() } });
+  assert.equal(await reloaded.getPendingCompletion('meeting-end'), null);
+  assert.equal((await reloaded.restore('meeting-end')).recording.state, 'stopped_local');
 });
 
 test('committed local rollover survives Provider startup failure and Reload without a second Segment', async () => {

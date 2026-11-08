@@ -72,7 +72,7 @@ test('Supabase metadata repository selects segment identity only', async () => {
     assert.equal(metadata.recordingState, 'ended');
     assert.doesNotMatch(JSON.stringify(metadata), /sensitive|failureInfo/iu);
     assert.equal(urls.length, 2);
-    assert.match(urls[0], /\/rest\/v1\/meetings\?select=id,owner_user_id,name,status,source_language_code,target_language_code,lifecycle_contract_version,lifecycle_version,started_at,ended_at,purge_at,retention_policy_version,failure_info,created_at,updated_at/u);
+    assert.match(urls[0], /\/rest\/v1\/meetings\?select=id,owner_user_id,name,status,source_language_code,target_language_code,lifecycle_contract_version,lifecycle_version,started_at,ended_at,purge_at,retention_policy_version,created_at,updated_at/u);
     assert.match(urls[0], /id=eq\.meeting-1&owner_user_id=eq\.owner-1/u);
     assert.match(urls[1], /\/rest\/v1\/meeting_segments\?select=id,meeting_id,session_id,sequence,status,started_at,ended_at,created_at/u);
     assert.match(urls[1], /meeting_id=eq\.meeting-1&owner_user_id=eq\.owner-1/u);

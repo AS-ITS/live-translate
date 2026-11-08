@@ -6,6 +6,7 @@ import baseConfig from '../../vite.config.js';
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const config = mergeConfig(baseConfig, {
+  ...(process.env.ISSUE41_LOCAL_SMOKE === 'true' ? { envDir: process.env.ISSUE41_RUN_DIR } : {}),
   server: {
     proxy: {
       ...(process.env.ISSUE41_SIGNALING_URL ? {
@@ -15,7 +16,7 @@ const config = mergeConfig(baseConfig, {
         }
       } : {}),
       '/api': {
-        target: 'http://127.0.0.1:3000',
+        target: `http://127.0.0.1:${process.env.ISSUE41_E2E_API_PORT || '3000'}`,
         changeOrigin: true
       }
     }
@@ -23,7 +24,8 @@ const config = mergeConfig(baseConfig, {
   define: { 'import.meta.env.VITE_MEETING_VIEWER_REALTIME_ENABLED': JSON.stringify('false') },
   resolve: {
     alias: {
-      '@google/genai': path.resolve(dirname, '../fixtures/mockGoogleGenAiBrowser.js')
+      ...(process.env.ISSUE41_REAL_GEMINI_AUDIO !== 'true'
+        ? { '@google/genai': path.resolve(dirname, '../fixtures/mockGoogleGenAiBrowser.js') } : {})
     }
   }
 });

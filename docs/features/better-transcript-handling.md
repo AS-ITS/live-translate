@@ -400,6 +400,8 @@ The synchronous Cue-state commit assigns revision 1 to a new Cue and increments 
 An intentionally dismissed provisional Cue keeps a revisioned marker in `unassignedCues`. Reload excludes that Cue from the visible state and still reserves its identity. Completed polling output may mark a Cue only when its recorded input hash matches the current Cue input.
 
 
+For a same-turn late translation that changes `initialTranslation`, the pending refinement input reset is committed in the same translation mutation. The source version stays independent; stale side versions and cross-segment Cue identities remain rejected.
+
 ## 14. Local unassigned Cue export (Issue #41 B2-B)
 
 Meeting detail reads assigned and unassigned Cues from local IndexedDB before enabling local TXT/SRT/VTT export. Only final, non-dismissed Cues enter the export source; unassigned Cues retain `segmentId: null`. Equivalent Cue identities export once. Conflicting revision, content, or ownership blocks export and shows a retryable error. A failed IndexedDB read also blocks export; meeting switches ignore late results from the previous Meeting.

@@ -8,12 +8,13 @@ import {
   createVercelWebRtcSignalingHandler
 } from '../api/webrtc/[...path].js';
 
-const signalingUrl = 'http://127.0.0.1:3001';
+const signalingPort = Number(process.env.ISSUE41_SIGNALING_PORT || 3001);
+const signalingUrl = `http://127.0.0.1:${signalingPort}`;
 const redisUrl = process.env.ISSUE41_REDIS_URL;
 const supabaseUrl = process.env.ISSUE41_ISOLATED_SUPABASE_URL;
 const requestLog = process.env.ISSUE41_SIGNALING_REQUEST_LOG;
 if (process.env.ISSUE41_SIGNALING_URL !== signalingUrl
-  || !/^redis:\/\/127\.0\.0\.1:\d+$/u.test(redisUrl || '')
+  || !/^redis:\/\/127\.0\.0\.1:\d+(?:\/15)?$/u.test(redisUrl || '')
   || !/^http:\/\/127\.0\.0\.1:\d+$/u.test(supabaseUrl || '')
   || process.env.SUPABASE_URL !== supabaseUrl
   || !process.env.SUPABASE_SECRET_KEY
@@ -55,7 +56,7 @@ const server = http.createServer((request, response) => {
 });
 await new Promise((resolve, reject) => {
   server.once('error', reject);
-  server.listen(3001, '127.0.0.1', resolve);
+  server.listen(signalingPort, '127.0.0.1', resolve);
 });
 process.on('SIGTERM', () => server.close(() => redis.quit()));
 process.on('SIGINT', () => server.close(() => redis.quit()));

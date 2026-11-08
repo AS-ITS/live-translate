@@ -11,7 +11,7 @@ export function createMeetingCheckpointSyncCoordinator({
   getCheckpoint,
   onStatusChange,
   onError,
-  onDiagnostic,
+ onDiagnostic = (details) => console.info('ISSUE41_CHECKPOINT_FALSE', JSON.stringify(details)),
   delayMs = DEFAULT_CHECKPOINT_SYNC_DELAY_MS,
   retryDelayMs = DEFAULT_CHECKPOINT_RETRY_DELAY_MS,
   setTimeoutFn = globalThis.setTimeout,
@@ -33,6 +33,29 @@ export function createMeetingCheckpointSyncCoordinator({
   const retryTimers = new Map();
   const conflictRetries = new Map();
   let queue = Promise.resolve();
+
+ function reportFalse(reason, flushContext, details = {}) {
+   const scope = flushContext && {
+     meetingId: flushContext.meetingId,
+     segmentId: flushContext.segmentId,
+     generation: flushContext.generation
+   };
+   const pending = flushContext ? {
+     chunks: [...pendingChunks.values()].filter((item) => item.meetingId === scope.meetingId && item.segmentId === scope.segmentId).length,
+     cues: [...pendingCues.keys()].filter((key) => key.startsWith(`${scopeKey(scope)}:`)).length,
+     cueCheckpoint: pendingCueCheckpoints.has(scopeKey(scope))
+   } : {
+     chunks: pendingChunks.size,
+     cues: pendingCues.size,
+     cueCheckpoint: pendingCueCheckpoints.size > 0
+   };
+   try {
+     onDiagnostic?.({ reason, scope, activeScope: context && {
+       meetingId: context.meetingId, segmentId: context.segmentId, generation: context.generation
+     }, pending, ...details });
+   } catch { /* Diagnostics must not affect checkpoint persistence. */ }
+   return false;
+ }
 
   return Object.freeze({
     start(nextContext = {}) {
@@ -95,17 +118,21 @@ export function createMeetingCheckpointSyncCoordinator({
       const flushContext = context ? { ...context } : null;
       queue = queue.then(async () => {
         if (!flushContext) {
-          return pendingChunks.size === 0 && pendingCues.size === 0 && pendingCueCheckpoints.size === 0;
+          if (pendingChunks.size === 0 && pendingCues.size === 0 && pendingCueCheckpoints.size === 0) return true;
+          return reportFalse('no_context_with_pending', null);
         }
         for (let pass = 0; pass < MAX_BARRIER_FLUSH_PASSES; pass += 1) {
           if (!await flushPending(flushContext)) return false;
-          if (!isActiveContext(flushContext)) return false;
-          if (!hasPendingFor(flushContext)) return isActiveContext(flushContext);
+          if (!isActiveContext(flushContext)) return reportFalse('context_expired', flushContext, { pass: pass + 1 });
+          if (!hasPendingFor(flushContext)) {
+            if (isActiveContext(flushContext)) return true;
+            return reportFalse('context_expired_after_pending_check', flushContext, { pass: pass + 1 });
+          }
           clearTimer();
           clearRetryTimer(flushContext);
         }
         if (isActiveContext(flushContext)) scheduleRetry(flushContext);
-        return false;
+        return reportFalse('pending_after_max_passes', flushContext, { passes: MAX_BARRIER_FLUSH_PASSES });
       });
       return queue;
     },
@@ -140,7 +167,8 @@ export function createMeetingCheckpointSyncCoordinator({
 
     onStatusChange?.('syncing');
 
-    let checkpointCoverageRejected = false;
+    let coverageFailure = null;
+    let operationId = null;
     try {
       const payload = {
         meetingId: flushContext.meetingId,
@@ -154,11 +182,31 @@ export function createMeetingCheckpointSyncCoordinator({
         refinedSubtitleStatus: payloadCheckpoint?.refinedSubtitleStatus
       };
       payload.idempotencyKey = checkpointOperationKey(flushContext.segmentId, payload);
+      operationId = payload.idempotencyKey;
       const committed = await updateCheckpoint(payload);
+      coverageFailure = {
+        returnedMeetingId: committed?.meetingId ?? null,
+        returnedSegmentId: committed?.segmentId ?? null,
+        checkpointPresent: Boolean(committed?.checkpoint),
+        committedChunks: committed?.checkpoint?.durableChunks?.length ?? null,
+        committedCues: committed?.checkpoint?.finalCues?.length ?? null,
+        committedCueCheckpoint: Boolean(committed?.checkpoint?.cueCheckpoint)
+      };
+      if (committed?.checkpoint && cues.length > 0) {
+        try {
+          const storedCues = new Map((committed.checkpoint.finalCues || []).map((cue) => [cueKey(flushContext, cue), cue]));
+          const firstUncovered = cues.find((cue) => !cueCovers(storedCues.get(cueKey(flushContext, cue)), cue));
+          if (firstUncovered) {
+            coverageFailure.cueCoverage = explainCueCoverageFailure(
+              storedCues.get(cueKey(flushContext, firstUncovered)), firstUncovered
+            );
+          }
+        } catch { /* Diagnostic inspection must not change checkpoint handling. */ }
+      }
       if (!committed?.checkpoint || !checkpointCoversFlush(committed, flushContext, chunks, cues, payloadCheckpoint)) {
-        checkpointCoverageRejected = true;
         throw checkpointConflict('committed checkpoint does not cover the requested flush');
       }
+      coverageFailure = null;
 
       for (const chunk of chunks) {
         const key = chunkKey(chunk);
@@ -181,16 +229,18 @@ export function createMeetingCheckpointSyncCoordinator({
       }
       return true;
     } catch (error) {
-      try {
-        const cueId = error?.cueConflict?.cueId;
-        onDiagnostic?.({
-          reason: checkpointCoverageRejected ? 'committed_checkpoint_not_covering_flush' : 'flush_pending_write_exception',
-          ...(error?.code === 'subtitle_cue_conflict' ? {
-            rejectReason: error.rejectReason,
-            cueConflict: { cueId: typeof cueId === 'string' && /^[A-Za-z0-9:_-]{1,128}$/.test(cueId) ? cueId : null }
-          } : {})
-        });
-      } catch { /* Diagnostics must not affect checkpoint persistence. */ }
+      reportFalse(coverageFailure ? 'committed_checkpoint_not_covering_flush' : 'flush_pending_write_exception', flushContext, {
+        operationId,
+        requested: { chunks: chunks.length, cues: cues.length, cueCheckpoint: Boolean(payloadCheckpoint) },
+        committed: coverageFailure,
+        errorCode: typeof error?.code === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(error.code) ? error.code : null,
+        ...(error?.code === 'subtitle_cue_conflict' && error?.rejectReason ? {
+          rejectReason: error.rejectReason,
+          cueConflict: error.cueConflict
+        } : {}),
+        errorName: typeof error?.name === 'string' && /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : null,
+        errorStatus: Number.isInteger(error?.status) ? error.status : null
+      });
       if (error?.status === 409 && getCheckpoint) {
         try {
           const latest = await getCheckpoint({
@@ -277,9 +327,7 @@ export function createMeetingCheckpointSyncCoordinator({
       const persisted = persistedCues.get(key);
       const sameOwner = persisted?.cueId === pending.cueId &&
         persisted?.sessionId === pending.sessionId && persisted?.segmentId === pending.segmentId;
-    if (sameOwner && sameCueSnapshot(persisted, pending)) {
-      promotePendingCue(key);
-      }
+      if (sameOwner && sameCueSnapshot(persisted, pending)) promotePendingCue(key);
     }
 
     if (latest?.meetingId === checkpointContext.meetingId &&
@@ -433,6 +481,15 @@ function cueCovers(persisted, pending) {
     return sameValue(persisted, pending) || legacyCompletedRefinementCovers(persisted, pending);
   }
 
+  if (remote.revision !== undefined && local.revision !== undefined &&
+      remote.revision > local.revision) {
+    try {
+      return mergeFinalCue([local], remote).updated === true;
+    } catch {
+      return false;
+    }
+  }
+
   const identity = ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs',
     'sourceLanguageCode', 'targetLanguageCode', 'mode', 'status', 'finalizedReason'];
   if (!identity.every((field) => remote[field] === local[field])) return false;
@@ -464,6 +521,84 @@ function cueCovers(persisted, pending) {
   if (local.refinedSource !== null && remote.refinedSource === null) return false;
   if (local.refinedTranslation !== null && remote.refinedTranslation === null) return false;
   return true;
+}
+
+// Called only after cueCovers rejects a pair; diagnostics do not decide coverage.
+// The result contains condition names only: no Cue values, content, or content hashes.
+export function explainCueCoverageFailure(persisted, pending) {
+  if (!persisted || !pending) return { reason: 'cue_missing' };
+  for (const field of ['cueId', 'sessionId', 'segmentId']) {
+    if (persisted[field] !== pending[field]) return { reason: 'cue_identity_mismatch', field };
+  }
+
+  let remote;
+  let local;
+  try {
+    remote = validateFinalCue(persisted);
+    local = validateFinalCue(pending);
+  } catch {
+    if (sameValue(persisted, pending)) return { reason: 'cue_covered' };
+    if (legacyCompletedRefinementCovers(persisted, pending)) return { reason: 'cue_covered' };
+    return { reason: 'legacy_cue_not_covered' };
+  }
+
+  for (const field of ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs',
+    'sourceLanguageCode', 'targetLanguageCode', 'mode', 'status', 'finalizedReason']) {
+    if (remote[field] !== local[field]) return { reason: 'cue_field_mismatch', field };
+  }
+  if (local.revision !== undefined &&
+      (remote.revision === undefined || remote.revision < local.revision)) {
+    return { reason: 'cue_field_mismatch', field: 'revision' };
+  }
+  if (remote.endTimeMs < local.endTimeMs) return { reason: 'cue_end_time_behind' };
+  for (const side of ['source', 'translation']) {
+    const version = side === 'source' ? 'sourceVersion' : 'translationVersion';
+    const content = side === 'source' ? 'sourceText' : 'translatedText';
+    const status = side === 'source' ? 'sourceStatus' : 'translationStatus';
+    if (remote[version] < local[version]) return { reason: 'cue_side_version_behind', side };
+    if (remote[version] === local[version]) {
+      if (remote[content] !== local[content]) return { reason: 'cue_side_content_mismatch', side };
+      if (remote[status] !== local[status]) return { reason: 'cue_side_status_mismatch', side };
+    } else {
+      if (!remote[content].startsWith(local[content])) return { reason: 'cue_side_prefix_mismatch', side };
+      if (remote[status] !== local[status] &&
+          !(local[status] === 'pending' && ['finalized', 'unavailable'].includes(remote[status]))) {
+        return { reason: 'cue_side_status_transition_mismatch', side };
+      }
+    }
+  }
+  if (remote.endTimeMs > local.endTimeMs &&
+      remote.sourceVersion === local.sourceVersion &&
+      remote.translationVersion === local.translationVersion) {
+    return { reason: 'cue_end_time_advanced_without_version' };
+  }
+  if (!Object.hasOwn(local, 'refinement')) return { reason: 'cue_covered' };
+  if (!Object.hasOwn(remote, 'refinement')) return { reason: 'cue_refinement_missing' };
+  if (local.initialTranslation !== null && remote.initialTranslation !== local.initialTranslation) {
+    return { reason: 'cue_initial_translation_mismatch' };
+  }
+  if (local.initialTranslation === null && remote.initialTranslation !== null &&
+      remote.translationVersion <= local.translationVersion) {
+    return { reason: 'cue_initial_translation_version_not_advanced' };
+  }
+  const localRefinement = local.refinement;
+  const remoteRefinement = remote.refinement;
+  if (remoteRefinement.version < localRefinement.version) return { reason: 'cue_refinement_version_behind' };
+  if (remoteRefinement.version === localRefinement.version) {
+    if (!sameValue(remoteRefinement, localRefinement)) return { reason: 'cue_refinement_same_version_mismatch' };
+    if (remote.refinedSource !== local.refinedSource) return { reason: 'cue_refined_source_mismatch' };
+    if (remote.refinedTranslation !== local.refinedTranslation) return { reason: 'cue_refined_translation_mismatch' };
+    return { reason: 'cue_covered' };
+  }
+  if (remoteRefinement.inputHash !== localRefinement.inputHash) return { reason: 'cue_refinement_input_hash_mismatch' };
+  if (localRefinement.status === 'completed' && remoteRefinement.status !== 'completed') {
+    return { reason: 'cue_refinement_completion_missing' };
+  }
+  if (local.refinedSource !== null && remote.refinedSource === null) return { reason: 'cue_refined_source_missing' };
+  if (local.refinedTranslation !== null && remote.refinedTranslation === null) {
+    return { reason: 'cue_refined_translation_missing' };
+  }
+  return { reason: 'cue_covered' };
 }
 
 function legacyCompletedRefinementCovers(persisted, pending) {

@@ -1,10 +1,236 @@
 # Testing
 
+For current Issue #41 Local acceptance, use only this repository and run
+`npm run start -- --check`, then `npm run start`. The launcher checks the
+repository's Local Supabase migrations, Google Provider, and loopback Redis.
+Keep the existing test Google OAuth client secret in `supabase/.env.local` as
+`SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET` (mode 600, ignored by Git).
+The Local launcher passes it to Supabase CLI on startup; do not put it in a
+production `.env` file.
+The isolated fallback procedure below is historical and is not the current
+Local acceptance path.
+
+## Issue #41 RC manual acceptance fallback (RC-M1 to RC-M6)
+
+**Current decision:** `RC_MANUAL_FALLBACK_VERDICT=READY_NOT_EXECUTED`; the previous `RC1_VERDICT=BLOCKED` remains. An unstable isolated Supabase Realtime container is `ENV_BLOCKED`, never `PASS`. Do not use this fallback to waive DB/RPC/Storage, ownership, share authorization, or security contracts. Stop after two unsuccessful minimal repairs of the same environment fault.
+
+### Dependency boundary
+
+The current Host records in the browser through `useLiveRecordingController`, `localMeetingPersistence`, MediaRecorder, and the PCM Journal. Its metadata and authorization use the authenticated Node API and Supabase PostgREST/RPC, not a Supabase Realtime subscription. The production Viewer page constructs `createWebRtcSubtitleTransport`; its signaling client calls `/api/webrtc/:meetingId`, and the Node handler stores signaling in Redis. The glossary client calls `/api/glossary` over HTTP. Meeting metadata, permissions, and share resolution use HTTP and Supabase database reads. None of these call paths subscribe to Supabase Realtime. `src/lib/meetingViewerRealtime.js` and `src/lib/executionEventsWebSocket.js` still contain older Supabase Realtime subscriptions, but the current Viewer page does not import them. This is a targeted call-path finding, not a complete Legacy inventory. Redis signaling and ordinary Supabase Auth/PostgREST remain necessary.
+
+### Start isolated services and log in
+
+Run from the repository root. Docker, Supabase CLI, Redis CLI/server, and npm must be installed. The workdir and DB project ID are unique; no command below targets Production. The manual test uses the existing `start:local` script, which starts API `127.0.0.1:3000` (including WebRTC signaling) and Vite `127.0.0.1:5173` together. Do not start a separate signaling service on port 3001; that port belongs to the E2E harness.
+
+Terminal 1, create and start the isolated Supabase stack:
+
+```bash
+cd /Users/pochun/projects/live-translate
+export RC_WORKDIR="$(mktemp -d /tmp/issue41-manual-XXXXXX)"
+mkdir -p "$RC_WORKDIR/supabase"
+cp -R supabase/migrations "$RC_WORKDIR/supabase/migrations"
+node --input-type=module - "$RC_WORKDIR" <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const workdir = process.argv[2];
+const path = join(workdir, 'supabase/config.toml');
+let config = readFileSync('supabase/config.toml', 'utf8');
+const projectId = `issue41-manual-${Date.now()}`;
+config = config.replace(/^project_id\s*=.*$/m, `project_id = "${projectId}"`)
+  .replace(/\[api\]\nenabled = true/, '[api]\nenabled = true\nport = 55421')
+  .replace(/\[db\]\nport = \d+/, '[db]\nport = 55422')
+  .replace(/\[studio\]\nport = \d+/, '[studio]\nport = 55423')
+  .replace(/\[auth.external.google\]\nenabled = true/, '[auth.external.google]\nenabled = false');
+config += '\n[local_smtp]\nport = 55424\n[db.pooler]\nport = 55427\n[analytics]\nport = 55428\n';
+writeFileSync(path, config);
+console.log(`RC_WORKDIR=${workdir}\nRC_DB_CONTAINER=supabase_db_${projectId}`);
+NODE
+supabase start --workdir "$RC_WORKDIR" --yes
+```
+
+Record the printed `RC_WORKDIR` and `RC_DB_CONTAINER` (identifiers only). Supabase CLI may print local keys; do not paste its output into reports. If the stack fails or Realtime restarts repeatedly, keep the actual status `ENV_BLOCKED`. Non-Realtime unit and mock E2E work can continue, but manual DB-backed cases need Auth/PostgREST to stay healthy.
+
+Terminal 2, start a loopback Redis dedicated to this run:
+
+```bash
+redis-server --bind 127.0.0.1 --port 16379 --save '' --appendonly no --protected-mode yes
+```
+
+Terminal 3, check and start the existing local launcher (replace the workdir):
+
+```bash
+cd /Users/pochun/projects/live-translate
+export RC_WORKDIR=/tmp/issue41-manual-REPLACE_ME
+LOCAL_SUPABASE_WORKDIR="$RC_WORKDIR" LOCAL_REDIS_URL=redis://127.0.0.1:16379 npm run start:local -- --check
+LOCAL_SUPABASE_WORKDIR="$RC_WORKDIR" LOCAL_REDIS_URL=redis://127.0.0.1:16379 npm run start:local
+```
+
+The check validates loopback Supabase URL/DB ports, copied and applied migrations, local keys, Redis `PING`, and configured `AUTH_ALLOWED_EMAIL_DOMAINS`. `start:local` overrides cloud Supabase values in `.env*`, clears the backend Gemini key, and does not call Gemini. A real microphone/translation run requires a tester-owned Gemini key entered in the Host Settings UI; this is an explicitly manual, potentially billed API call. Do not put that key in the report or browser console. Confirm `redis-cli -h 127.0.0.1 -p 16379 PING` returns `PONG`, API health via `curl -fsS http://127.0.0.1:3000/healthz`, and Vite at `http://127.0.0.1:5173`.
+
+Create a local test user in isolated Auth. The first locally configured allowed email domain is selected; the password is read without echo and never printed:
+
+```bash
+export RC_WORKDIR=/tmp/issue41-manual-REPLACE_ME
+RC_DOMAIN="$(node --input-type=module -e "import { loadEnv } from 'vite'; process.stdout.write((loadEnv('development', process.cwd(), '').AUTH_ALLOWED_EMAIL_DOMAINS || '').split(',')[0].trim())")"
+test -n "$RC_DOMAIN" || { echo 'Missing local allowed email domain'; exit 1; }
+export RC_EMAIL="issue41-manual-$(date +%s)@$RC_DOMAIN"
+read -s 'RC_PASSWORD?Local test password: '; echo
+export RC_PASSWORD
+node --input-type=module - <<'NODE'
+import { spawnSync } from 'node:child_process';
+const result = spawnSync('supabase', ['status', '-o', 'json', '--workdir', process.env.RC_WORKDIR], { encoding: 'utf8' });
+if (result.status !== 0) throw new Error('Isolated Supabase status failed');
+const local = JSON.parse(result.stdout);
+if (local.API_URL !== 'http://127.0.0.1:55421') throw new Error('Not the isolated loopback stack');
+const response = await fetch(`${local.API_URL}/auth/v1/admin/users`, {
+  method: 'POST',
+  headers: { apikey: local.SERVICE_ROLE_KEY, Authorization: `Bearer ${local.SERVICE_ROLE_KEY}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ email: process.env.RC_EMAIL, password: process.env.RC_PASSWORD, email_confirm: true })
+});
+if (!response.ok) throw new Error(`Local Auth user creation failed: ${response.status}`);
+console.log('Isolated Auth user created; sign in through the browser console.');
+NODE
+unset RC_PASSWORD
+```
+
+Open `http://127.0.0.1:5173` on Host. The normal login UI offers Google OAuth only, so use this **local test-account login** in that page's DevTools console (type the same local password into the prompt):
+
+```js
+const { supabase } = await import('/src/lib/supabaseAuth.js');
+const result = await supabase.auth.signInWithPassword({ email: prompt('Local test email'), password: prompt('Local test password') });
+if (result.error) throw result.error;
+location.reload();
+```
+
+Use the Host UI to create a Meeting, then copy its Viewer share URL. On a second laptop, an SSH tunnel to the Host machine preserves the loopback addresses used by Vite and Supabase. Run on that laptop (SSH access to the Host must already be enabled), then open the share URL in its browser:
+
+```bash
+ssh -N -L 5173:127.0.0.1:5173 -L 55421:127.0.0.1:55421 HOST_USER@HOST_LAN_ADDRESS
+```
+
+The share URL is a credential. Keep it out of screenshots/logs and do not send it through Production services. An SSH tunnel is needed because this local launcher binds API/Vite to loopback; a phone on ordinary Wi-Fi cannot directly reach it. If no second-device tunnel exists, mark RC-M3 `ENV_BLOCKED`, not `MANUAL_PASS`.
+
+### Manual cases and pass criteria
+
+Use a separate Meeting for destructive timing/fault tests when needed. Record timestamp, browser/version, Host/Viewer device, Meeting ID, each action, actual result, Console/Network/DB evidence, and one of `MANUAL_PASS`, `FAIL`, `ENV_BLOCKED`, `NOT_TESTED`. Screenshots must hide keys, tokens, and share URLs.
+
+1. **RC-M1 Host lifecycle:** Create Meeting; start the real microphone; speak and see source plus translation; Pause; Continue; record continuously for **more than 15 minutes** and see a new local Segment after rollover; Stop; start recording again; End. `MANUAL_PASS` requires Stop to keep Meeting open and allow another recording, while End disables further recording and leaves one completed Meeting. Capture local Segment IDs before/after rollover and after Stop/End. A failed or unobserved rollover is `FAIL` or `NOT_TESTED`, never inferred from elapsed time alone.
+2. **RC-M2 dictionary:** Create and edit a glossary entry; attach it to the Meeting; Pause; change the term; Continue; speak the term and confirm the new translation actually appears. Record term/revision and resulting cue (redact sensitive text). `MANUAL_PASS` requires the new setting to be used by resumed capture, without an old cloud Recording Session. A saved entry alone is insufficient.
+3. **RC-M3 Viewer:** Join mid-meeting from the second device; verify source/translation; disconnect and restore Viewer network; verify reconnection and missed-cue replay without duplicates. Host Stop must leave Viewer in an open Meeting state; Host End must show ended state. Record both devices' transport status and cue sequence. `MANUAL_PASS` requires every transition, not only initial join.
+4. **RC-M4 recovery:** During recording reload Host and confirm local recovery; repeat after Pause, after rollover, and after End. Verify restored Segment/cues and no duplicate MediaRecorder/Segment creation. Network inspection must show no old cloud Cue/Transcript/Checkpoint download. If browser storage was cleared, classify environment loss separately.
+5. **RC-M5 End failure:** On an isolated local Meeting only, install the one-request interceptor below in the Host console, click End once, and confirm the Network trace shows exactly one injected 503. The interceptor restores `fetch` before returning that response, so the next request is real. Confirm local state is `stopped_local`, audio/PCM is sealed, and IndexedDB retention has `pendingCompletion` plus a fixed 30-minute `expiresAt`. Reload, allow the retry, then run the read-only DB check below: `completed`, `ended_at`, lifecycle version incremented exactly once, and `purge_at - ended_at = 1800` seconds. No new MediaRecorder or Segment may appear. A pre-commit 503 tests failed metadata completion; the existing `issue41RealEndRecovery.spec.js` separately covers a committed-but-lost response.
+6. **RC-M6 retention:** After End, verify the local deadline is exactly 30 minutes from local seal and DB `purge_at` exactly 1800 seconds from `ended_at`. Test reads/downloads just before and after expiry, then inspect IndexedDB and OPFS for cleanup. Repeat with browser closed over expiry and reopen; retry a deliberately failed local cleanup after removing the local failure condition. Verify Meeting settings and glossary remain in Supabase. `MANUAL_PASS` requires access denial after expiry, local cleanup compensation, and preserved metadata. Do not shorten Production retention or alter system clock to make this pass.
+
+RC-M5 single-failure injection, run only on `http://127.0.0.1:5173` after replacing the Meeting ID. If a 503 is not seen, mark the injection `FAIL` and do not infer the recovery path passed:
+
+```js
+const meetingId = 'REPLACE_WITH_MEETING_UUID';
+if (location.origin !== 'http://127.0.0.1:5173') throw new Error('Isolated Host only');
+const originalFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+  const method = (init?.method || input?.method || 'GET').toUpperCase();
+  if (url.pathname === `/api/meetings/${meetingId}/complete` && method === 'POST') {
+    window.fetch = originalFetch;
+    return Promise.resolve(new Response('{"error":{"code":"injected_end_failure"}}', {
+      status: 503, headers: { 'Content-Type': 'application/json' }
+    }));
+  }
+  return originalFetch.apply(this, arguments);
+};
+```
+
+Read local state without changing it, in the Host console before and after reload (replace ID). Record only state, Segment ID, pending status, and deadline, not transcript content:
+
+```js
+const meetingId = 'REPLACE_WITH_MEETING_UUID';
+const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+const local = await createLocalMeetingPersistence().restore(meetingId);
+const retention = await createIndexedDbLocalMeetingManifestStore().getRetention(meetingId);
+console.table({ recordingState: local?.recording?.state, segmentId: local?.recording?.segmentId,
+  pendingCompletion: Boolean(retention?.pendingCompletion), sealedAt: retention?.pendingCompletion?.sealedAt,
+  expiresAt: retention?.expiresAt });
+```
+
+For RC-M6 cleanup retry, close the Host browser before expiry. After the real 30-minute deadline, open the same-origin static asset `http://127.0.0.1:5173/google-g.svg` in that browser profile so the App cannot perform its startup cleanup first. In DevTools console, run this isolated-only, one-attempt local failure followed by the real cleanup. It uses the real IndexedDB retention record and real cleanup on retry; the first attempt injects a failure before OPFS deletion. Do not run it before expiry or on any non-local origin:
+
+```js
+const meetingId = 'REPLACE_WITH_MEETING_UUID';
+if (location.origin !== 'http://127.0.0.1:5173') throw new Error('Isolated browser only');
+const { createLocalMeetingRetention } = await import('/src/lib/localMeetingRetention.js');
+const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+const store = createIndexedDbLocalMeetingManifestStore();
+const before = await store.getRetention(meetingId);
+if (!before || Date.parse(before.expiresAt) > Date.now()) throw new Error('Wait for actual expiry');
+const failed = await createLocalMeetingRetention({ manifestStore: store,
+  chunkStore: { removeMeeting: async () => { throw new Error('injected_local_cleanup_failure'); } }
+}).check(meetingId);
+const retryable = await store.getRetention(meetingId);
+const retried = await createLocalMeetingRetention({ manifestStore: store }).check(meetingId);
+const cleared = await store.getRetention(meetingId);
+console.table({ firstFailed: failed.failed, retryRecorded: Boolean(retryable?.cleanupError),
+  secondCleared: retried.cleared, physicalCleared: Boolean(cleared?.physicalCleared) });
+```
+
+Require `firstFailed=1`, `retryRecorded=true`, `secondCleared=1`, `physicalCleared=true`; then inspect OPFS/IndexedDB in DevTools and reopen Host. If the App already cleared the record or the static asset is unavailable, mark this subcase `NOT_TESTED` and retain the actual observations.
+
+### Read-only DB evidence and contract gates
+
+The following script uses `BEGIN READ ONLY`; it emits status/counts, never keys, token hashes, cue text, or audio. Run only against the isolated DB container printed at setup; an empty Meeting result or missing container is `ENV_BLOCKED`/`FAIL`, not PASS.
+
+```bash
+cd /Users/pochun/projects/live-translate
+export RC_DB_CONTAINER=supabase_db_issue41-manual-REPLACE_ME
+export RC_MEETING_ID=REPLACE_WITH_MEETING_UUID
+case "$RC_DB_CONTAINER" in supabase_db_issue41-manual-*) ;; *) echo 'Not an isolated RC DB'; exit 1;; esac
+docker exec -i "$RC_DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -v meeting_id="$RC_MEETING_ID" -U postgres -d postgres < scripts/issue41-manual-readonly.sql
+```
+
+All six content counts must be zero **for the new Meeting**, and active Viewer shares must have the intended role and unexpired, unrevoked state. Counts alone do not prove write denial. Run the existing transaction-rollback contracts against the same isolated DB, when Auth/PostgREST/DB are healthy:
+
+```bash
+docker exec -i "$RC_DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres < tests/integration/issue41LocalOnlyCutover.sql
+docker exec -i "$RC_DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres < tests/integration/issue41UnifiedLifecycle.sql
+```
+
+These two SQL contracts write temporary fixtures inside a rolled-back transaction; they are **not read-only** and must never run on Production. Their assertions cover DB/RPC/Storage local-only denial and lifecycle semantics. Also retain the existing ownership/share authorization tests and a real isolated-DB share check; a working Viewer UI by itself does not prove authorization. Existing `issue41DbWriteAudit.js` installs audit triggers and is not a read-only command. If its automatic run is blocked, report zero-write history as `NOT_TESTED` even if the read-only snapshot is clean.
+
+### Evidence record and final decision
+
+Save a local report under `test-results/issue41-manual/` (ignored by Git). Create a timestamped record, then fill one row per case:
+
+```bash
+mkdir -p test-results/issue41-manual
+RC_REPORT="test-results/issue41-manual/$(date +%Y%m%dT%H%M%S%z).md"
+cat > "$RC_REPORT" <<'EOF'
+# Issue 41 manual RC evidence
+RC1_VERDICT: BLOCKED
+RC_MANUAL_FALLBACK_VERDICT: READY_NOT_EXECUTED
+Isolated workdir / DB container: [fill]
+Automated contracts (command, exit code, redacted output path): [fill]
+
+| Case | Executed at + timezone | Browser/version | Host / Viewer device | Meeting ID | Steps | Expected | Actual | Result | Console / Network / DB evidence |
+|---|---|---|---|---|---|---|---|---|---|
+| RC-M1 | | | | | | | | NOT_TESTED | |
+| RC-M2 | | | | | | | | NOT_TESTED | |
+| RC-M3 | | | | | | | | NOT_TESTED | |
+| RC-M4 | | | | | | | | NOT_TESTED | |
+| RC-M5 | | | | | | | | NOT_TESTED | |
+| RC-M6 | | | | | | | | NOT_TESTED | |
+EOF
+printf 'Report: %s\n' "$RC_REPORT"
+```
+
+Use `MANUAL_PASS` only for an executed full case; `NOT_TESTED` for untouched cases; `ENV_BLOCKED` only for a documented local environment failure. Include exact command, exit code, and redacted output path for each automated contract. Report `RC_MANUAL_FALLBACK_VERDICT=PARTIAL_EVIDENCE` until all required manual cases and independent security contracts pass. Keep `RC1_VERDICT=BLOCKED` and Production release blocked while Realtime/environment preflight, required DB/RPC/Storage contracts, or any required RC case remains unresolved; never promote a Realtime FAIL to PASS.
+
 ## Issue #41 local integration startup
 
 Set `LOCAL_SUPABASE_WORKDIR` to a separate workdir containing `supabase/config.toml` and `supabase/migrations`; the repository root is rejected. Run `npm run start:local -- --check` to verify Docker, local Supabase, repository migrations, loopback Redis, and required auth configuration without starting the app. Then run `npm run start:local` for the Node API and Vite frontend. Both processes receive the same loopback Supabase URL and local keys, overriding cloud values in the shell and `.env*`. The startup gate requires a distinct project ID, matching loopback API/DB ports, identical migration files, and exact applied migration history. It does not reset or migrate the database. Production `npm start` is unchanged. Stop both local processes with Ctrl-C.
 
 ## Issue #41 SSH-independent local runner
+
+The API selects the Supabase-backed repository whenever a loopback Supabase URL and secret key are configured, including tests that leave `GEMINI_API_KEY` empty. A successful Meeting create must therefore persist Owner metadata before returning `201`.
 
 Each Local Core run generates a validated `issue41_audit_<24 hex>` namespace and checks that it does not exist before starting Chromium. The test verifies trigger coverage for every expected public table and `storage.objects`, then reads writes only from that run's namespace. `evidence.json` and `verdict.json` retain the namespace and coverage; the runner does not clean up audit schemas. On a reused DB, earlier enabled audit triggers also record later writes, so use another isolated DB when earlier audit results must stay unchanged.
 
@@ -38,6 +264,43 @@ node scripts/issue41-local-runner.mjs status
 node scripts/issue41-local-runner.mjs report
 node scripts/issue41-local-runner.mjs stop
 ```
+
+For the isolated WAV microphone gate, run `node scripts/issue41-local-runner.mjs start --local-preflight`.
+This uses API `127.0.0.1:31041`, Vite `127.0.0.1:5175`, signaling `127.0.0.1:31042`,
+Redis `127.0.0.1:16379/15`, a per-run loopback Docker network, and a newly created Local Supabase
+project. It verifies the complete copied migration manifest and the current B2-L SQL contracts,
+then checks Local Auth, API/Frontend startup, Redis-backed Host/Viewer signaling, and Chromium WAV
+PCM through the production Recorder input controller. It does not run the longer Host/Viewer soak or
+call Gemini. Results and the generated WAV stay under
+`test-results/issue41-runner/<run-id>/`.
+If Docker publishes any Supabase port outside `127.0.0.1` or `::1`, or the macOS host listens on
+a non-loopback address, the Runner records the binding and listener evidence,
+stops its own stack, and reports `ENVIRONMENT_BLOCKED`. Fix the host Docker port binding before
+running either audio mode.
+
+For one short real-provider run, enter a **test-only** Key through the terminal without shell history
+or a Key file, then start the same Runner:
+
+```zsh
+read -s 'ISSUE41_TEST_GEMINI_KEY?Test Gemini Key: '; echo
+export ISSUE41_TEST_GEMINI_KEY
+node scripts/issue41-local-runner.mjs start --real-gemini-audio-smoke
+unset ISSUE41_TEST_GEMINI_KEY
+```
+
+If the real Gemini audio smoke reaches a Local Cue mutation failure, inspect
+`test-results/issue41-runner/<run-id>/cue-mutation-diagnostics.json`. It records only
+mutation type, batch count/index, rejection reason or safe error identifiers, and
+application stack locations. The same artifact is written inside that test's
+Playwright output; the Run-level copy remains separate from Playwright output cleanup.
+
+The detached worker inherits the Key only in memory, enters it into the current settings page,
+and uses the actual Gemini Live browser provider. Do not use a user browser profile or a production Key.
+Use `node scripts/issue41-local-runner.mjs status <run-id>` and `report <run-id>` to inspect progress.
+`LOCAL_SMOKE_ENV_VERDICT` and `VIRTUAL_MIC_VERDICT` do not imply
+`REAL_GEMINI_AUDIO_SMOKE_VERDICT=PASS`; unobserved late-final and non-prefix revision stay `NOT_OBSERVED`.
+The environment verdict reflects completed local setup and preflight checks, even if the later
+real Gemini audio assertion fails.
 
 Commands also accept a run ID after the verb. `start` prints the ID and report
 path. The runner first executes the existing three-segment rollover E2E Smoke.

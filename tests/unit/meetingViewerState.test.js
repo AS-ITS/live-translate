@@ -4,6 +4,16 @@ import { applyMeetingCueEvent, meetingEventDuplicateDetected, meetingEventGapDet
 import { hostViewerCuesFromLocalRecords } from '../../src/webrtc/useWebRtcDeviceSidecar.js';
 import { createSubtitleSource } from '../../src/webrtc/subtitleDataChannel.js';
 
+test('older or uncommitted Viewer snapshots cannot replace a committed Cue revision', () => {
+  const committed = { cueId: 'cue-1', segmentId: 'segment-1', sessionId: 'session-1',
+    sequence: 1, revision: 3, status: 'final', sourceText: 'committed' };
+  const older = { ...committed, revision: 2, sourceText: 'stale' };
+  const provisional = { ...committed, revision: undefined, status: 'partial', sourceText: 'provisional' };
+  const current = { cues: [committed] };
+  assert.equal(mergeMeetingViewerSnapshot(current, { cues: [older] }).cues[0].sourceText, 'committed');
+  assert.equal(mergeMeetingViewerSnapshot(current, { cues: [provisional] }).cues[0].status, 'final');
+});
+
 const cue = (cueId, segmentSequence, sequence, translatedText = cueId, refinement = 1) => ({
   cueId, segmentSequence, sequence, status: 'final', sourceText: cueId, translatedText,
   refinement: { version: refinement }

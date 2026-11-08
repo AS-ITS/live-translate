@@ -19,19 +19,6 @@ export function createMeetingCheckpointApiClient({
     { timeoutMs, operation, ...timeoutOptions }
   );
 
-  async function postRecordingHeartbeat({ meetingId, path, leaseId, fenceToken }) {
-    assertNonEmptyString(meetingId, 'meetingId');
-    assertNonEmptyString(leaseId, 'leaseId');
-    if (!Number.isSafeInteger(fenceToken) || fenceToken < 0) throw new TypeError('fenceToken must be a non-negative integer.');
-    const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/${path}`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
-      body: JSON.stringify({ leaseId, fenceToken })
-    }, path);
-    await assertOkResponse(response, { operation: path });
-    return parseJsonResponse(response);
-  }
-
   return Object.freeze({
     async createMeeting(input = {}) {
       const { liveSessionId, glossaryEntries = [], privateGlossaryEntries = [], name, sourceLanguageCode, targetLanguageCode, draft = false } = input;
@@ -113,88 +100,6 @@ export function createMeetingCheckpointApiClient({
         throw error;
       }
       return parseStartMeetingResponse(response);
-    },
-
-    async executeRecordingCommand({ meetingId, command, ...body } = {}) {
-      assertNonEmptyString(meetingId, 'meetingId');
-      assertNonEmptyString(command, 'command');
-      if (!['start', 'pause', 'resume', 'rollover', 'recover', 'stop', 'takeover'].includes(command)) {
-        throw new TypeError('command is not supported.');
-      }
-      const path = `/api/meetings/${encodeURIComponent(meetingId)}/recording/${command}`;
-      const response = await request(buildUrl(baseUrl, path), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
-        body: JSON.stringify(body)
-      }, `recording-${command}`, lifecycleTimeoutMs);
-      try {
-        await assertOkResponse(response, { operation: `recording-${command}` });
-      } catch (error) {
-        error.endpoint = path;
-        throw error;
-      }
-      return parseLifecycleResponse(response);
-    },
-
-    async lookupRecordingOperation({ meetingId, operationId } = {}) {
-      assertNonEmptyString(meetingId, 'meetingId');
-      assertNonEmptyString(operationId, 'operationId');
-      const path = `/api/meetings/${encodeURIComponent(meetingId)}/recording/operations/${encodeURIComponent(operationId)}`;
-      const response = await request(buildUrl(baseUrl, path), {
-        method: 'GET',
-        headers: authorizationHeadersFor(authorizationHeaders)
-      }, 'recording-operation-lookup', lifecycleTimeoutMs);
-      await assertOkResponse(response, { operation: 'recording-operation-lookup' });
-      return parseJsonResponse(response);
-    },
-
-    async recoverRecordingLease({ meetingId, ...body } = {}) {
-      assertNonEmptyString(meetingId, 'meetingId');
-      const path = `/api/meetings/${encodeURIComponent(meetingId)}/recording/lease/recover`;
-      const response = await request(buildUrl(baseUrl, path), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
-        body: JSON.stringify(body)
-      }, 'recording-lease-recover', lifecycleTimeoutMs);
-      await assertOkResponse(response, { operation: 'recording-lease-recover' });
-      return parseJsonResponse(response);
-    },
-
-    async renewRecordingLease({ meetingId, leaseId, fenceToken } = {}) {
-      return postRecordingHeartbeat({ meetingId, path: 'recording/lease/heartbeat', leaseId, fenceToken });
-    },
-    async resumeLegacySegment({ meetingId, ...body } = {}) {
-      assertNonEmptyString(meetingId, 'meetingId');
-      const path = `/api/meetings/${encodeURIComponent(meetingId)}/recording/legacy-resume`;
-      const response = await request(buildUrl(baseUrl, path), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
-        body: JSON.stringify(body)
-      }, 'recording-legacy-resume', lifecycleTimeoutMs);
-      try {
-        await assertOkResponse(response, { operation: 'recording-legacy-resume' });
-      } catch (error) {
-        error.endpoint = path;
-        throw error;
-      }
-      return parseLegacyResumeResponse(response);
-    },
-    async getLegacyResumeOperation({ meetingId, operationId, sourceSegmentId } = {}) {
-      assertNonEmptyString(meetingId, 'meetingId');
-      assertNonEmptyString(operationId, 'operationId');
-      assertNonEmptyString(sourceSegmentId, 'sourceSegmentId');
-      const path = `/api/meetings/${encodeURIComponent(meetingId)}/recording/legacy-resume`;
-      const response = await request(buildUrl(baseUrl, path), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
-        body: JSON.stringify({ operationId, sourceSegmentId, reconcileOnly: true })
-      }, 'get-legacy-resume-operation', lifecycleTimeoutMs);
-      await assertOkResponse(response, { operation: 'get-legacy-resume-operation' });
-      return parseLegacyResumeResponse(response);
-    },
-
-    async heartbeatMeeting({ meetingId, leaseId, fenceToken } = {}) {
-      return postRecordingHeartbeat({ meetingId, path: 'heartbeat', leaseId, fenceToken });
     },
 
     async getCheckpoint({ meetingId, segmentId } = {}) {
@@ -431,27 +336,6 @@ async function parseRolloverResponse(response) {
   const body = await parseJsonResponse(response);
   if (!body || typeof body !== 'object' || !body.completedSegment || !body.segment || typeof body.segment.id !== 'string') {
     throw new Error('Rollover response must contain completedSegment and segment.id.');
-  }
-  return body;
-}
-
-async function parseLifecycleResponse(response) {
-  const body = await parseJsonResponse(response);
-  if (!body || typeof body !== 'object' || !body.meeting?.id || !body.session?.id || !body.lease?.leaseId) {
-    throw new Error('Meeting lifecycle response is incomplete.');
-  }
-  return body;
-}
-
-async function parseLegacyResumeResponse(response) {
-  const body = await parseJsonResponse(response);
-  if (!body || typeof body !== 'object'
-    || !body.meeting?.id
-    || !body.segment?.id
-    || !body.operation?.payloadHash
-    || !body.operation?.sourceSegmentId
-    || typeof body.effectiveGlossaryRevision !== 'string') {
-    throw new Error('Legacy resume response is incomplete.');
   }
   return body;
 }

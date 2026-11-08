@@ -89,17 +89,9 @@ export, history, or summary. Translation/refinement failures are recorded as
 execution failures and surfaced for retry; they cannot pause or fail the Live
 transcription session.
 
-Cue immutable fields are `cueId`, `sessionId`, `segmentId`, `sequence`,
-`startTimeMs`, `endTimeMs`, and `sourceText` (plus language identity). Only
-translation/refinement values, versions, status, and safe execution metadata
-may change. Stale or duplicate worker output is ignored by Cue version and
-input-hash checks.
+Cue identity is `cueId`, `sessionId`, `segmentId`, `sequence`, `startTimeMs`, and language/mode. A later Final Cue revision may extend `endTimeMs` and revise Source or Translation for the same provider turn when side version and newer provider-event evidence prove the transition. A changed raw input resets stale refinement; completed refinement remains bound to its input hash. Duplicate and stale revisions do not overwrite a newer Cue, while equal-revision differences are conflicts.
 
-Local Final Cue checkpoints retain a supplied positive Cue revision. A newer
-revision may update `finalizedReason` only while side and refinement state
-remains monotonic. A legacy Checkpoint Cue without revision can adopt a
-reason-only update only when the same revision and normalized Cue are already
-durable in the local Cue store; otherwise the reason conflict remains.
+For B2 local-only Meetings, the IndexedDB Cue store owns committed Final Cue content. A Cue revision and its Checkpoint cursor commit in one IndexedDB transaction. Subsequent Checkpoint writes use the cursor/metadata-only storage entry and reject Cue content. Reload and Meeting detail read committed Local Cues without Checkpoint or cloud Cue fallback. Pending Cues remain provisional until Writer ownership is proven. Legacy meetings remain read-only until separately upgraded or exported.
 
 Lifecycle protection applies at every boundary: start and pre-roll establish
 the session/segment checkpoint before audio is accepted; pause/resume flushes

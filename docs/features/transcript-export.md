@@ -115,7 +115,7 @@ server endpoints remain available for compatibility.
 
 ## Issue #41 local Meeting export
 
-The Meeting detail export panel now downloads TXT, SRT, and VTT from Cues read from this Host browser's IndexedDB. Original audio downloads require a local OPFS artifact. When local content is absent, the panel shows an unavailable state and does not fall back to the cloud export API. The legacy cloud export endpoints still exist; this UI change does not disable their server-side writes. Reload export of translated audio is not yet available.
+The Meeting detail export panel now downloads TXT, SRT, and VTT from Cues read from this Host browser's IndexedDB. Original audio downloads require a local OPFS artifact. When local content is absent, the panel shows an unavailable state and does not fall back to the cloud export API. Legacy cloud export endpoints remain for historical compatibility; lifecycle v2 Meeting reads and queued Worker jobs are rejected before cloud Cue reads or artifact writes. Reload export of translated audio is not yet available.
 
 ## 6. Export Formats
 

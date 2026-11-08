@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "server": "node server/index.js",
-    "start": "node server/index.js --production",
+    "start": "node scripts/start-local.mjs",
     "start:local": "node scripts/start-local.mjs",
     "start:production": "node server/index.js --production",
     "db:start": "npx supabase start",

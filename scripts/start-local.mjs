@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { loadEnv } from 'vite';
+import { parseEnv } from 'node:util';
 
 const project = new URL('../', import.meta.url).pathname;
-const configured = loadEnv('development', project, '');
 const redisUrl = process.env.LOCAL_REDIS_URL || 'redis://127.0.0.1:6379';
+const localOAuthEnvFile = join(project, 'supabase/.env.local');
+const hostEnvironment = (env) => Object.fromEntries(Object.entries(env).filter(([key]) =>
+  ['PATH', 'HOME', 'TMPDIR', 'USER', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'CI',
+    'DOCKER_HOST', 'DOCKER_CONTEXT'].includes(key)));
 export function resolveLocalSupabaseWorkdir(value) {
-  if (!String(value || '').trim()) throw new Error('LOCAL_SUPABASE_WORKDIR is required.');
-  const workdir = resolve(value);
-  if (workdir === resolve(project)) throw new Error('LOCAL_SUPABASE_WORKDIR must be an isolated workdir.');
-  return workdir;
+  if (String(value || '').trim() && resolve(value) !== resolve(project)) {
+    throw new Error('Local Supabase must use the main project directory.');
+  }
+  return resolve(project);
 }
 
 export function isLoopbackUrl(value, protocol = 'http:') {
@@ -28,35 +30,50 @@ export function readConfigPort(config, sectionName, fallback = null) {
   return section?.match(/^port\s*=\s*(\d+)/mu)?.[1] || fallback;
 }
 
-function command(name, args) {
-  const result = spawnSync(name, args, { cwd: project, encoding: 'utf8', env: { ...process.env, SUPABASE_TELEMETRY_DISABLED: '1' } });
+export function readLocalGoogleOAuthSecret(path = localOAuthEnvFile) {
+  let file;
+  try { file = lstatSync(path); } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (!file.isFile() || (file.mode & 0o777) !== 0o600) {
+    throw new Error('supabase/.env.local must be a regular file with mode 600.');
+  }
+  return parseEnv(readFileSync(path, 'utf8')).SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET?.trim() || null;
+}
+
+function command(name, args, googleClientSecret = null) {
+  const env = { ...hostEnvironment(process.env), SUPABASE_TELEMETRY_DISABLED: '1' };
+  if (name === 'supabase' && googleClientSecret) {
+    env.SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET = googleClientSecret;
+  }
+  const result = spawnSync(name, args, { cwd: project, encoding: 'utf8', env });
   if (result.status !== 0) throw new Error(`${name} ${args[0]} failed; check the local service and CLI permissions.`);
   return result.stdout.trim();
 }
 
 function checkLocalServices() {
   const supabaseWorkdir = resolveLocalSupabaseWorkdir(process.env.LOCAL_SUPABASE_WORKDIR);
+  const googleClientSecret = readLocalGoogleOAuthSecret();
   if (!isLoopbackUrl(redisUrl, 'redis:')) throw new Error('LOCAL_REDIS_URL must point to loopback Redis.');
-  if (!String(configured.AUTH_ALLOWED_EMAIL_DOMAINS || '').trim()) throw new Error('AUTH_ALLOWED_EMAIL_DOMAINS is required.');
   const config = readFileSync(join(supabaseWorkdir, 'supabase/config.toml'), 'utf8');
   const projectId = config.match(/^project_id\s*=\s*"([A-Za-z0-9_-]+)"/mu)?.[1];
   const apiPort = readConfigPort(config, 'api', '54321');
   const dbPort = readConfigPort(config, 'db');
   if (!projectId || !dbPort) throw new Error('Local Supabase project ID or DB port is missing.');
-  if (projectId === 'live-translate') {
-    throw new Error('An isolated workdir must use a distinct Supabase project ID.');
-  }
   const repoMigrations = readdirSync(join(project, 'supabase/migrations'))
     .filter((name) => /^\d{14}_.*\.sql$/u.test(name)).sort();
-  const localMigrations = readdirSync(join(supabaseWorkdir, 'supabase/migrations'))
-    .filter((name) => /^\d{14}_.*\.sql$/u.test(name)).sort();
-  const sameFiles = repoMigrations.length === localMigrations.length
-    && repoMigrations.every((name, index) => name === localMigrations[index]
-      && createHash('sha256').update(readFileSync(join(project, 'supabase/migrations', name))).digest('hex')
-      === createHash('sha256').update(readFileSync(join(supabaseWorkdir, 'supabase/migrations', name))).digest('hex'));
-  if (!sameFiles) throw new Error('Isolated Supabase migrations differ from the repository.');
   command('docker', ['info', '--format', '{{.ServerVersion}}']);
-  const status = JSON.parse(command('supabase', ['status', '-o', 'json', '--workdir', supabaseWorkdir]));
+  let status;
+  try {
+    status = JSON.parse(command('supabase', ['status', '-o', 'json', '--workdir', supabaseWorkdir], googleClientSecret));
+  } catch {
+    if (!googleClientSecret) {
+      throw new Error('Set SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET in supabase/.env.local before restarting Local Supabase.');
+    }
+    command('supabase', ['start', '--workdir', supabaseWorkdir], googleClientSecret);
+    status = JSON.parse(command('supabase', ['status', '-o', 'json', '--workdir', supabaseWorkdir], googleClientSecret));
+  }
   const apiUrl = status.API_URL;
   let databaseUrl;
   try { databaseUrl = new URL(status.DB_URL); } catch { /* fail closed below */ }
@@ -66,6 +83,8 @@ function checkLocalServices() {
     || databaseUrl.port !== dbPort || !status.ANON_KEY || !status.SERVICE_ROLE_KEY) {
     throw new Error('Supabase CLI must report matching loopback API/DB endpoints and local keys.');
   }
+  const authSettings = JSON.parse(command('curl', ['-fsS', `${apiUrl}/auth/v1/settings`]));
+  if (authSettings.external?.google !== true) throw new Error('Local Supabase Google provider is disabled.');
   const databaseContainer = `supabase_db_${projectId}`;
   const applied = command('docker', ['exec', databaseContainer, 'psql', '-U', 'postgres', '-At', '-c',
     'select version from supabase_migrations.schema_migrations order by version']);
@@ -75,7 +94,13 @@ function checkLocalServices() {
     || expectedVersions.some((version, index) => version !== appliedVersions[index])) {
     throw new Error('Local Supabase migration history differs from the repository.');
   }
-  const ping = command('redis-cli', ['-u', redisUrl, 'PING']);
+  let ping;
+  try { ping = command('redis-cli', ['-u', redisUrl, 'PING']); } catch {
+    const port = new URL(redisUrl).port || '6379';
+    command('redis-server', ['--daemonize', 'yes', '--bind', '127.0.0.1', '--port', port,
+      '--save', '', '--appendonly', 'no']);
+    ping = command('redis-cli', ['-u', redisUrl, 'PING']);
+  }
   if (ping !== 'PONG') throw new Error('Local Redis did not respond to PING.');
   return { apiUrl, anonKey: status.ANON_KEY, serviceKey: status.SERVICE_ROLE_KEY };
 }
@@ -85,15 +110,16 @@ export function buildLocalEnvironment(local, baseEnv = process.env) {
     throw new Error('Local Supabase URL and keys must come from a loopback stack.');
   }
   return {
-    ...configured, ...baseEnv,
+    ...hostEnvironment(baseEnv),
     NODE_ENV: 'development', LOCAL_SUPABASE_MODE: 'true', SUPABASE_URL: local.apiUrl,
     GEMINI_API_KEY: '', ENABLE_REAL_GEMINI_TEST: 'false',
+    LOCAL_MOCK_PROVIDER: baseEnv.LOCAL_MOCK_PROVIDER === 'true' ? 'true' : 'false',
     SUPABASE_SECRET_KEY: local.serviceKey,
     SUPABASE_PUBLISHABLE_KEY: local.anonKey,
     SUPABASE_REALTIME_SIGNING_PRIVATE_JWK: '', SUPABASE_WORKER_USER_ID: '',
     SUPABASE_JWKS_URL: `${local.apiUrl}/auth/v1/.well-known/jwks.json`,
     VITE_SUPABASE_URL: local.apiUrl, VITE_SUPABASE_PUBLISHABLE_KEY: local.anonKey,
-    AUTH_ALLOWED_EMAIL_DOMAINS: configured.AUTH_ALLOWED_EMAIL_DOMAINS,
+    AUTH_ALLOWED_EMAIL_DOMAINS: 'as.edu.tw',
     WEBRTC_SIGNALING_REDIS_URL: redisUrl, WEBRTC_SIGNALING_REDIS_TOKEN: '',
     REDIS_URL: redisUrl, UPSTASH_REDIS_REST_URL: '', UPSTASH_REDIS_REST_TOKEN: '',
     dev_frontend_origin: 'http://127.0.0.1:5173', dev_backend_origin: 'http://127.0.0.1:3000',

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Issue #41 Local Viewer metadata authorization: Viewer metadata GET requests now reach the existing share credential, role, and expiry checks without a login Bearer token. Formal `npm run start` on isolated Supabase returned 200 for a valid Viewer code and 404 for invalid or expired codes; Host API authentication and cross-account isolation remained intact. Mock Viewer received Snapshot, Append, and Update; Final Cue matched Host. A forced Viewer peer close reconnected automatically with the Cue retained. Cue, WebRTC, and Local Storage core were unchanged.
+
+- Issue #41 Local RC startup acceptance (2026-11-07): RC baseline is branch `chore/issue41-consolidation-issue-41` at HEAD `7423e9cc9efa9c0573b5112655439e73674bcfbd` with pre-existing uncommitted changes (85 tracked entries, 31 untracked; 5 staged files). Historical Real Gemini Smoke `2026-11-07t09-51-53-840z-53969` and Local Mock/Cloud Zero Write `core-1794060838434-4cc4d7b8` passed; two original `/api/profile` failed fetches remain **UNRESOLVED**. `npm run start` now targets isolated Local Supabase, API, and Vite; local Mock Start, Pause, End, Reload, and Export passed. Formal Viewer sync remains blocked by 401 on shared-meeting metadata. Remaining acceptance: fix that authorization path, rerun Host/Viewer from `npm run start`, and independently verify preservation of pre-existing browser OPFS/IndexedDB data. Original evidence and existing Local user meetings were left intact.
+
+- Issue #41 P0 Meeting ownership: Loopback Supabase credentials now select the persistent repository even when the Gemini Key is empty. Member create immediately supports detail and Viewer Share; targeted member, cross-account, and Viewer Token authorization checks pass without Share retries.
+
+- Issue #41 B2 final Legacy cleanup: Removed retired Local Storage Cue and unassigned Cue write APIs, Checkpoint Cue snapshot merge, and the translation worker's cloud Cue repository branch. B2 Writer, metadata-only Checkpoint, and legacy local read paths remain. Legacy A/B export E2E still fails after fixture readback; manual Gemini acceptance remains on hold.
+
+- Issue #41 B2 integration: Routed new and B2 Checkpoint writes through cursor/metadata-only storage, made Local Cue the B2 Recovery authority, published Viewer Final Cues from Writer ACK with durable revisions, and retired the cloud Cue POST handler and service while preserving HTTP 410. Isolated Reload and Viewer tests passed; manual Gemini/Viewer acceptance remains on hold.
+
+- Issue #41 B2-L integration: Retired parallel cloud recording mutation routes and service wiring, added Local Supabase write guards, persisted retryable Host End completion, made Meeting completion versioned and idempotent, separated Viewer Stop/End notifications, and kept cloud Meeting metadata and glossary paths.
+- Issue #41 B2-L End version fix: Exposed the existing atomic completion RPC and settings-only PATCH from the Supabase Meeting repository; draft completion now fills `started_at` from `created_at` in the same transaction as status, deadline, and lifecycle version.
+
+- Issue #41 B2-2: Removed the unused browser Legacy Resume helper and its dedicated tests; retained the current Host recovery error contract test under lifecycle regression coverage.
+
+- Issue #41 B2-1: Removed the unused cloud Meeting export panel and its exclusive browser API client. The active Meeting detail export remains local IndexedDB/OPFS.
+
+- Issue #41 B1-2: Lifecycle v2 Viewer legacy detail reads return `410`; queued cloud Export Worker jobs stop before Cue reads or artifact writes. Isolated Local Supabase contract confirms direct table, RPC, and Storage writes are rejected while metadata lifecycle remains available. Production is unchanged.
+
 - Issue #41: Local-only Pause now releases the PCM Journal writer after its END receipt; Continue verifies ownership before opening the next epoch's writer.
 
 - Issue #41：Pause 以獨立 boundary ID 封存並持久保存 PCM Journal END receipt；Continue 驗證該 receipt 與 predecessor coverage 後，透過既有 IndexedDB Segment Integrity transaction 提交唯一 successor。Reload、重複 Continue 與失去 ACK 依 durable operation 對帳；證據缺失時保留錄音並回報 `INTEGRITY_UNRESOLVED`。

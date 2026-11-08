@@ -109,6 +109,7 @@ test('source creates bounded snapshot and replay envelopes', () => {
   assert.equal(replay.sourceId, 'source-1');
   assert.deepEqual(replay.events.map((event) => event.sequence), [2, 3]);
   assert.equal(createEnvelope(SUBTITLE_ENVELOPE_TYPES.meetingStopped, { meetingId: 'm-1' }).type, 'meeting.stopped');
+  assert.equal(createEnvelope(SUBTITLE_ENVELOPE_TYPES.recordingStopped, { meetingId: 'm-1' }).type, 'recording.stopped');
 });
 
 test('source sends snapshot when replay cursor predates bounded history', () => {

@@ -1,5 +1,16 @@
 # Session Lifecycle Management
 
+## Issue #41 B2-L unified lifecycle
+
+The Host's IndexedDB/OPFS recording is the only active Session/Segment authority.
+Stop seals the current recording while Meeting metadata stays open. End seals
+locally, persists a pending completion intent and 30-minute content deadline,
+then commits Supabase `completed`, `ended_at`, and a new lifecycle version.
+Reload retries unfinished metadata completion without creating a Segment or
+restarting capture. Viewer Stop and End notifications use separate DataChannel
+messages. Supabase retains Meeting settings, glossary, permissions, sharing, and
+connection coordination. Historical cloud recording rows are retained.
+
 ## Issue #41 Local-only Cutover (isolated branch)
 
 Stop and End wait for Host PCM Journal, input audio, enabled translated audio, Cue, transcript, and Checkpoint local writes before lifecycle metadata is submitted. A failed local write stops completion. Unknown metadata outcomes retain the IndexedDB lifecycle intent and use the owner/Meeting/principal-scoped operation lookup and fenced lease recovery after Reload. Local-only Rollover uses a stable operationId derived from the current local Segment. It drains Provider Cues, seals the audio container, waits for local Checkpoint and PCM Journal durable flush, and atomically commits the successor Segment plus operationId in IndexedDB before updating currentSegmentId. A failed barrier leaves the old Segment current; a committed successor remains recoverable after Reload even if Provider startup fails. The legacy cloud Recording lifecycle RPC and Segment reconciliation are not used. Cloud content writing is disabled by the Cutover Migration; existing historical rows are retained for controlled cleanup.
@@ -202,6 +213,8 @@ The captured PCM Journal stores committed PCM and claim records under `pcm-journ
 Rollover, checkpoint, Cue persistence, and provider transition do not own the WebRTC DataChannel lifecycle. A healthy Viewer channel must remain open through Supabase or lifecycle failures.
 
 Local-only Pause waits for the PCM END receipt and closes the writer before Continue verifies ownership. Continue opens a fresh writer for the next epoch after the verifier releases its handle.
+
+Pause keeps the Host Viewer sidecar active through `stopping`. After local Cue mutations commit, the Host publishes the committed final Cues before transitioning to `paused`; a Viewer cursor alone does not establish Cue convergence.
 
 ## UI State Mapping
 

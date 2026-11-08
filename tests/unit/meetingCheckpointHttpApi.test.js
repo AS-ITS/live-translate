@@ -108,7 +108,7 @@ test('completed Meeting locks settings and new shares but permits Viewer share r
   const revokeShare = await request(handler, { method: 'DELETE', url: `/api/meetings/${created.meeting.id}/shares/${share.id}` });
   assert.equal(revokeShare.status, 204);
 });
-test('Meeting Viewer shares expose sanitized historical detail by token and short code', async () => {
+test('v2 Meeting Viewer legacy detail routes reject cloud content by token and short code', async () => {
   const shareService = createSessionShareService();
   const handler = createHandler({ sessionShareService: shareService });
   const created = (await request(handler, {
@@ -136,11 +136,8 @@ test('Meeting Viewer shares expose sanitized historical detail by token and shor
   const byToken = await request(handler, { method: 'GET', url: `/api/shared-meetings/${shareBody.share.token}` });
   const byCode = await request(handler, { method: 'GET', url: `/api/shared-meetings/code/${shareBody.share.shortCode}` });
   for (const response of [byToken, byCode]) {
-    assert.equal(response.status, 200);
-    assert.equal(response.json().capability.role, 'viewer');
-    assert.equal(response.json().meeting.glossaryEntries, undefined);
-    assert.equal(response.json().meeting.privateGlossaryEntries, undefined);
-    assert.equal(response.json().audioArtifacts, undefined);
+    assert.equal(response.status, 410);
+    assert.equal(response.json().error.code, 'meeting_content_local_only');
   }
 });
 
@@ -484,6 +481,20 @@ test('metadata-only Viewer share route preserves token, code, and expiry checks 
   const handler = createHandler({ meetingRepository: repository, sessionShareService: shareService });
   const created = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
   const share = shareService.createMeetingShare(created.meeting.id, { role: 'viewer', expiresAt: now + 60_000 });
+  const strictHandler = createHandler({
+    meetingRepository: repository,
+    sessionShareService: shareService,
+    accessControl: {
+      async validateRequest() {
+        const error = new Error('Access token is required.');
+        error.code = 'auth_required';
+        throw error;
+      }
+    }
+  });
+  assert.equal((await request(strictHandler, { url: `/api/shared-meetings/code/${share.shortCode}/metadata` })).status, 200);
+  assert.equal((await request(strictHandler, { url: '/api/shared-meetings/code/invalid/metadata' })).status, 404);
+  assert.equal((await request(strictHandler, { url: '/api/meetings' })).status, 401);
   const tokenPath = `/api/shared-meetings/${share.token}/metadata`;
   const codePath = `/api/shared-meetings/code/${share.shortCode}/metadata`;
   for (const url of [tokenPath, codePath]) {
@@ -655,3 +666,22 @@ async function request(handler, { method = 'GET', url = '/', body = '', headers 
     }
   };
 }
+
+test('another authenticated user cannot complete a Meeting they cannot manage', async () => {
+  let checkedManagement = false;
+  const handler = createHandler({
+    accessControl: { validateRequest: async () => ({ id: 'other-user', role: 'member', status: 'active' }) },
+    profileService: {
+      getProfile: async () => ({ id: 'other-user', role: 'member', status: 'active' }),
+      findMeetingMembership: async () => null
+    },
+    meetingMembershipService: {
+      canManage: async () => { checkedManagement = true; return false; },
+      getMeetingOwner: async () => 'meeting-owner'
+    }
+  });
+  const response = await request(handler, { method: 'POST', url: '/api/meetings/other-meeting/complete' });
+  assert.equal(response.status, 403);
+  assert.equal(response.json().error.code, 'auth_forbidden');
+  assert.equal(checkedManagement, true);
+});

@@ -1,14 +1,16 @@
 import { expect, test } from '@playwright/test';
 import { createHash } from 'node:crypto';
-import { appendFileSync, createWriteStream, writeFileSync } from 'node:fs';
+import { appendFileSync, createWriteStream, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { serializeEffectiveGlossary } from '../../src/lib/glossaryRevision.js';
 import { installE2EAuth, localE2EAuthSession } from './authBootstrap.js';
 import { databaseSnapshot, installWriteAudit, recordedWrites } from './issue41DbWriteAudit.js';
+import { attachPauseDiagnostics, createPauseDiagnostics } from './issue41PauseDiagnostics.js';
 import { collectIssue41OwnershipEvidence } from './issue41OwnershipEvidence.js';
 import { PROVISIONAL_RAM_THRESHOLDS } from '../../scripts/issue41-ram-gate.mjs';
+import { assertCommittedLocalRolloverOperation } from './issue41RolloverOperation.mjs';
 
 const shortValidation = process.env.ISSUE41_SHORT_VALIDATION === 'true';
 const recordingOnly = process.env.ISSUE41_RECORDING_ONLY === 'true';
@@ -27,8 +29,9 @@ const ramAbcMode = recordingOnly ? process.env.ISSUE41_RAM_ABC_MODE || null : nu
 const ramProfileC = recordingOnly && process.env.ISSUE41_RAM_3C_PROFILE === 'true';
 if (ramAbcMode && !['A', 'B', 'C'].includes(ramAbcMode)) throw new Error('Invalid RAM ABC mode');
 const soakMinutes = Number(process.env.ISSUE41_RECORDING_SOAK_MINUTES || 20);
-const realTimeRam40 = recordingSoak && soakMinutes === 40 && !zeroWriteAudit;
-const localRamMeasurement = realTimeRam40 || ramAttributionSmoke || ramAbcSmoke || Boolean(ramAbcMode) || ramProfileC;
+const naturalRollover21 = recordingSoak && soakMinutes === 21;
+const ramGateMode = recordingSoak && [40, 130].includes(soakMinutes) && !zeroWriteAudit;
+const localRamMeasurement = naturalRollover21 || ramGateMode || recordingContract || ramAttributionSmoke || ramAbcSmoke || Boolean(ramAbcMode) || ramProfileC;
 const recordingSmoke = recordingOnly && shortValidation && !recordingContract && !localRamMeasurement;
 
 function installCoreContinueRolloverClock() {
@@ -58,7 +61,7 @@ function attributeHostRenderer({ pageTargetId, pageTargets, hostPageCount, rende
   return { method: reason ? 'UNATTRIBUTED' : 'ISOLATED_SINGLE_PAGE_SINGLE_RENDERER', reason,
     rendererPid: reason ? null : rendererPids[0] };
 }
-if (recordingSoak && ![20, 40, 130].includes(soakMinutes) && !((ram10Diagnostic || ramAbcMode) && soakMinutes === 10)) throw new Error('Unsupported recording soak duration');
+if (recordingSoak && ![20, 21, 40, 130].includes(soakMinutes) && !((ram10Diagnostic || ramAbcMode) && soakMinutes === 10)) throw new Error('Unsupported recording soak duration');
 const evidenceFile = process.env.ISSUE41_EVIDENCE_FILE;
 const supabaseUrl = process.env.SUPABASE_URL;
 const publishableKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -219,6 +222,11 @@ test(ramProfileC ? "issue41 RAM-3C isolated profile" : ramAbcSmoke ? "issue41 A/
   expect(serviceKey, 'isolated service key is required for the zero-write inventory').toBeTruthy();
 const evidence = { mode: recordingContract ? 'recording-rollover-contract' : recordingSoak ? `recording-${soakMinutes}min-soak` : recordingOnly ? 'recording-only' : shortValidation ? 'short-validation' : 'real-time-soak',
     startedAt: new Date().toISOString(), api: [], browserErrors: [], cues: [], viewer: [] };
+  if (coreAcceptance) {
+    const fetchDiagnostics = createPauseDiagnostics();
+    attachPauseDiagnostics(page, fetchDiagnostics);
+    evidence.failedFetches = fetchDiagnostics.requestfailed;
+  }
   const save = () => { if (evidenceFile) writeFileSync(evidenceFile, JSON.stringify(evidence, null, 2)); };
   const headers = { Authorization: `Bearer ${auth.token}` };
   const dbHeaders = { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` };
@@ -282,13 +290,13 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
 
   await installE2EAuth(page);
   if (coreAcceptance) await page.addInitScript(installCoreContinueRolloverClock);
-  if (ramAbcMode || ramAbcSmoke || ramProfileC || realTimeRam40 || ramAttributionSmoke) await page.addInitScript((mode) => {
+  if (ramAbcMode || ramAbcSmoke || ramProfileC || naturalRollover21 || ramGateMode || recordingContract || ramAttributionSmoke) await page.addInitScript((mode) => {
     const originalDebug = console.debug.bind(console);
     window.__issue41DiagnosticMode = mode;
     console.debug = (...args) => {
       if (window.__issue41DiagnosticMode === 'A') originalDebug(...args);
     };
-  }, ramProfileC || realTimeRam40 || ramAttributionSmoke ? 'C' : ramAbcMode || 'A');
+  }, ramProfileC || naturalRollover21 || ramGateMode || recordingContract || ramAttributionSmoke ? 'C' : ramAbcMode || 'A');
   if (localRamMeasurement) await page.addInitScript(() => { window.__issue41BoundMockPcm = true; });
   await page.addInitScript(() => {
     const NativeWorker = window.Worker;
@@ -863,9 +871,10 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       await expect.poll(async () => (await localState(meetingId)).recording?.state,
         { message: 'End must commit stopped_local after the local durable barrier', timeout: 60_000 })
         .toBe('stopped_local');
-      await expect.poll(() => page.evaluate(() => window.location.hash),
-        { message: 'End lifecycle must finish before Reload', timeout: 30_000 }).toBe('#meetings');
-      evidence.endBarrier = { at: new Date().toISOString(), recordingState: 'stopped_local', route: '#meetings' };
+  const endRoute = `#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=history`;
+  await expect.poll(() => page.evaluate(() => window.location.hash),
+    { message: 'End lifecycle must finish before Reload', timeout: 30_000 }).toBe(endRoute);
+  evidence.endBarrier = { at: new Date().toISOString(), recordingState: 'stopped_local', route: endRoute };
       save();
       if (coreAcceptance) {
         try {
@@ -916,6 +925,23 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       expect(evidence.localAfterReload.checkpoints.length).toBeGreaterThan(0);
       expect(evidence.localAfterReload.cueSegments).toEqual(evidence.localBeforeEnd.cueSegments);
       expect(evidence.localAfterReload.state).toBe('stopped_local');
+  if (coreAcceptance) {
+    await page.getByRole('navigation', { name: '會議內容目錄' }).getByRole('button', { name: '匯出' }).click();
+    const exportPanel = page.getByRole('region', { name: '本機字幕匯出' });
+    const expectedExport = await page.evaluate(async (id) => {
+      const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+      const { exportCuesToTxt } = await import('/src/lib/subtitleCueExport.js');
+      const records = await createIndexedDbLocalMeetingManifestStore().listCues(id);
+      return exportCuesToTxt(records.map((record) => record.cue), { stream: 'translation' });
+    }, meetingId);
+    const downloadPromise = page.waitForEvent('download');
+    await exportPanel.getByRole('button', { name: '開始匯出' }).click();
+    const download = await downloadPromise;
+    const bytes = readFileSync(await download.path());
+    expect(bytes.toString('utf8')).toBe(expectedExport);
+    evidence.localExport = { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+    save();
+  }
       expect(evidence.localAfterReload.cueSegments.find((cue) => cue.source === 'issue41 audit before')?.segmentId)
         .toBe(firstSegmentId);
       expect(evidence.localAfterReload.cueSegments.find((cue) => cue.source === 'issue41 audit after')?.segmentId)
@@ -995,19 +1021,22 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
         audio: await storageObjects('meeting-audio'), exports: await storageObjects('meeting-exports')
       };
       evidence.recordingHttpWrites = auditRequests.filter(({ path }) =>
-        /\/api\/(?:sessions|meetings\/[^/]+\/(?:recording|segments|complete))(?:\/|$)/u.test(path)
+        /\/api\/(?:sessions|meetings\/[^/]+\/(?:recording|segments))(?:\/|$)/u.test(path)
         || /\/rest\/v1\/(?:sessions|meeting_recordings|meeting_segments|subtitle_cues|meeting_events)/u.test(path)
         || path.startsWith('/storage/v1/object/'));
       save();
     }
-    expect(evidence.writeEvents.filter((event) => event.relation_name !== 'public.observability_metric_buckets'))
+  const allowedMetadataTables = new Set(['public.meetings', 'public.observability_metric_buckets']);
+  expect(evidence.writeEvents.filter((event) => !allowedMetadataTables.has(event.relation_name)))
       .toEqual([]);
     for (const [relation, before] of Object.entries(evidence.dbBefore.tables)) {
-      if (relation === 'public.observability_metric_buckets') continue;
+    if (allowedMetadataTables.has(relation)) continue;
       expect(evidence.dbAfter.tables[relation], relation).toEqual(before);
     }
     expect(evidence.storageAfter).toEqual(evidence.storageBefore);
     expect(evidence.recordingHttpWrites).toEqual([]);
+  evidence.cloudZeroWrite = { status: 'PASS', prohibitedContentWrites: 0,
+    allowedMetadataWrites: evidence.writeEvents.filter((event) => allowedMetadataTables.has(event.relation_name)).length };
     evidence.result = 'ZERO_RECORDING_WRITE_PASS';
     if (coreAcceptance) {
       expect(evidence.viewer.map((row) => row.phase)).toEqual(['join-snapshot', 'subsequent-cue']);
@@ -1025,7 +1054,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       const { livePipelineTrace } = await import('/src/lib/livePipelineTrace.js');
       livePipelineTrace.setEnabled(debugEnabled);
       return window.__issue41PcmStartedAt;
-    }, !ramProfileC && !realTimeRam40 && !ramAttributionSmoke && (!ramAbcMode || ramAbcMode === 'A'));
+    }, !ramProfileC && !naturalRollover21 && !ramGateMode && !recordingContract && !ramAttributionSmoke && (!ramAbcMode || ramAbcMode === 'A'));
     expect(captureStart, 'real PCM capture start').toBeGreaterThan(0);
     await expect.poll(async () => (await localState(meetingId)).recording?.segmentId,
       { timeout: 30_000 }).toBeTruthy();
@@ -1035,7 +1064,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     evidence.captureStartedAt = new Date(captureStart).toISOString();
     evidence.ramConfiguration = { intervalMs: 30_000, heapSnapshots: false,
       playwrightTrace: false, thresholds: PROVISIONAL_RAM_THRESHOLDS };
-    if (realTimeRam40 || ramAttributionSmoke) {
+    if (naturalRollover21 || ramGateMode || recordingContract || ramAttributionSmoke) {
       const debug = await page.evaluate(async () => {
         const { livePipelineTrace } = await import('/src/lib/livePipelineTrace.js');
         return { traceEnabled: livePipelineTrace.isEnabled(), consoleMode: window.__issue41DiagnosticMode };
@@ -1562,6 +1591,87 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       fullScanIntervalMs, fullScanScope: 'OPFS-and-IndexedDB', fullScanPhase: 'after-memory-sample',
       olsWindowMinutes: 30 };
     evidence.fullScans = [];
+      evidence.rolloverDiagnostics = [];
+      evidence.providerTrace = [];
+      evidence.ramConfiguration.rolloverDiagnostic = { intervalMs: 5_000, beforeMs: 120_000,
+        afterMs: 300_000, source: 'read-only CDP and renderer RSS', gateSeriesPhase: 'capture' };
+      const unavailable = 'unavailable';
+      const metric = (values, name) => values?.find((entry) => entry.name === name)?.value ?? unavailable;
+      const rolloverTargets = recordingContract ? [15_000]
+        : Array.from({ length: Math.floor(soakMinutes / 15) }, (_, index) => (index + 1) * 15 * 60_000);
+      let diagnosticBusy = false;
+      let gateSampleBusy = false;
+      let traceWindow = null;
+      const collectProviderTrace = async () => {
+        if (traceWindow === null) return;
+        const events = await page.evaluate(async () => {
+          const { livePipelineTrace } = await import('/src/lib/livePipelineTrace.js');
+          const rows = livePipelineTrace.get().filter(({ stage }) => [
+            'PROVIDER_SESSION_CREATING', 'PROVIDER_SESSION_READY',
+            'SESSION_ROLLOVER_START', 'ROLLOVER_COMMITTED', 'ROLLOVER_FAILED'
+          ].includes(stage));
+          livePipelineTrace.setEnabled(false);
+          return rows;
+        });
+        evidence.providerTrace.push({ targetElapsedMs: traceWindow, events });
+        traceWindow = null;
+      };
+      const diagnosticTick = async () => {
+        if (diagnosticBusy || gateSampleBusy) return;
+        const elapsedMs = Date.now() - captureStart;
+        const targetElapsedMs = rolloverTargets.find((target) => elapsedMs >= Math.max(0, target - 120_000)
+          && elapsedMs <= target + 300_000);
+        if (targetElapsedMs === undefined) {
+          await collectProviderTrace();
+          return;
+        }
+        diagnosticBusy = true;
+        try {
+          if (traceWindow !== targetElapsedMs) {
+            await collectProviderTrace();
+            await page.evaluate(async () => {
+              const { livePipelineTrace } = await import('/src/lib/livePipelineTrace.js');
+              livePipelineTrace.setEnabled(true);
+            });
+            traceWindow = targetElapsedMs;
+          }
+          const started = Date.now();
+          const [performance, heap, dom, processes] = await Promise.all([
+            cdp.send('Performance.getMetrics').catch(() => null),
+            cdp.send('Runtime.getHeapUsage').catch(() => null),
+            cdp.send('Memory.getDOMCounters').catch(() => null),
+            system.send('SystemInfo.getProcessInfo').catch(() => null)
+          ]);
+          const rendererPids = processes?.processInfo?.filter((entry) => entry.type === 'renderer')
+            .map((entry) => entry.id) ?? [];
+          const rendererPid = rendererPids.length === 1 ? rendererPids[0] : unavailable;
+          let chromiumRssBytes = unavailable;
+          if (rendererPid !== unavailable) {
+            try {
+              const rss = Number(execFileSync('ps', ['-p', String(rendererPid), '-o', 'rss='],
+                { encoding: 'utf8' }).trim()) * 1024;
+              if (Number.isFinite(rss) && rss > 0) chromiumRssBytes = rss;
+            } catch { /* A missing renderer is reported as unavailable. */ }
+          }
+          const row = { phase: 'rollover_diagnostic', at: new Date(started).toISOString(),
+            elapsedMs: started - captureStart, targetElapsedMs, rendererPid,
+            rendererPidStable: firstRendererPid === null ? unavailable : rendererPid === firstRendererPid,
+            chromiumRssBytes, jsHeapUsedBytes: metric(performance?.metrics, 'JSHeapUsedSize'),
+            jsHeapAllocatedBytes: metric(performance?.metrics, 'JSHeapTotalSize'),
+            heapUsedBytes: heap?.usedSize ?? unavailable, heapAllocatedBytes: heap?.totalSize ?? unavailable,
+            backingStorageBytes: heap?.backingStorageSize ?? unavailable,
+            embedderHeapBytes: heap?.embedderHeapUsedSize ?? unavailable,
+            documents: dom?.documents ?? unavailable, nodes: dom?.nodes ?? unavailable,
+            jsEventListeners: dom?.jsEventListeners ?? unavailable,
+            sampleDurationMs: Date.now() - started };
+          evidence.rolloverDiagnostics.push(row);
+          if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify(row)}\n`);
+        } finally { diagnosticBusy = false; }
+      };
+      let diagnosticInFlight = Promise.resolve();
+      const diagnosticTimer = setInterval(() => { diagnosticInFlight = diagnosticTick().catch((error) => {
+        evidence.rolloverDiagnosticError = error.message;
+      }); }, 5_000);
     const fullScan = async (phase) => {
       const started = Date.now();
       const [storage, local] = await Promise.all([browserSample(), localState(meetingId)]);
@@ -1591,9 +1701,13 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       save();
     };
     await recordCue(initialSegmentId);
-    while (Date.now() - captureStart < 40 * 60_000) {
+      const requiredCaptureMs = recordingContract ? 45_000 : soakMinutes * 60_000;
+      try { while (Date.now() - captureStart < requiredCaptureMs) {
       const at = Date.now();
-      const [ram, browserState, recording] = await Promise.all([memory(), lightBrowserSample(), recordingSample()]);
+        gateSampleBusy = true;
+        let ram, browserState, recording;
+        try { [ram, browserState, recording] = await Promise.all([memory(), lightBrowserSample(), recordingSample()]); }
+        finally { gateSampleBusy = false; }
       const row = { phase: 'capture', at: new Date(at).toISOString(), elapsedMs: at - captureStart,
         ...ram, ...browserState, segmentId: recording?.segmentId ?? null,
         segmentNumber: recording?.segmentNumber ?? null, providerEpoch: recording?.providerEpoch ?? null };
@@ -1608,9 +1722,10 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
         expect(row.jsHeapBytes, 'heap safety stop').toBeLessThanOrEqual(PROVISIONAL_RAM_THRESHOLDS.jsHeapPeakMiB * 1048576);
       if (row.segmentId !== previousSegmentId) {
         const operation = await localRolloverOperation(previousSegmentId, row.segmentId, row.segmentNumber);
-        expect(operation, 'durable local rollover operation').toMatchObject({
-          meetingId, type: 'local_segment_rollover',
-          result: { meetingId, recordingId: firstRecording.recordingId, segmentId: row.segmentId }
+        assertCommittedLocalRolloverOperation(operation, recording, {
+          meetingId, recordingId: firstRecording.recordingId,
+          oldSegmentId: previousSegmentId, oldSegmentNumber: previousSegmentNumber,
+          newSegmentId: row.segmentId, newSegmentNumber: row.segmentNumber
         });
         expect(row.segmentNumber).toBe(previousSegmentNumber + 1);
         evidence.rolloverObservations.push({ oldSegmentId: previousSegmentId, newSegmentId: row.segmentId,
@@ -1620,9 +1735,11 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
         previousSegmentNumber = row.segmentNumber;
         save();
         await recordCue(row.segmentId);
-      }
-      if (row.elapsedMs >= 16 * 60_000) expect(evidence.rolloverObservations.length).toBeGreaterThanOrEqual(1);
-      if (row.elapsedMs >= 31 * 60_000) expect(evidence.rolloverObservations.length).toBeGreaterThanOrEqual(2);
+        }
+      if (row.elapsedMs >= (recordingContract ? 30_000 : 16 * 60_000))
+        expect(evidence.rolloverObservations.length).toBeGreaterThanOrEqual(1);
+      if (!recordingContract && soakMinutes >= 31 && row.elapsedMs >= 31 * 60_000)
+        expect(evidence.rolloverObservations.length).toBeGreaterThanOrEqual(2);
       if (Math.floor(row.elapsedMs / 60_000) !== Math.floor((row.elapsedMs - 30_000) / 60_000)) {
         expect(recordedWrites().filter((event) => event.relation_name !== 'public.observability_metric_buckets'),
           'transient recording writes').toEqual([]);
@@ -1635,8 +1752,12 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
         nextFullScanAt += fullScanIntervalMs;
       }
       nextSampleAt += 30_000;
-      await page.waitForTimeout(Math.max(0, nextSampleAt - Date.now()));
-    }
+        await page.waitForTimeout(Math.max(0, nextSampleAt - Date.now()));
+      } } finally {
+        clearInterval(diagnosticTimer);
+        await diagnosticInFlight;
+        await collectProviderTrace();
+      }
     const captureEndAt = Date.now();
 const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), lightBrowserSample(), recordingSample()]);
     if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify({ phase: 'capture',
@@ -1644,11 +1765,14 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
       ...endMemory, ...endBrowser, segmentId: endRecording?.segmentId ?? null,
       segmentNumber: endRecording?.segmentNumber ?? null, providerEpoch: endRecording?.providerEpoch ?? null })}\n`);
     evidence.captureElapsedMs = Date.now() - captureStart;
-    expect(evidence.rolloverObservations).toHaveLength(2);
-    expect(evidence.rolloverObservations[0].elapsedMs).toBeGreaterThanOrEqual(14 * 60_000);
-    expect(evidence.rolloverObservations[0].elapsedMs).toBeLessThan(16 * 60_000);
-    expect(evidence.rolloverObservations[1].elapsedMs).toBeGreaterThanOrEqual(29 * 60_000);
-    expect(evidence.rolloverObservations[1].elapsedMs).toBeLessThan(31 * 60_000);
+      expect(evidence.rolloverObservations).toHaveLength(recordingContract ? 1 : Math.floor(soakMinutes / 15));
+    expect(evidence.rolloverObservations[0].elapsedMs).toBeGreaterThanOrEqual(recordingContract ? 10_000 : 14 * 60_000);
+    expect(evidence.rolloverObservations[0].elapsedMs).toBeLessThan(recordingContract ? 40_000 : 16 * 60_000);
+    if (recordingContract) expect(await page.evaluate(() => window.__issue41ControlledRolloverTimer)).toBe(true);
+    if (!recordingContract && soakMinutes >= 31) {
+      expect(evidence.rolloverObservations[1].elapsedMs).toBeGreaterThanOrEqual(29 * 60_000);
+      expect(evidence.rolloverObservations[1].elapsedMs).toBeLessThan(31 * 60_000);
+    }
     evidence.preStopSegments = [initialSegmentId, ...evidence.rolloverObservations.map((entry) => entry.newSegmentId)]
       .map((id, index) => ({ id, sequence: index + 1 }));
     await page.getByRole('button', { name: '結束會議' }).click();
@@ -1689,20 +1813,55 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
     expect(restored.recording?.segmentId).toBe(previousSegmentId);
     expect(restored.chunks).toEqual(beforeReload.chunks);
     expect(restored.chunks.length).toBeGreaterThan(0);
-    expect(restored.checkpoints.length).toBeGreaterThanOrEqual(3);
+    expect(restored.checkpoints.length).toBeGreaterThanOrEqual(recordingContract || naturalRollover21 ? 2 : 3);
     expect(opfs.opfs.bytes).toBeGreaterThan(0);
     for (const cue of cueSegments) expect(restored.cues.find((entry) => entry.sourceText === cue.sourceText)?.segmentId).toBe(cue.segmentId);
     expect(restored.cues).toEqual(beforeReload.cues);
     expect(restored.checkpoints).toEqual(beforeReload.checkpoints);
-    expect(new Set(evidence.rolloverObservations.map((entry) => entry.newSegmentId)).size).toBe(2);
+      expect(new Set(evidence.rolloverObservations.map((entry) => entry.newSegmentId)).size).toBe(recordingContract ? 1 : Math.floor(soakMinutes / 15));
     expect(evidence.rolloverObservations[0].oldSegmentId).toBe(initialSegmentId);
-    expect(evidence.rolloverObservations[1].oldSegmentId).toBe(evidence.rolloverObservations[0].newSegmentId);
+    if (!recordingContract && soakMinutes >= 31)
+      expect(evidence.rolloverObservations[1].oldSegmentId).toBe(evidence.rolloverObservations[0].newSegmentId);
+    try {
+      const ownership = await page.evaluate(async (id) => {
+        const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+        const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+        const store = createIndexedDbLocalMeetingManifestStore();
+        const segments = await store.listSegments(id);
+        const verifier = await createLocalMeetingPersistence({ manifestStore: store })
+          .verifySegmentPcmOwnership(id);
+        return { segments, verifier: { status: verifier.status, reason: verifier.reason || null } };
+      }, meetingId);
+      const epochs = evidence.journalClaims[0].epochs;
+      evidence.segmentOwnership = { verifier: ownership.verifier,
+        segments: ownership.segments.map(({ segmentId, status, firstJournalEpoch, lastJournalEpoch }) =>
+          ({ segmentId, status, firstJournalEpoch, lastJournalEpoch })),
+        journalEpochs: epochs.map(({ captureEpoch, claims }) => ({ captureEpoch, claims })) };
+      evidence.segmentOwnershipVerified = ownership.verifier.status === 'PASS'
+        && ownership.segments.length === evidence.preStopSegments.length
+        && ownership.segments.every((segment, index) => {
+          const next = ownership.segments[index + 1];
+          return epochs.some((epoch) => epoch.claims > 0
+            && epoch.captureEpoch >= segment.firstJournalEpoch
+            && epoch.captureEpoch <= (next ? next.firstJournalEpoch - 1 : epochs.at(-1).captureEpoch));
+        });
+      evidence.oldSegmentsEndedVerified = ownership.segments.length > 1
+        && ownership.segments.slice(0, -1).every((segment) => segment.status === 'ENDED');
+    } catch (error) { evidence.segmentOwnershipError = error.message; }
+    const providerWindows = evidence.providerTrace.map(({ targetElapsedMs, events }) => {
+      const creating = events.filter((event) => event.stage === 'PROVIDER_SESSION_CREATING');
+      const ready = events.filter((event) => event.stage === 'PROVIDER_SESSION_READY');
+      return { targetElapsedMs, creating: creating.length, ready: ready.length,
+        ordered: creating.some((start) => ready.some((end) => end.traceSequence > start.traceSequence)) };
+    });
+    evidence.providerTraceEvidence = providerWindows;
     evidence.evidenceChecks = {
       pcmCallbacksFramesBytes: 'PASS', journalClaimCoverageAndHashes: 'PASS',
-      pcmRecordingOwnership: 'PASS', segmentPcmOwnership: 'UNVERIFIED',
+      pcmRecordingOwnership: 'PASS', segmentPcmOwnership: evidence.segmentOwnershipVerified ? 'PASS' : 'UNVERIFIED',
       segmentCueOwnership: 'PASS', endDurability: 'PASS', reloadReadback: 'PASS',
-      rolloverDurableOperations: 'PASS', oldSegmentEnded: 'UNVERIFIED',
-      providerStartTrace: 'UNVERIFIED'
+      rolloverDurableOperations: 'PASS', oldSegmentEnded: evidence.oldSegmentsEndedVerified ? 'PASS' : 'UNVERIFIED',
+      providerStartTrace: providerWindows.length === evidence.rolloverObservations.length
+        && providerWindows.every((window) => window.ordered) ? 'PASS' : 'UNVERIFIED'
     };
     evidence.restored = { recordingState: restored.recording.state, chunks: restored.chunks.length,
       checkpoints: restored.checkpoints.length, cues: cueSegments, opfs: opfs.opfs };
@@ -1729,7 +1888,7 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
     expect(evidence.recordingHttpWrites).toEqual([]);
     evidence.cloudZeroWrite.status = 'PASS';
     evidence.evidenceChecks.cloudZeroWrite = 'PASS';
-    evidence.result = 'RECORDING_40MIN_SOAK_PASS';
+      evidence.result = recordingContract ? 'ROLLOVER_CONTRACT_PASS' : `RECORDING_${soakMinutes}MIN_SOAK_PASS`;
     evidence.finishedAt = new Date().toISOString();
     save();
     return;

@@ -794,6 +794,12 @@ function updateFinalCue(state, target, event) {
     providerEventSequence: Number.isFinite(event.eventSequence)
       ? event.eventSequence
       : target.cue.providerEventSequence,
+      providerEpoch: event.providerEpoch ?? target.cue.providerEpoch,
+      connectionEpoch: event.connectionEpoch ?? target.cue.connectionEpoch,
+      providerEventId: event.providerEventId ?? target.cue.providerEventId,
+      eventId: event.eventId ?? target.cue.eventId,
+      ...(event.stream === 'source' ? { sourceProvenance: cueEventProvenance(event) }
+        : event.stream === 'translation' ? { translationProvenance: cueEventProvenance(event) } : {}),
     finalizedReason: target.replace ? 'numeric-correction' : 'merged',
     ...(target.replace ? { numericCorrectionRequested: false } : {})
   };
@@ -908,6 +914,12 @@ function addCue(state, event) {
     ...(event.audioTurnId ? { audioTurnId: event.audioTurnId } : {}),
     updatedTimeMs: event.sessionTimeMs,
     providerEventSequence: Number.isFinite(event.eventSequence) ? event.eventSequence : null,
+    providerEpoch: event.providerEpoch ?? null,
+    connectionEpoch: event.connectionEpoch ?? null,
+    providerEventId: event.providerEventId ?? null,
+    eventId: event.eventId ?? null,
+    ...(event.stream === 'source' ? { sourceProvenance: cueEventProvenance(event) }
+      : event.stream === 'translation' ? { translationProvenance: cueEventProvenance(event) } : {}),
     boundaryAtMs: event.turnComplete || event.generationComplete
       ? event.sessionTimeMs
       : state.pendingBoundaryAtMs,
@@ -963,6 +975,12 @@ function updateCue(state, target, event) {
     providerEventSequence: Number.isFinite(event.eventSequence)
       ? event.eventSequence
       : cue.providerEventSequence,
+    providerEpoch: event.providerEpoch ?? cue.providerEpoch,
+    connectionEpoch: event.connectionEpoch ?? cue.connectionEpoch,
+    providerEventId: event.providerEventId ?? cue.providerEventId,
+    eventId: event.eventId ?? cue.eventId,
+    ...(event.stream === 'source' ? { sourceProvenance: cueEventProvenance(event) }
+      : event.stream === 'translation' ? { translationProvenance: cueEventProvenance(event) } : {}),
     status: 'partial',
     ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
     ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
@@ -1265,4 +1283,15 @@ function normalizeText(text) { return String(text || '').replace(/\s+/gu, ' ').t
 function stablePendingKey(cue) { return cue.cueId || stableCueKey(cue); }
 function stableCueKey(cue) { return [cue.sessionId || cue.liveSessionId || '', cue.segmentId || '', cue.sequence, cue.startTimeMs, cue.sourceText, cue.translatedText].join('|'); }
 function cueIdFor({ sessionId, segmentId, sequence }) { return ['cue', sessionId, segmentId, sequence].filter(Boolean).join(':'); }
+function cueEventProvenance(event) {
+  return {
+    audioTurnId: event.audioTurnId ?? null,
+    turnKey: event.turnKey ?? null,
+    providerEventId: event.providerEventId ?? null,
+    eventId: event.eventId ?? null,
+    connectionEpoch: event.connectionEpoch ?? null,
+    providerEpoch: event.providerEpoch ?? null,
+    eventSequence: event.eventSequence ?? null
+  };
+}
 function copyCue(cue) { return { ...cue }; }

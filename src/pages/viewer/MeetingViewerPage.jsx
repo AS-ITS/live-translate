@@ -213,6 +213,11 @@ export function MeetingViewerPage({ token, code }) {
         stopConnections();
         return;
       }
+      if (envelope.type === 'recording.stopped') {
+        setShareConnection({ value: 'waiting' });
+        setError('錄音已停止，等待下一次錄製。');
+        return;
+      }
       if (envelope.type === 'snapshot' || envelope.type === 'replay.response'
         || envelope.type === 'cue.append' || envelope.type === 'cue.update'
         || envelope.type === 'segment.transition') {

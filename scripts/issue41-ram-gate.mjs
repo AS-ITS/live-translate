@@ -26,7 +26,8 @@ function regressionSlope(rows, key) {
 }
 
 export function analyzeRamGate(rows, barrierCompletedAt, { minimumCaptureMs = 40 * 60_000 } = {}) {
-  const capture = rows.filter((row) => row.phase === 'capture' && measured(row.elapsedMs));
+  const capture = rows.filter((row) => row.phase === 'capture' && measured(row.elapsedMs)
+    && ('rendererPid' in row || 'rendererAlive' in row || 'chromiumRssBytes' in row || 'jsHeapBytes' in row));
   const captureEnd = capture.at(-1)?.elapsedMs ?? null;
   const expectedPid = capture.at(-1)?.rendererPid ?? null;
   const stablePid = expectedPid !== null && capture.every((row) => row.rendererPid === expectedPid && row.rendererAlive === true);

@@ -27,6 +27,30 @@ test('complete 40-minute same-PID series passes every provisional RAM check', ()
   assert.ok(Object.values(result.checks).every((check) => check.result === 'PASS'));
 });
 
+test('full OPFS/IndexedDB scans do not count as renderer or memory samples', () => {
+  const scans = [300_000, 600_000, 900_000].map((elapsedMs) => ({
+    phase: 'capture', elapsedMs, opfs: { files: 1 }, stores: { operations: 1 }
+  }));
+  const result = analyzeRamGate([...capture(), ...scans, ...residual()], barrier);
+  assert.equal(result.stableRendererPid, true);
+  assert.equal(result.lastThirtyMinuteWindow.samples, 61);
+  assert.equal(result.verdict, 'PASS');
+});
+
+test('full scans cannot replace missing memory samples or hide a real PID change', () => {
+  const rows = capture();
+  const last = rows.pop();
+  const scan = { phase: 'capture', elapsedMs: last.elapsedMs, opfs: { files: 1 } };
+  const missing = analyzeRamGate([...rows, scan, ...residual()], barrier);
+  assert.equal(missing.captureElapsedMs, 2_370_000);
+  assert.equal(missing.verdict, 'UNDETERMINED');
+
+  rows[40].rendererPid = 43;
+  const changed = analyzeRamGate([...rows, scan, ...residual()], barrier);
+  assert.equal(changed.stableRendererPid, false);
+  assert.equal(changed.verdict, 'UNDETERMINED');
+});
+
 test('last 30-minute ordinary least squares slope fails above the limit', () => {
   const rows = capture().map((row, index) => ({
     ...row, chromiumRssBytes: (300 + index * 0.5) * MIB,

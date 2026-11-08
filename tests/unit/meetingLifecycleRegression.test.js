@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { closeLocalPcmWriterAfterPause, completeMeetingAfterRecordingFinalize,
+import { activateRecoveredMeetingSegment, closeLocalPcmWriterAfterPause, completeMeetingAfterRecordingFinalize,
+  meetingRequestErrorMessage,
   openLocalPcmWriterAfterContinue } from '../../src/features/live/useLiveRecordingController.js';
 
 test('local Pause waits for writer CLOSE before Continue opens a fresh writer', async () => {
@@ -29,6 +30,20 @@ test('local Pause waits for writer CLOSE before Continue opens a fresh writer', 
     pcmJournal: () => writer
   });
   assert.deepEqual(calls, ['close:start', 'close:done', 'prepare', 'open']);
+});
+
+test('successful recover activates next segment and reports recover errors separately from checkpoint errors', () => {
+  const activeRef = { current: { meetingId: 'm', segmentId: 'old' } };
+  const sync = [];
+  activateRecoveredMeetingSegment({ meetingId: 'm', recoveryResult: { segment: { id: 'next' } }, activeMeetingCheckpointRef: activeRef, startCheckpointSync: (value) => sync.push(value) });
+  assert.deepEqual(activeRef.current, { meetingId: 'm', segmentId: 'next' });
+  assert.deepEqual(sync, [activeRef.current]);
+
+  const message = meetingRequestErrorMessage({ operation: 'recover-segment', status: 409, code: 'checkpoint_conflict', requestId: 'req-1' });
+  assert.match(message, /^recover HTTP 409/);
+  assert.match(message, /checkpoint_conflict/);
+  assert.match(message, /req-1/);
+  assert.doesNotMatch(message, /^checkpoint/);
 });
 
 test('local Journal handoff failures do not report Pause or Continue success', async () => {

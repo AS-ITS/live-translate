@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { webcrypto } from 'node:crypto';
 import { mergeFinalCue, validateFinalCue } from '../../src/domain/subtitleCue/index.js';
 import { createMeetingCheckpointSyncCoordinator } from '../../src/lib/meetingCheckpointSyncCoordinator.js';
-import { createLocalMeetingPersistence } from '../../src/lib/localMeetingPersistence.js';
-import { createInMemoryLocalMeetingManifestStore } from '../../src/lib/localMeetingStorage.js';
 import {
   commitSubtitleCueState, createSubtitleCueState, prepareSubtitleCueStateForNewSegment
 } from '../../src/lib/subtitleCues.js';
@@ -94,51 +91,6 @@ test('higher revision cannot regress a finalized side or refinement', () => {
   });
   assert.throws(
     () => mergeFinalCue([completed], regressed),
-    (error) => error.code === 'subtitle_cue_conflict'
-  );
-});
-
-const localCheckpoint = (idempotencyKey, finalCue) => ({
-  ...scope, idempotencyKey, durableChunks: [], finalCues: [finalCue]
-});
-const localPersistence = () => createLocalMeetingPersistence({
-  manifestStore: createInMemoryLocalMeetingManifestStore(),
-  cryptoImpl: webcrypto, recordAudio: false, trace: () => {}
-});
-const saveLocalCue = (persistence, finalCue) => persistence.saveCue({
-  ...scope, sessionId: finalCue.sessionId, cue: finalCue
-});
-
-test('verified local Cue repairs a legacy Checkpoint reason and lets Coordinator flush', async () => {
-  const persistence = localPersistence();
-  const legacy = cue(); delete legacy.revision;
-  await saveLocalCue(persistence, cue());
-  const first = await persistence.updateCheckpoint(localCheckpoint('checkpoint-legacy', legacy));
-  assert.equal(first.checkpoint.finalCues[0].revision, undefined);
-  const newer = cue({ revision: 2, finalizedReason: 'merged' });
-  await saveLocalCue(persistence, newer);
-  const coordinator = createMeetingCheckpointSyncCoordinator({
-    updateCheckpoint: (payload) => persistence.updateCheckpoint(payload),
-    onDiagnostic: () => {},
-    setTimeoutFn: () => 1, clearTimeoutFn: () => {}
-  });
-  coordinator.start(scope);
-  coordinator.enqueueCues([newer]);
-  assert.equal(await coordinator.flush(), true);
-  const readback = await persistence.getCheckpoint(scope);
-  assert.equal(readback.checkpoint.finalCues[0].finalizedReason, 'merged');
-  assert.equal(readback.checkpoint.finalCues[0].revision, 2);
-});
-
-test('legacy Checkpoint reason remains conflicted without matching durable local Cue', async () => {
-  const persistence = localPersistence();
-  const legacy = cue(); delete legacy.revision;
-  await saveLocalCue(persistence, cue());
-  await persistence.updateCheckpoint(localCheckpoint('checkpoint-legacy', legacy));
-  const unverified = cue({ revision: 2, finalizedReason: 'merged' });
-  await saveLocalCue(persistence, cue({ revision: 2 }));
-  await assert.rejects(
-    persistence.updateCheckpoint(localCheckpoint('checkpoint-unverified', unverified)),
     (error) => error.code === 'subtitle_cue_conflict'
   );
 });

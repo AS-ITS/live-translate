@@ -3205,8 +3205,21 @@ test('Host local-only Start Pause Continue End survives cloud recording write ou
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
   await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
+  const pauseStages = [];
+  page.on('console', (message) => {
+    if (!message.text().startsWith('ISSUE41_PAUSE ')) return;
+    try {
+      const event = JSON.parse(message.text().slice('ISSUE41_PAUSE '.length));
+      if (event.stage && event.status) pauseStages.push({ stage: event.stage, status: event.status });
+    } catch { /* The explicit stage assertion below reports malformed diagnostics. */ }
+  });
   await page.getByRole('button', { name: '停止錄音' }).click();
   await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+  for (const stage of ['MEDIA_RECORDER_PAUSE_DRAIN', 'SESSION_STOP_FIRST', 'SESSION_STOP_PROVIDER_CLOSE',
+    'PCM_EPOCH_SEAL', 'TRANSCRIPT_FINALIZE', 'CUE_PUBLISH_FLUSH', 'CHECKPOINT_FLUSH',
+    'LOCAL_PAUSE_COMMIT', 'PCM_WRITER_CLOSE', 'SESSION_SNAPSHOT_FLUSH', 'UI_PAUSED_TRANSITION']) {
+    expect(pauseStages.filter((event) => event.stage === stage).map((event) => event.status)).toEqual(['START', 'DONE']);
+  }
   const paused = await page.evaluate(async (meetingId) => {
     const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
     const restored = await createLocalMeetingPersistence().restore(meetingId);
@@ -3251,6 +3264,84 @@ test('Host local-only Start Pause Continue End survives cloud recording write ou
     body: JSON.stringify({ meetingCreated: page.mockMeetingCreateRequests.length === 1, paused, ended, recordingWrites, tokenBindings }, null, 2),
     contentType: 'application/json'
   });
+});
+
+test('Host Reload retries failed End metadata without reopening sealed recording', async ({ page }) => {
+  page.mockMeetingLifecycleV2 = true;
+  page.mockMeetingLocalAudio = true;
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  let completeRequests = 0;
+  let releaseRetry;
+  const retryReleased = new Promise((resolve) => { releaseRetry = resolve; });
+  await page.route(`**/api/meetings/${MOCK_MEETING_ID}/complete`, async (route) => {
+    completeRequests += 1;
+    if (completeRequests === 1) {
+      await route.fulfill({ status: 503, contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'cloud_capability_unavailable' } }) });
+      return;
+    }
+    await retryReleased;
+    await route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ meeting: completeMockMeeting(page) }) });
+  });
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始錄製', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  const recorderCount = await page.evaluate(() => window.__mockMediaRecorders.length);
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: '結束會議' }).click();
+  await expect.poll(() => completeRequests).toBe(1);
+  const readLocal = () => page.evaluate(async (meetingId) => {
+    const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+    const local = createLocalMeetingPersistence();
+    const restored = await local.restore(meetingId);
+    const retention = await createIndexedDbLocalMeetingManifestStore().getRetention(meetingId);
+    const root = await navigator.storage.getDirectory();
+    const journal = await (await (await root.getDirectoryHandle('pcm-journals')).getDirectoryHandle('v1'))
+      .getDirectoryHandle(meetingId);
+    const pcmFiles = [];
+    for await (const [, recording] of journal.entries()) {
+      for await (const [, file] of recording.entries()) {
+        if (file.kind === 'file') pcmFiles.push((await file.getFile()).size);
+      }
+    }
+    return {
+      recording: restored.recording,
+      chunks: restored.chunks.map(({ state, byteSize, segmentId }) => ({ state, byteSize, segmentId })),
+      pending: retention?.pendingCompletion,
+      expiresAt: retention?.expiresAt,
+      pcmFiles
+    };
+  }, MOCK_MEETING_ID);
+  const sealed = await readLocal();
+  expect(sealed.recording.state).toBe('stopped_local');
+  expect(sealed.chunks.some((chunk) => chunk.state === 'sealed' && chunk.byteSize > 0)).toBe(true);
+  expect(sealed.pcmFiles.some((bytes) => bytes > 0)).toBe(true);
+  expect(sealed.pending).toBeTruthy();
+  expect(Date.parse(sealed.expiresAt) - Date.parse(sealed.pending.sealedAt)).toBe(30 * 60 * 1000);
+
+  await page.reload();
+  await expect.poll(() => completeRequests).toBe(2);
+  const pendingAfterReload = await readLocal();
+  expect(pendingAfterReload.pending).toEqual(sealed.pending);
+  expect(pendingAfterReload.expiresAt).toBe(sealed.expiresAt);
+  expect(pendingAfterReload.recording.segmentId).toBe(sealed.recording.segmentId);
+  releaseRetry();
+  await expect.poll(async () => (await readLocal()).pending).toBeFalsy();
+  const completed = await readLocal();
+  expect(completed.recording.state).toBe('stopped_local');
+  expect(completed.recording.segmentId).toBe(sealed.recording.segmentId);
+  expect(completed.chunks).toEqual(sealed.chunks);
+  expect(completed.expiresAt).toBe(sealed.expiresAt);
+  expect(page.mockCompletedMeetingMetadata).toMatchObject({ id: MOCK_MEETING_ID, status: 'completed' });
+  expect(page.mockCompletedMeetingMetadata.endedAt).toBeTruthy();
+  expect(await page.evaluate(() => window.__mockMediaRecorders.length)).toBe(0);
+  expect(recorderCount).toBe(1);
+  expect(completeRequests).toBe(2);
 });
 
 const issue41RealTimeRollover = process.env.ISSUE41_REAL_TIME_ROLLOVER === 'true';
@@ -5306,7 +5397,51 @@ test('Stop finalizes visible partial transcripts without active export controls'
   await expect(page.getByRole('button', { name: '匯出', exact: true })).toHaveCount(0);
 });
 
-test('B2-A mocked live Cue revision survives IndexedDB and App reload', async ({ page }) => {
+test('Pause Cue flush failure exits stopping and preserves earlier Local Cue after reload', async ({ page }) => {
+  await gotoMockMeetingLive(page, { meetingStatus: 'active' });
+  await mockLiveSessionCreateApi(page);
+  await page.getByRole('button', { name: /^(開始錄製|繼續錄製)$/u }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await emitFinalTranscript(page, 'saved source', 'saved translation');
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expect.poll(() => page.evaluate(async () => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+    return (await createIndexedDbLocalMeetingManifestStore().listCues('11111111-1111-4111-8111-111111111111')).length;
+  })).toBe(1);
+  const before = await page.evaluate(async () => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+    const store = createIndexedDbLocalMeetingManifestStore();
+    const [record] = await store.listCues('11111111-1111-4111-8111-111111111111');
+    return { cue: record.cue, cursor: (await store.getCheckpoint(record.meetingId, record.segmentId)).checkpoint.cueCursor };
+  });
+  await page.evaluate(() => {
+    const original = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (stores, ...options) {
+      const names = Array.isArray(stores) ? stores : [stores];
+      if (names.includes('cues') && names.includes('checkpoints')) {
+        throw new DOMException('fixture transaction failure', 'AbortError');
+      }
+      return original.call(this, stores, ...options);
+    };
+  });
+  await emitPartialTranscript(page, 'pending source', 'pending translation');
+  await page.getByRole('button', { name: '停止錄音' }).click();
+  await expect(page.getByText('暫停未完成，本機資料已保留。請重新載入以恢復會議。')).toBeVisible();
+  await expect(page.getByText('stopping', { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('live-session-toolbar').getByText('已暫停', { exact: true })).toHaveCount(0);
+  await page.reload();
+  const saved = await page.evaluate(async () => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+    const store = createIndexedDbLocalMeetingManifestStore();
+    const [record] = await store.listCues('11111111-1111-4111-8111-111111111111');
+    return { cue: record.cue, cursor: (await store.getCheckpoint(record.meetingId, record.segmentId)).checkpoint.cueCursor };
+  });
+  expect(saved.cue).toEqual(before.cue);
+  expect(saved.cursor).toEqual(before.cursor);
+});
+
+test('B2 Reload reads committed Local Cue and provisional Pending without cursor advance', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
   await mockLiveSessionCreateApi(page);
   await gotoMockMeetingLive(page);
@@ -5314,68 +5449,48 @@ test('B2-A mocked live Cue revision survives IndexedDB and App reload', async ({
   await page.getByRole('button', { name: '開始' }).click();
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
   await emitMicrophoneAudio(page);
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitPartialTranscript(page, 'source phrase.', 'translated phrase.');
-  await expect(partialCueRows(page)).toHaveCount(1);
-  const cueId = await partialCueRows(page).first().getAttribute('data-cue-id');
-  await emitFinalTranscript(page, 'source phrase.', 'translated phrase.');
-  await expect(finalCueRows(page).first()).toHaveAttribute('data-cue-id', cueId);
+  await emitFinalTranscript(page, 'committed source', 'committed translation');
+  const cueId = await finalCueRows(page).first().getAttribute('data-cue-id');
+  await expect.poll(() => page.evaluate(async (id) => {
+    const { livePipelineTrace } = await import('/src/lib/livePipelineTrace.js');
+    const ack = livePipelineTrace.get({ stage: 'LOCAL_CUE_SAVED', cueId: id }).at(-1);
+    return livePipelineTrace.get({ stage: 'WEBRTC_CUE_PUBLISH', cueId: id })
+      .some((entry) => ack && entry.traceSequence > ack.traceSequence
+        && Number.isSafeInteger(entry.revision) && entry.revision > 0);
+  }, cueId)).toBe(true);
   await page.getByRole('button', { name: '停止錄音' }).click();
 
-  const localCues = () => page.evaluate(async (meetingId) => {
+  const before = await page.evaluate(async (meetingId) => {
     const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
     const store = createIndexedDbLocalMeetingManifestStore();
-    return (await store.listCues(meetingId)).map((record) => record.cue);
+    const committed = (await store.listCues(meetingId)).find((record) => record.cueId);
+    const cursor = (await store.getCheckpoint(meetingId, committed.segmentId)).checkpoint.cueCursor;
+    const pendingCueId = `pending:${committed.cueId}`;
+    const result = await store.commitCueMutation({ meetingId, segmentId: null,
+      eventKey: `pending:${committed.cueId}`, side: 'pending', cue: {
+        ...committed.cue, cueId: pendingCueId, segmentId: null,
+        sequence: committed.sequence + 1, sourceText: 'pending source', translatedText: '',
+        translationStatus: 'pending', revision: undefined
+      } });
+    return { committed: committed.cue, cursor, pendingCueId, pendingStatus: result.status };
   }, MOCK_MEETING_ID);
-  await expect.poll(async () => (await localCues()).find((cue) => cue.cueId === cueId) || null)
-    .toMatchObject({ cueId, segmentId: MOCK_SEGMENT_ID(1), status: 'final',
-      sourceText: 'source phrase.', translatedText: 'translated phrase.' });
-  const persisted = (await localCues()).find((cue) => cue.cueId === cueId);
-  expect(persisted.revision).toBeGreaterThan(1);
-
-  const unassignedCueId = `cue:${persisted.sessionId}:${persisted.sequence + 1}`;
-  const dismissedCueId = `cue:${persisted.sessionId}:${persisted.sequence + 2}`;
-  const unassigned = () => page.evaluate(async ({ meetingId, sessionId, cueId }) => {
-    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
-    return createIndexedDbLocalMeetingManifestStore().getUnassignedCue(meetingId, sessionId, cueId);
-  }, { meetingId: MOCK_MEETING_ID, sessionId: persisted.sessionId, cueId: unassignedCueId });
-  await page.evaluate(async ({ meetingId, sessionId, cueId, sequence }) => {
-    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
-    await createIndexedDbLocalMeetingManifestStore().saveUnassignedCue({
-      meetingId, sessionId, cueId, sequence, revision: 1,
-      reason: 'missing_original_segment',
-      cue: { cueId, sessionId, segmentId: null, sequence, revision: 1,
-        status: 'partial', sourceText: 'unassigned source', translatedText: '',
-        sourceStatus: 'finalized', translationStatus: 'pending',
-        sourceLanguageCode: 'en', targetLanguageCode: 'fr',
-        startTimeMs: 1000, endTimeMs: 1010 }
-    });
-  }, { meetingId: MOCK_MEETING_ID, sessionId: persisted.sessionId,
-    cueId: unassignedCueId, sequence: persisted.sequence + 1 });
-  await page.evaluate(async ({ meetingId, sessionId, cueId, sequence }) => {
-    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
-    await createIndexedDbLocalMeetingManifestStore().saveUnassignedCue({
-      meetingId, sessionId, cueId, sequence, revision: 2,
-      reason: 'missing_original_segment',
-      cue: { cueId, sessionId, segmentId: null, sequence, revision: 2,
-        status: 'partial', dismissed: true, sourceText: 'retired source', translatedText: '',
-        startTimeMs: 1020, endTimeMs: 1030 }
-    });
-  }, { meetingId: MOCK_MEETING_ID, sessionId: persisted.sessionId,
-    cueId: dismissedCueId, sequence: persisted.sequence + 2 });
-
+  expect(before.committed.cueId).toBe(cueId);
+  expect(before.pendingStatus).toBe('pending');
   await page.reload();
-  const restored = (await localCues()).find((cue) => cue.cueId === cueId);
-  expect(restored).toMatchObject({ cueId, revision: persisted.revision,
-    segmentId: MOCK_SEGMENT_ID(1), sourceText: 'source phrase.', translatedText: 'translated phrase.' });
-  expect(restored.refinement).toEqual(persisted.refinement);
-  expect(await unassigned()).toMatchObject({ cueId: unassignedCueId, segmentId: null,
-    revision: 1, cue: { cueId: unassignedCueId, segmentId: null, status: 'partial', revision: 1 } });
-  await configureTestGeminiCredential(page, { expectedControl: '繼續錄製' });
-  await page.getByRole('button', { name: '繼續錄製' }).click();
   await expect(finalCueRows(page).first()).toHaveAttribute('data-cue-id', cueId);
-  await expect(page.getByTestId('live-cue-panel').locator(`[data-cue-id="${unassignedCueId}"]`)).toHaveCount(1);
-  await expect(page.getByTestId('live-cue-panel').locator(`[data-cue-id="${dismissedCueId}"]`)).toHaveCount(0);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: 'committed source', translatedText: 'committed translation'
+  });
+  await expect(page.getByTestId('live-cue-panel').locator(`[data-cue-id="${before.pendingCueId}"]`)).toHaveCount(1);
+  const after = await page.evaluate(async ({ meetingId, segmentId }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+    const store = createIndexedDbLocalMeetingManifestStore();
+    return { cues: await store.listCues(meetingId), pending: await store.listPendingCues(meetingId),
+      cursor: (await store.getCheckpoint(meetingId, segmentId)).checkpoint.cueCursor };
+  }, { meetingId: MOCK_MEETING_ID, segmentId: before.committed.segmentId });
+  expect(after.cues.find((record) => record.cueId === cueId)?.cue.revision).toBe(before.committed.revision);
+  expect(after.pending.find((record) => record.cueId === before.pendingCueId)?.cue.revision).toBeUndefined();
+  expect(after.cursor).toEqual(before.cursor);
 });
 
 test('stopped meeting restores local cues after reload and downloads non-empty TXT', async ({ page }) => {
@@ -5407,7 +5522,8 @@ test('stopped meeting restores local cues after reload and downloads non-empty T
   });
   page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: '結束會議' }).click();
-  await expect(page).toHaveURL(new RegExp(`#meeting-detail\\?meetingId=${MOCK_MEETING_ID}`));
+  await expect.poll(() => page.evaluate(() => window.location.hash))
+    .toBe(`#meeting-detail?meetingId=${MOCK_MEETING_ID}&from=history`);
   await page.getByRole('button', { name: '翻譯內容', exact: true }).click();
   await expect(page.getByText('第一句原文', { exact: true })).toBeVisible();
   await expect(page.getByText('結束前最後一句', { exact: true })).toBeVisible();

@@ -688,7 +688,7 @@ test('Device transport starts independently, publishes snapshot/update, and clea
     RTCPeerConnectionImpl: FakePeerConnection,
     setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
     clearTimer(timer) { timer.cleared = true; },
-    initialCues: [{ cueId: 'cue-1', sequence: 1, sourceText: '初稿' }],
+    initialCues: [{ cueId: 'cue-1', sequence: 1, revision: 1, status: 'final', sourceText: '初稿' }],
     onStatus: (status) => statuses.push(status.value),
     onError: (error) => publicationErrors.push(error),
   });
@@ -705,19 +705,21 @@ test('Device transport starts independently, publishes snapshot/update, and clea
   const peer = FakePeerConnection.instances[0];
   peer.channel.open();
   assert.equal(peer.channel.sent[0].type, 'snapshot');
-  transport.publishCue({ cueId: 'cue-1', sequence: 1, sourceText: '修正版' });
+  transport.publishCue({ cueId: 'cue-1', sequence: 1, revision: 2, status: 'final', sourceText: '修正版' });
   assert.equal(peer.channel.sent.at(-1).type, 'cue.update');
+  assert.equal(peer.channel.sent.at(-1).cue.revision, 2);
+  assert.equal(transport.publishCue({ cueId: 'uncommitted', status: 'final', sourceText: 'not durable' }), false);
 
   configureLivePipelineTrace(true);
   livePipelineTrace.clear();
   assert.doesNotThrow(() => {
-    transport.publishCue({ cueId: 'normal-1', rawSource: '正常原文 1', translatedText: 'normal 1' });
-    transport.publishCue({ cueId: 'source-first', rawSource: '先到原文', sourceVersion: 8, sourceStatus: 'partial' });
-    transport.publishCue({ cueId: 'source-first', rawSource: '先到原文', sourceVersion: 8, sourceStatus: 'finalized', translatedText: 'late translation', translationVersion: 1, translationStatus: 'finalized' });
-    transport.publishCue({ cueId: 'translation-first', translatedText: 'translation first', translationVersion: 4, translationStatus: 'pending' });
-    transport.publishCue({ cueId: 'translation-first', rawSource: '後到原文', sourceVersion: 1, sourceStatus: 'finalized', translatedText: 'translation first', translationVersion: 4, translationStatus: 'finalized' });
-    transport.publishCue({ cueId: 'late-without-turn-id', rawSource: '無 turn id 後到原文', sourceVersion: 1 });
-    transport.publishCue({ cueId: 'normal-2', rawSource: '正常原文 2', translatedText: 'normal 2' });
+    transport.publishCue({ cueId: 'normal-1', revision: 1, rawSource: '正常原文 1', translatedText: 'normal 1' });
+    transport.publishCue({ cueId: 'source-first', revision: 1, rawSource: '先到原文', sourceVersion: 8, sourceStatus: 'partial' });
+    transport.publishCue({ cueId: 'source-first', revision: 2, rawSource: '先到原文', sourceVersion: 8, sourceStatus: 'finalized', translatedText: 'late translation', translationVersion: 1, translationStatus: 'finalized' });
+    transport.publishCue({ cueId: 'translation-first', revision: 1, translatedText: 'translation first', translationVersion: 4, translationStatus: 'pending' });
+    transport.publishCue({ cueId: 'translation-first', revision: 2, rawSource: '後到原文', sourceVersion: 1, sourceStatus: 'finalized', translatedText: 'translation first', translationVersion: 4, translationStatus: 'finalized' });
+    transport.publishCue({ cueId: 'late-without-turn-id', revision: 1, rawSource: '無 turn id 後到原文', sourceVersion: 1 });
+    transport.publishCue({ cueId: 'normal-2', revision: 1, rawSource: '正常原文 2', translatedText: 'normal 2' });
   });
   const published = peer.channel.sent.filter((packet) => packet.type === 'cue.append' || packet.type === 'cue.update');
   assert.deepEqual(published.slice(-7).map((packet) => packet.type), [

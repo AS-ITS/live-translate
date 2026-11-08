@@ -31,7 +31,7 @@ function storageSignedUrl(baseUrl, signedPath) {
   return new URL(`/storage/v1${signedPath}`, baseUrl);
 }
 
-test('isolated Supabase rejects old content writes and historical direct reads', async () => {
+test('post-migration isolated Supabase rejects old content writes and historical direct reads', async () => {
   const anonKey = containerEnv(CONTAINER, 'ANON_KEY');
   const serviceKey = containerEnv(CONTAINER, 'SERVICE_KEY');
   const jwks = JSON.parse(containerEnv(REST, 'PGRST_JWT_SECRET') || '{}');
@@ -81,12 +81,32 @@ test('isolated Supabase rejects old content writes and historical direct reads',
   }
 });
 
-test('isolated historical Storage URL remains bounded after cutover', async () => {
-  const historicalStorage = 'supabase_storage_lt41-security-isolated-20261019';
-  const historicalRest = 'supabase_rest_lt41-security-isolated-20261019';
-  const historicalDb = 'supabase_db_lt41-security-isolated-20261019';
-  const historicalBase = 'http://127.0.0.1:55321';
+test('post-migration Storage Guard replays without changing installed protection', () => {
+  const query = (sql) => execFileSync('docker', [
+    'exec', DB, 'psql', '-U', 'postgres', '-d', 'postgres', '-Atc', sql
+  ], { encoding: 'utf8' }).trim();
+  const guardCount = () => query("select count(*) from pg_trigger where tgname = 'lt41_local_only_storage_guard' and tgenabled = 'O'");
+  assert.equal(guardCount(), '1', 'post-migration fixture requires an enabled Storage Guard');
+  const migration = readFileSync(new URL('../../supabase/migrations/20261102000000_issue41_local_only_cutover.sql', import.meta.url));
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    execFileSync('docker', ['exec', '-i', DB, 'psql', '-U', 'supabase_admin', '-d', 'postgres',
+      '-v', 'ON_ERROR_STOP=1'], { input: Buffer.concat([Buffer.from('begin;\n'), migration, Buffer.from('\nrollback;\n')]),
+      stdio: ['pipe', 'pipe', 'pipe'] });
+    assert.equal(guardCount(), '1', 'Storage Guard changed after transactional replay');
+  }
+});
+
+test('pre-migration isolated historical Storage URL remains bounded after cutover', async () => {
+  const historicalStorage = process.env.ISSUE41_PRE_STORAGE_CONTAINER;
+  const historicalRest = process.env.ISSUE41_PRE_REST_CONTAINER;
+  const historicalDb = process.env.ISSUE41_PRE_DB_CONTAINER;
+  const historicalBase = process.env.ISSUE41_PRE_SUPABASE_URL;
+  assert.match(historicalStorage || '', /^supabase_storage_issue41-pre-[a-z0-9-]+$/u);
+  assert.equal(historicalRest, historicalStorage.replace('supabase_storage_', 'supabase_rest_'));
+  assert.equal(historicalDb, historicalStorage.replace('supabase_storage_', 'supabase_db_'));
+  assert.match(historicalBase || '', /^http:\/\/127\.0\.0\.1:\d+$/u);
   const serviceKey = containerEnv(historicalStorage, 'SERVICE_KEY');
+  const serviceHeaders = { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` };
   const anonKey = containerEnv(historicalStorage, 'ANON_KEY');
   const jwks = JSON.parse(containerEnv(historicalRest, 'PGRST_JWT_SECRET') || '{}');
   const jwtSecret = Buffer.from(jwks.keys?.find((key) => key.kty === 'oct')?.k || '', 'base64url');
@@ -96,13 +116,29 @@ test('isolated historical Storage URL remains bounded after cutover', async () =
   ], { encoding: 'utf8' }).trim();
   assert.equal(query("select count(*) from pg_trigger where tgname = 'lt41_local_only_storage_guard'"), '0',
     'historical fixture must be created before the isolated cutover migration');
+  assert.equal(query("select count(*) from supabase_migrations.schema_migrations where version = '20261102000000'"), '0',
+    'pre-migration fixture must be a fresh isolated database without the cutover migration');
   assert.equal(query("select count(*) from pg_trigger where tgname = 'meeting_storage_reject_expired_write' and tgenabled = 'O'"), '1');
-  const [ownerId, meetingId] = query(`select owner_user_id, id from public.meetings
-    where public.meeting_recording_accessible(owner_user_id, id) order by created_at limit 1`).split('|');
-  assert.ok(ownerId && meetingId, 'active isolated owner/Meeting fixture unavailable');
+  const account = await fetch(`${historicalBase}/auth/v1/admin/users`, {
+    method: 'POST', headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`,
+      'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: `issue41-pre-${randomUUID()}@example.com`, password: randomUUID(),
+      email_confirm: true })
+  });
+  if (!account.ok) assert.fail(`isolated fixture user: ${await account.text()}`);
+  const ownerId = (await account.json()).id;
+  const meetingId = randomUUID();
+  try {
+  const seeded = await fetch(`${historicalBase}/rest/v1/meetings`, {
+    method: 'POST', headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`,
+      'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: meetingId, owner_user_id: ownerId, name: 'Issue 41 pre-migration fixture',
+      source_language_code: 'zh-Hant', target_language_code: 'en', status: 'created' })
+  });
+  assert.ok(seeded.ok, `isolated fixture Meeting: ${await seeded.text()}`);
+  assert.equal(query(`select public.meeting_recording_accessible('${ownerId}', '${meetingId}')`), 't');
   const objectPath = `${ownerId}/${meetingId}/issue41-historical-${randomUUID()}.txt`;
   const objectUrl = `${historicalBase}/storage/v1/object/meeting-exports/${objectPath}`;
-  const serviceHeaders = { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` };
   const userHeaders = { apikey: anonKey, Authorization: `Bearer ${signedUserJwt(jwtSecret, ownerId)}` };
   const secondContextHeaders = { apikey: anonKey, Authorization: `Bearer ${signedUserJwt(jwtSecret, ownerId)}` };
   assert.notEqual(userHeaders.Authorization, secondContextHeaders.Authorization);
@@ -195,5 +231,13 @@ test('isolated historical Storage URL remains bounded after cutover', async () =
       // Only the object created by this test is removed; no trigger or policy is disabled.
       await fetch(objectUrl, { method: 'DELETE', headers: serviceHeaders });
     }
+  }
+  } finally {
+    await fetch(`${historicalBase}/rest/v1/meetings?id=eq.${meetingId}`, {
+      method: 'DELETE', headers: serviceHeaders
+    });
+    await fetch(`${historicalBase}/auth/v1/admin/users/${ownerId}`, {
+      method: 'DELETE', headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` }
+    });
   }
 });

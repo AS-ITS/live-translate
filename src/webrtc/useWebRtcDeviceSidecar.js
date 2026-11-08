@@ -16,6 +16,16 @@ export function hostViewerCuesFromLocalRecords(meetingId, records = []) {
       sessionId: record.sessionId, segmentId: record.segmentId, sequence: record.sequence })));
 }
 
+export function publishCommittedLocalCues(meetingId, records, publishCue) {
+  const cues = hostViewerCuesFromLocalRecords(meetingId, records);
+  cues.forEach(publishCue);
+  return cues;
+}
+
+export function viewerSidecarEnabled(status) {
+  return ['listening', 'reconnecting', 'switching-segment', 'provider-recovery', 'provider-recovery-failed', 'stopping'].includes(status);
+}
+
 export function createWebRtcDeviceSidecarLease(transportRef, lifecycleStatusRef) {
   let transport = null;
   let disposed = false;
@@ -31,7 +41,7 @@ export function createWebRtcDeviceSidecarLease(transportRef, lifecycleStatusRef)
       if (disposed) return;
       disposed = true;
       if (transportRef.current === transport) transportRef.current = null;
-      if (transport) void transport.stop({ revoke: lifecycleStatusRef.current === 'stopped' });
+      if (transport) void transport.stop({ revoke: lifecycleStatusRef.current === 'ended' });
     }
   };
 }
@@ -141,6 +151,13 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
 
   return Object.freeze({
     ...connection,
+    publishCommittedCues(records) {
+      const transport = transportRef.current;
+      if (!transport) return false;
+      const committed = publishCommittedLocalCues(meetingId, records, (cue) => transport.publishCue(cue));
+      rememberCues(committed, segmentMetaRef.current);
+      return true;
+    },
     retry() { setRetryVersion((version) => version + 1); },
   });
 }

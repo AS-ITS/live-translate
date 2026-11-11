@@ -5,6 +5,15 @@ export function meetingElapsedMs(startedAt, now = Date.now()) {
   return Math.max(0, nowMs - startedAtMs);
 }
 
+const VISIBLE_MEETING_TIMER_STATUSES = new Set([
+  'requesting-permission', 'connecting', 'listening', 'paused', 'stopping',
+  'reconnecting', 'switching-segment', 'provider-recovery', 'provider-recovery-failed'
+]);
+
+export function shouldShowMeetingElapsedTimer(status, startedAt) {
+  return meetingElapsedMs(startedAt, startedAt) !== null && VISIBLE_MEETING_TIMER_STATUSES.has(status);
+}
+
 export function formatMeetingElapsed(elapsedMs) {
   if (!Number.isFinite(elapsedMs)) return '00:00:00';
   const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));

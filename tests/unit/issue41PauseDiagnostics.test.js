@@ -36,10 +36,14 @@ test('a never-settling Mock Provider close retains START and identifies every un
 test('rejection records ERROR with no sensitive message and propagates original error', async () => {
   const diagnostics = createPauseDiagnostics();
   const error = Object.assign(new Error('Bearer secret-token transcript'), { code: 'PROVIDER_CLOSE_FAILED' });
+  const emitted = [];
   await assert.rejects(observePauseStage('SESSION_STOP_PROVIDER_CLOSE', () => Promise.reject(error),
-    { emit: emitConsole(diagnostics) }), (received) => received === error);
+    { emit: (entry) => { emitted.push(entry); emitConsole(diagnostics)(entry); } }), (received) => received === error);
   assert.equal(diagnostics.stages.at(-1).status, 'ERROR');
   assert.equal(diagnostics.stages.at(-1).errorCode, 'PROVIDER_CLOSE_FAILED');
+  assert.equal(emitted.at(-1).errorName, 'Error');
+  assert.equal(emitted.at(-1).message, '[redacted]');
+  assert.equal(emitted.at(-1).classification, 'LIFECYCLE_FAILURE');
   assert.doesNotMatch(JSON.stringify(diagnostics), /secret-token|transcript/u);
 });
 

@@ -1878,13 +1878,27 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
   }
 
   if (req.method === 'PATCH' && isMeetingDetailPath(path)) {
+    let patchStage = 'request_parse';
+    let databaseWriteStatus = 'not_started';
+    let requestShape = [];
+    let dictionaryIdCount = 0;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const meetingId = parseMeetingDetailPath(path).meetingId;
       meetingDiagnosticId = meetingId;
       const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
+      requestShape = Object.entries(body || {}).slice(0, 24).map(([field, value]) => ({
+        field: /^[a-z][a-z0-9]{0,63}$/iu.test(field) ? field : '[other]',
+        type: Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value
+      }));
+      dictionaryIdCount = (Array.isArray(body?.glossaryEntries)
+        ? body.glossaryEntries.filter((entry) => typeof entry?.id === 'string').length : 0)
+        + (Array.isArray(body?.dictionaryIds) ? body.dictionaryIds.length : 0)
+        + (typeof body?.dictionaryId === 'string' ? 1 : 0);
+      patchStage = 'payload_validation';
       if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) throw createHttpError('unsupported_language');
       if (body?.sourceLanguageCode && !isSupportedLanguage(body.sourceLanguageCode)) throw createHttpError('unsupported_language');
+      patchStage = 'meeting_update';
       const result = await meetingCheckpointService.updateMeeting({ meetingId, settings: {
         ...(Object.hasOwn(body || {}, 'name') ? { name: body.name } : {}),
         ...(Object.hasOwn(body || {}, 'sourceLanguageCode') ? { sourceLanguageCode: body.sourceLanguageCode } : {}),
@@ -1894,7 +1908,9 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         ...(Object.hasOwn(body || {}, 'glossaryEntries') ? { glossaryEntries: body.glossaryEntries } : {}),
         ...(Object.hasOwn(body || {}, 'privateGlossaryEntries') ? { privateGlossaryEntries: body.privateGlossaryEntries } : {})
       }});
+      databaseWriteStatus = 'committed';
       if (Object.hasOwn(body || {}, 'glossaryEntries') || Object.hasOwn(body || {}, 'privateGlossaryEntries')) {
+        patchStage = 'glossary_revision';
         const updatedMeeting = result?.meeting || result;
         const sourceLanguageCode = updatedMeeting?.sourceLanguageCode || body.sourceLanguageCode || 'zh-Hant';
         const targetLanguageCode = updatedMeeting?.targetLanguageCode || body.targetLanguageCode || 'en';
@@ -1926,12 +1942,28 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         requestLogger({ ...glossaryEvent, event: 'GLOSSARY_REVISION_UPDATED' });
       }
       statusCode = 200;
+      patchStage = 'response_send';
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       meetingDiagnosticErrorCode = code;
       meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      requestLogger({
+        level: 'error', event: 'meeting_dictionary_patch_failure', requestId,
+        method: req.method, path, stage: error?.meetingPatchStage || patchStage,
+        authenticatedUserPresent: Boolean(authenticatedUser?.id),
+        ownerMatchesActor: authenticatedUser?.id && currentRequestOwnerId()
+          ? authenticatedUser.id === currentRequestOwnerId() : null,
+        requestShape, dictionaryIdCount,
+        exceptionType: typeof error?.name === 'string' && /^[a-z][a-z0-9]{0,63}$/iu.test(error.name)
+          ? error.name : 'UnknownError',
+        postgresSqlstate: error?.supabaseCode || null,
+        databaseWriteStatus: error?.meetingPatchWriteStatus || databaseWriteStatus,
+        mappingStatus: error?.meetingPatchStage === 'response_mapping' ? 'failed'
+          : databaseWriteStatus === 'committed' ? 'passed' : 'not_reached',
+        ...safeSupabaseFailureDiagnostics(error)
+      });
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
       requestLogger({

@@ -3,6 +3,7 @@ import { mergeMeetingViewerSnapshot } from '../../lib/meetingViewerState.js';
 import { mergeHostViewerEnvelope } from '../../lib/hostViewerAuthority.js';
 import { newerViewerMetadata } from '../../lib/viewerMetadataVersion.js';
 import { effectiveTranslationForCue } from '../../lib/cueContent.js';
+import { projectAdjacentFinalCues } from '../../lib/adjacentCueProjection.js';
 import { fetchMeetingViewerSnapshotWithRetry, isTerminalViewerError } from '../../lib/meetingViewerSnapshot.js';
 import { createWebRtcSubtitleTransport } from '../../webrtc/subtitleTransport.js';
 import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
@@ -392,7 +393,10 @@ export function MeetingViewerPage({ token, code }) {
   }, [token, code, retryVersion]);
 
   const cues = useMemo(() => {
-    return (detail?.cues || []).map((cue) => ({ ...cue, translatedText: effectiveTranslationForCue(cue) }));
+    return projectAdjacentFinalCues((detail?.cues || []).map((cue) => ({
+      ...cue,
+      translatedText: effectiveTranslationForCue(cue)
+    })));
   }, [detail]);
   const rowLayout = useMemo(() => {
     const offsets = [];

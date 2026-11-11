@@ -7,7 +7,7 @@ import { checkCheckpointOperation, checkpointConflict, recordCheckpointOperation
 import { lifecycleIntentKey, projectLifecycleOperationIntent, sameLifecycleIntentIdentity } from './lifecycleOperationIntent.js';
 
 export const LOCAL_MEETING_SCHEMA_VERSION = 6;
-export const LOCAL_MEETING_DATABASE_VERSION = 12;
+export const LOCAL_MEETING_DATABASE_VERSION = 13;
 const UNASSIGNED_CUE_SCHEMA_VERSION = 1;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
@@ -1952,6 +1952,12 @@ async function parentDirectory(rootDirectory, path, create) {
   return { directory, name };
 }
 
+const transactionFailureStates = new WeakMap();
+
+export function localTransactionFailureState(error) {
+  return error && typeof error === 'object' ? transactionFailureStates.get(error) ?? null : null;
+}
+
 function request(requestHandle) {
   return new Promise((resolve, reject) => {
     requestHandle.onsuccess = () => resolve(requestHandle.result);
@@ -1961,10 +1967,20 @@ function request(requestHandle) {
 
 async function runNamedTransaction(database, storeNames, mode, operation) {
   const transaction = database.transaction(storeNames, mode);
+  let transactionState = 'active';
   const completion = new Promise((resolve, reject) => {
-    transaction.oncomplete = resolve;
-    transaction.onerror = () => reject(transaction.error || new Error('IndexedDB transaction failed.'));
-    transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted.'));
+    transaction.oncomplete = () => { transactionState = 'complete'; resolve(); };
+    transaction.onerror = (event) => {
+      transactionState = 'error';
+      const error = transaction.error || event?.target?.error || new Error('IndexedDB transaction failed.');
+      transactionFailureStates.set(error, 'error');
+    };
+    transaction.onabort = (event) => {
+      transactionState = 'aborted';
+      const error = transaction.error || event?.target?.error || new Error('IndexedDB transaction aborted.');
+      transactionFailureStates.set(error, 'aborted');
+      reject(error);
+    };
   });
   try {
     const result = await operation(transaction);
@@ -1973,6 +1989,9 @@ async function runNamedTransaction(database, storeNames, mode, operation) {
   } catch (error) {
     try { transaction.abort(); } catch { /* already completed */ }
     await completion.catch(() => {});
+    if (error && typeof error === 'object') {
+      transactionFailureStates.set(error, transactionState === 'active' ? 'operation_rejected' : transactionState);
+    }
     throw error;
   }
 }

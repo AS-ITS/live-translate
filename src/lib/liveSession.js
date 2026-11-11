@@ -13,6 +13,7 @@ import { meetingLifecycleWriteHeaders } from './meetingLifecycleWriteFence.js';
 import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDevices.js';
 import { setAudioOutputDevice } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
+import { recordFirstInitialProvenance } from './firstInitialProvenanceTrace.js';
 import { authenticatedFetch } from './accessToken.js';
 import { httpStatusFromError, userMessageForErrorCode, withHttpStatus } from './connectionFailures.js';
 import { cumulativeTextRelation, isCumulativeExtension } from './cumulativeTranscript.js';
@@ -107,6 +108,8 @@ export class LiveTranslateSession {
     this.effectiveGlossaryRevision = null;
     this.providerGlossaryEntries = liveGlossaryEntries;
     this.providerGlossaryRevision = null;
+    this.providerGlossaryPromptLoaded = false;
+    this.lastGlossaryCorrectionDiagnostic = null;
     this.correctionGlossaryRegistry = correctionGlossaryRegistry;
     this.meetingId = meetingId;
     this.recordingId = recordingId;
@@ -396,6 +399,9 @@ export class LiveTranslateSession {
     this.logLiveEvent('liveToken:success', { expiresAt: response.expiresAt || null });
     this.markStartupMilestone('live_token_request_end');
     const liveGlossaryEntries = Array.isArray(response.liveGlossaryEntries) ? response.liveGlossaryEntries : [];
+    const glossaryPrompt = response.liveConnectConfig?.systemInstruction?.parts?.[0]?.text || '';
+    this.providerGlossaryPromptLoaded = liveGlossaryEntries.length > 0
+      && liveGlossaryEntries.every((entry) => glossaryPrompt.includes(`Source term: ${entry.source}\nRequired translation: ${entry.target}`));
     const calculatedRevision = await effectiveGlossaryRevision({
       sourceLanguageCode: this.sourceLanguageCode,
       targetLanguageCode: this.targetLanguageCode,
@@ -1407,6 +1413,15 @@ export class LiveTranslateSession {
     const hasSourceTranscript = Boolean(content?.inputTranscription?.text || content?.interimInputTranscription?.text);
     const hasOutputTranscript = Boolean(content?.outputTranscription?.text);
     this.eventSequence += 1;
+    if (hasOutputTranscript) recordFirstInitialProvenance('provider', {
+      connectionEpoch: this.connectionEpoch, providerEpoch: epoch, eventSequence: this.eventSequence,
+      providerEventId: providerMessageId(message),
+      providerConnectionEpochPresent: message?.connectionEpoch != null || content?.connectionEpoch != null,
+      providerEpochFieldPresent: message?.providerEpoch != null || content?.providerEpoch != null,
+      providerEventSequencePresent: message?.eventSequence != null || content?.eventSequence != null,
+      providerTurnIdPresent: message?.turnId != null || content?.turnId != null,
+      providerTurnIndex: content?.turnIndex ?? content?.turn?.index ?? content?.turn?.turnIndex ?? message?.turnIndex
+    });
     const transcriptEventId = message?.eventId || message?.event_id || message?.id
       || `${sourceLiveSessionId || this.sessionId || 'live'}:message:${this.eventSequence}`;
     const cumulativeInputContinuation = isCumulativeExtension(
@@ -1532,6 +1547,11 @@ export class LiveTranslateSession {
       retranslationCueId: isRetranslationResponse ? retranslationCueId : null
     });
     for (const rawEvent of normalizedEvents) {
+      if (rawEvent.stream === 'translation') recordFirstInitialProvenance('normalized', {
+        connectionEpoch: rawEvent.connectionEpoch, providerEpoch: rawEvent.providerEpoch,
+        eventSequence: rawEvent.eventSequence, turnId: rawEvent.audioTurnId,
+        providerEventId: rawEvent.providerEventId, providerTurnIndex: rawEvent.turnIndex
+      });
       const providerRawSource = content.inputTranscription?.text
         ?? content.interimInputTranscription?.text
         ?? null;
@@ -1544,7 +1564,9 @@ export class LiveTranslateSession {
                 || content.interimInputTranscription?.text
                 || this.lastInputTranscriptText,
               translatedText: rawEvent.text
-            }, correctionSnapshot?.entries || []);
+            }, correctionSnapshot?.entries || [], {
+              onDiagnostic: (diagnostic) => { this.lastGlossaryCorrectionDiagnostic = diagnostic; }
+            });
             return {
               ...rawEvent,
               meetingId: this.meetingId,
@@ -1686,6 +1708,8 @@ export class LiveTranslateSession {
         segmentId: sourceSegmentId,
         sourceLanguageCode: this.sourceLanguageCode,
         connectionEpoch: this.connectionEpoch,
+        providerEpoch: epoch,
+        eventSequence: this.eventSequence,
         audioTurnId: sourceAudioTurnId,
         ...(inputTranscriptArrivedAfterBoundary ? { isLateTranscript: true } : {}),
         ...(content.inputTranscription.sourceLanguageDetection === undefined
@@ -1713,6 +1737,8 @@ export class LiveTranslateSession {
         segmentId: sourceSegmentId,
         sourceLanguageCode: this.sourceLanguageCode,
         connectionEpoch: this.connectionEpoch,
+        providerEpoch: epoch,
+        eventSequence: this.eventSequence,
         audioTurnId: sourceAudioTurnId,
         ...(content.interimInputTranscription.sourceLanguageDetection === undefined
           ? {}
@@ -1751,7 +1777,9 @@ export class LiveTranslateSession {
       const correction = glossaryCorrectionForSource({
         sourceText: content.inputTranscription?.text || content.interimInputTranscription?.text || this.lastInputTranscriptText,
         translatedText: content.outputTranscription.text
-      }, correctionSnapshot?.entries || []);
+      }, correctionSnapshot?.entries || [], {
+        onDiagnostic: (diagnostic) => { this.lastGlossaryCorrectionDiagnostic = diagnostic; }
+      });
       const transcript = withTranscriptEventId({
         text: correction.translatedText,
         rawText: content.outputTranscription.text,
@@ -1766,6 +1794,8 @@ export class LiveTranslateSession {
         sourceLanguageCode: this.sourceLanguageCode,
         targetLanguageCode: this.targetLanguageCode,
         connectionEpoch: this.connectionEpoch,
+        providerEpoch: epoch,
+        eventSequence: this.eventSequence,
         audioTurnId: translationAudioTurnId,
         ...(outputTranscriptArrivedAfterBoundary ? { isLateTranscript: true } : {}),
         ...(isRetranslationResponse ? { retranslationCueId } : {})
@@ -2252,6 +2282,7 @@ export class LiveTranslateSession {
     if (pending) {
       const transcript = withTranscriptEventId({
         ...pending,
+      connectionEpoch: pending.connectionEpoch ?? this.connectionEpoch,
         isFinal: true,
         terminalStatus: localFinalize ? 'local-final' : 'saved-pending',
         terminalReason: localFinalize ? 'local-silence' : 'provider-final-unconfirmed',
@@ -2285,7 +2316,7 @@ export class LiveTranslateSession {
         segmentId: transcript.segmentId,
         sourceLanguageCode: this.sourceLanguageCode,
         targetLanguageCode: this.targetLanguageCode,
-        connectionEpoch: this.connectionEpoch,
+        connectionEpoch: transcript.connectionEpoch,
         sessionTimeMs: this.sessionClock()
       });
       this[pendingKey] = null;
@@ -2355,6 +2386,9 @@ export class LiveTranslateSession {
       activeSegmentId: this.closed ? null : this.segmentId,
       effectiveGlossaryRevision: this.effectiveGlossaryRevision,
       glossaryEntryCount: this.liveGlossaryEntries.length,
+      dictionarySnapshotPresent: Boolean(this.effectiveGlossaryRevision),
+      providerGlossaryPromptLoaded: this.providerGlossaryPromptLoaded,
+      glossaryCorrectionDiagnostic: this.lastGlossaryCorrectionDiagnostic,
       providerGlossaryRevision: this.providerGlossaryRevision,
       providerGlossaryEntryCount: this.providerGlossaryEntries.length,
       correctionGlossaryRevision: this.correctionGlossaryRegistry.active()?.revision || null,

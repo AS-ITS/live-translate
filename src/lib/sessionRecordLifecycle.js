@@ -31,6 +31,14 @@ export function buildSessionRecordInput(options = {}) {
 }
 
 export function createActiveSessionRecord(repository, input = {}) {
+  const existing = input.id ? repository.getSessionRecord(input.id)?.sessionRecord : null;
+  if (existing) {
+    return repository.updateSessionRecord(existing.id, {
+      status: 'active',
+      meetingId: input.meetingId,
+      segmentId: input.segmentId
+    });
+  }
   return repository.createSessionRecord(input);
 }
 

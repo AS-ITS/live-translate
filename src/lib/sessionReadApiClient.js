@@ -173,7 +173,7 @@ async function assertOkResponse(response) {
 }
 
 export function isSessionReadCloudUnavailable(error) {
-  return error?.status === 503 || error?.code === 'cloud_capability_unavailable'
+  return error?.status === 410 || error?.status === 503 || error?.code === 'cloud_capability_unavailable'
     || error?.code === 'supabase_unavailable' || error?.code === 'supabase_request_failed';
 }
 

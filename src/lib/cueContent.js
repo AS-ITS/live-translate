@@ -33,15 +33,41 @@ export function effectiveSourceForCue(cue = {}, variant = 'refined') {
 
 export function effectiveTranslationForCue(cue = {}, variant = 'refined') {
   if (variant === 'raw') return rawTranslationForCue(cue);
-  return refinedTranslationForCue(cue) || initialTranslationForCue(cue) || rawTranslationForCue(cue);
+  const refined = refinedTranslationForCue(cue);
+  if (refined && hasCurrentRefinementBinding(cue)) return refined;
+  return initialTranslationForCue(cue) || rawTranslationForCue(cue);
+}
+
+export function hasCurrentRefinementBinding(cue = {}) {
+  const provenance = cue.translationProvenance;
+  return Boolean(initialTranslationForCue(cue)
+    && Number.isSafeInteger(cue.translationVersion) && cue.translationVersion > 0
+    && provenance && Number.isSafeInteger(provenance.eventSequence)
+    && Number.isSafeInteger(provenance.connectionEpoch)
+    && Number.isSafeInteger(provenance.providerEpoch)
+    && cue.refinement?.status === 'completed'
+    && cue.refinement.inputHash === cueRefinementInputHash(cue));
 }
 
 export function cueRefinementInputHash(cue = {}) {
+  const provenance = cue.translationProvenance;
+  const canonicalProvenance = provenance && typeof provenance === 'object'
+    ? Object.fromEntries([
+      ...['audioTurnId', 'turnKey', 'providerEventId', 'eventId']
+        .filter((field) => typeof provenance[field] === 'string' && provenance[field])
+        .map((field) => [field, provenance[field]]),
+      ...['connectionEpoch', 'providerEpoch', 'eventSequence']
+        .filter((field) => Number.isSafeInteger(provenance[field]) && provenance[field] >= 0)
+        .map((field) => [field, provenance[field]])
+    ]) : null;
   const value = JSON.stringify({
     cueId: cue.cueId,
     sequence: cue.sequence,
     rawSource: rawSourceForCue(cue),
-    rawTranslation: rawTranslationForCue(cue)
+    rawTranslation: rawTranslationForCue(cue),
+    initialTranslation: initialTranslationForCue(cue),
+    translationVersion: cue.translationVersion ?? null,
+    translationProvenance: canonicalProvenance
   });
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {

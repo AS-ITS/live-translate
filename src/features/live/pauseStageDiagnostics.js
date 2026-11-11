@@ -1,6 +1,18 @@
 // Emit only fixed stage names and bounded error identifiers. Provider messages can contain user data.
 const safeIdentifier = (value) => /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(String(value || ''))
   ? String(value) : 'UNKNOWN_ERROR';
+const SAFE_MESSAGES = new Set([
+  'IndexedDB transaction failed.', 'IndexedDB transaction aborted.',
+  'Unable to flush meeting checkpoint before completion.',
+  'One or more Local Cue mutations were not committed.'
+]);
+const FAILURE_CLASSIFICATIONS = {
+  CUE_PUBLISH_FLUSH: 'CUE_SAVE_FAILURE',
+  CHECKPOINT_FLUSH: 'CHECKPOINT_FAILURE',
+  PCM_EPOCH_SEAL: 'PCM_JOURNAL_FAILURE',
+  PCM_WRITER_CLOSE: 'PCM_JOURNAL_FAILURE',
+  MEDIA_RECORDER_PAUSE_DRAIN: 'AUDIO_PERSISTENCE_FAILURE'
+};
 
 export function observePauseStage(stage, operation, { emit, failedResult = () => false, phase } = {}) {
   const startedAt = new Date().toISOString();
@@ -12,7 +24,10 @@ export function observePauseStage(stage, operation, { emit, failedResult = () =>
     publish({ stage, status, startedAt, ...(status === 'DONE' ? { completedAt: at } : { failedAt: at }),
       elapsedMs: Math.round(performance.now() - startedMs),
       ...(status === 'ERROR' ? {
+        classification: FAILURE_CLASSIFICATIONS[stage] || 'LIFECYCLE_FAILURE',
         errorCode: safeIdentifier(error?.code || error?.name),
+        errorName: safeIdentifier(error?.name),
+        message: SAFE_MESSAGES.has(error?.message) ? error.message : error?.message ? '[redacted]' : null,
         ...(phase ? { phase: safeIdentifier(phase()) } : {})
       } : {}) });
   };

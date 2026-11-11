@@ -26,7 +26,7 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
   const tasks = [];
   let requestId = 0;
   const diagnosticClientId = ++nextDiagnosticClientId;
-  const endDiagnostic = (stage, details = {}) => console.info('ISSUE41_PCM_END', JSON.stringify({ stage, recordingId, clientId: diagnosticClientId, ...details }));
+  const endDiagnostic = (stage, details = {}) => console.info('ISSUE41_PCM_END', JSON.stringify({ stage, clientId: diagnosticClientId, ...details }));
   let opening;
   let ready = false;
   let baseEpoch = 0;

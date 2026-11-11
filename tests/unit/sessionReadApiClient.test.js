@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createSessionReadApiClient, readSessionDetailWithTranslationHistory } from '../../src/lib/sessionReadApiClient.js';
+import { createSessionReadApiClient, isSessionReadCloudUnavailable, readSessionDetailWithTranslationHistory } from '../../src/lib/sessionReadApiClient.js';
+
+test('retired Session content HTTP 410 is terminal for legacy reads', () => {
+  assert.equal(isSessionReadCloudUnavailable({ status: 410, code: 'meeting_content_local_only' }), true);
+});
 
 test('GET /api/sessions uses the correct URL and method', async () => {
   const calls = [];

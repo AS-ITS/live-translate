@@ -67,18 +67,31 @@ export function createSupabaseMeetingRepository(options = {}) {
     },
     async updateMeetingSettings(input) {
       const entity = new Meeting(input);
-      const rows = await client.request('meetings', {
-        method: 'PATCH',
-        query: `?select=${MEETING_METADATA_COLUMNS}&${eq('id', entity.id)}&${eq('owner_user_id', owner())}&status=neq.completed`,
-        body: {
-          name: entity.name,
-          source_language_code: entity.sourceLanguageCode,
-          target_language_code: entity.targetLanguageCode,
-          updated_at: toSupabaseTimestamp(entity.updatedAt),
-          settings: meetingRow(entity, owner()).settings
-        }
-      });
-      return rows[0] ? meetingFromRow(rows[0]) : null;
+      let rows;
+      try {
+        rows = await client.request('meetings', {
+          method: 'PATCH',
+          query: `?select=${MEETING_METADATA_COLUMNS}&${eq('id', entity.id)}&${eq('owner_user_id', owner())}&status=neq.completed`,
+          body: {
+            name: entity.name,
+            source_language_code: entity.sourceLanguageCode,
+            target_language_code: entity.targetLanguageCode,
+            updated_at: toSupabaseTimestamp(entity.updatedAt),
+            settings: meetingRow(entity, owner()).settings
+          }
+        });
+      } catch (error) {
+        error.meetingPatchStage = 'database_write';
+        error.meetingPatchWriteStatus = error.supabaseStatus ? 'not_committed' : 'unknown';
+        throw error;
+      }
+      try {
+        return rows[0] ? meetingFromRow(rows[0]) : null;
+      } catch (error) {
+        error.meetingPatchStage = 'response_mapping';
+        error.meetingPatchWriteStatus = 'committed';
+        throw error;
+      }
     },
     async completeLocalMeeting(meetingId) {
       if (!privileged) throw capabilityUnavailable();

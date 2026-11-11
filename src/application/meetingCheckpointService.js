@@ -150,16 +150,28 @@ export function createMeetingCheckpointService({
 
     async updateMeeting({ meetingId, settings = {} } = {}) {
       const normalizedMeetingId = validateRequiredString(meetingId, 'meetingId');
-      const meeting = await meetingRepository.getMeeting(normalizedMeetingId);
+      let meeting;
+      try {
+        meeting = await meetingRepository.getMeeting(normalizedMeetingId);
+      } catch (error) {
+        error.meetingPatchStage = 'meeting_read';
+        throw error;
+      }
       if (!meeting) throw codedError('meeting_not_found', `Meeting not found: ${normalizedMeetingId}`);
       if (meeting.status === 'completed') {
         throw codedError('meeting_settings_locked', 'Completed meeting settings cannot be changed.');
       }
       const now = clock();
-      const updated = await (meetingRepository.updateMeetingSettings || meetingRepository.updateMeeting).call(meetingRepository, meeting.withSettings({
-        ...settings,
-        updatedAt: now
-      }));
+      let updated;
+      try {
+        updated = await (meetingRepository.updateMeetingSettings || meetingRepository.updateMeeting).call(meetingRepository, meeting.withSettings({
+          ...settings,
+          updatedAt: now
+        }));
+      } catch (error) {
+        error.meetingPatchStage ||= 'settings_mapping';
+        throw error;
+      }
       if (!updated) throw codedError('meeting_settings_locked', 'Completed meeting settings cannot be changed.');
       return { meeting: updated };
     },

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { formatMeetingElapsed, meetingElapsedMs } from '../../src/lib/meetingElapsedTime.js';
+import { formatMeetingElapsed, meetingElapsedMs, shouldShowMeetingElapsedTimer } from '../../src/lib/meetingElapsedTime.js';
 
 test('meeting elapsed time is derived from authoritative timestamps after delayed timer callbacks', () => {
   const startedAt = '2026-10-07T00:00:00.000Z';
@@ -22,4 +22,15 @@ test('meeting elapsed time remains based on fixed startedAt across pause, resume
     ['reconnect', 180_000],
     ['rollover', 240_000]
   ]);
+});
+
+test('meeting timer remains visible through active lifecycle transitions and hides after End', () => {
+  const startedAt = '2026-10-07T00:00:00.000Z';
+  for (const status of ['requesting-permission', 'connecting', 'listening', 'paused', 'stopping', 'reconnecting', 'switching-segment', 'provider-recovery', 'provider-recovery-failed']) {
+    assert.equal(shouldShowMeetingElapsedTimer(status, startedAt), true, status);
+  }
+  for (const status of ['idle', 'ended', 'stopped', 'error']) {
+    assert.equal(shouldShowMeetingElapsedTimer(status, startedAt), false, status);
+  }
+  assert.equal(shouldShowMeetingElapsedTimer('listening', null), false);
 });

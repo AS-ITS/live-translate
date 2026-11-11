@@ -1,41 +1,62 @@
+import { cueRefinementInputHash, effectiveTranslationForCue, hasCurrentRefinementBinding } from './cueContent.js';
+
 export function applyGlossaryReplacements(text, glossaryEntries = []) {
-  if (typeof text !== 'string' || text.length === 0 || !Array.isArray(glossaryEntries) || glossaryEntries.length === 0) {
-    return text;
+  return glossaryReplacementForText(text, glossaryEntries).text;
+}
+
+export function glossaryReplacementForText(text, glossaryEntries = []) {
+  if (typeof text !== 'string' || !Array.isArray(glossaryEntries) || glossaryEntries.length === 0) {
+    return { text, status: 'not_applicable' };
   }
-
-  const replacements = glossaryEntries
-    .flatMap((entry) => replacementCandidatesForEntry(entry))
-    .filter((replacement, index, all) => all.findIndex((candidate) => candidate.from === replacement.from && candidate.to === replacement.to) === index)
-    .sort((left, right) => right.from.length - left.from.length);
-
-  return replacements.reduce(
-    (current, replacement) => current.split(replacement.from).join(replacement.to),
-    text
-  );
+  const candidates = glossaryEntries.flatMap((entry) => replacementCandidatesForEntry(entry));
+  let result = '';
+  let ambiguous = false;
+  let changed = false;
+  for (let index = 0; index < text.length;) {
+    const matches = candidates.filter(({ from }) =>
+      comparableText(text.slice(index, index + from.length)) === comparableText(from)
+      && hasSourceBoundaries(text, from, index));
+    if (matches.length === 0) {
+      result += text[index++];
+      continue;
+    }
+    const longest = Math.max(...matches.map(({ from }) => from.length));
+    const winners = matches.filter(({ from }) => from.length === longest);
+    const targets = new Set(winners.map(({ to }) => to));
+    if (targets.size > 1) ambiguous = true;
+    else changed = true;
+    result += targets.size > 1 ? text.slice(index, index + longest) : winners[0].to;
+    index += longest;
+  }
+  return { text: result, status: ambiguous ? 'correction_ambiguous' : changed ? 'corrected' : 'not_applicable' };
 }
 
 export function correctTranslationForSource({ sourceText, translatedText } = {}, glossaryEntries = []) {
   return glossaryCorrectionForSource({ sourceText, translatedText }, glossaryEntries).translatedText;
 }
 
-export function glossaryCorrectionForSource({ sourceText, translatedText } = {}, glossaryEntries = []) {
+export function glossaryCorrectionForSource({ sourceText, translatedText } = {}, glossaryEntries = [], { onDiagnostic } = {}) {
   if (typeof sourceText !== 'string' || typeof translatedText !== 'string' || !Array.isArray(glossaryEntries)) {
     return { translatedText, status: 'not_applicable', occurrences: [] };
   }
 
-  const occurrences = matchSourceOccurrences(sourceText, glossaryEntries);
+  const { occurrences, ambiguous } = matchSourceOccurrences(sourceText, glossaryEntries);
   if (occurrences.length === 0) {
-    return { translatedText, status: 'not_applicable', occurrences: [] };
+    onDiagnostic?.({ sourceMatchCount: 0, alignmentCandidateCount: 0,
+      correctionStatus: ambiguous ? 'correction_ambiguous' : 'not_applicable',
+      reasonCode: ambiguous ? 'source_target_conflict' : 'no_source_match' });
+    return { translatedText, status: ambiguous ? 'correction_ambiguous' : 'not_applicable', occurrences: [] };
   }
 
-  if (!sourceIsFullyCovered(sourceText, occurrences)) {
-    return { translatedText, status: 'correction_uncertain', occurrences };
-  }
-
-  const corrected = renderCoveredGlossaryTranslation(sourceText, translatedText, occurrences);
+  const { text: corrected, uncertain, ambiguous: targetAmbiguous, candidateCount } = replaceAlignedTranslation(translatedText, occurrences, glossaryEntries);
+  const status = ambiguous || targetAmbiguous ? 'correction_ambiguous'
+    : uncertain ? 'correction_uncertain' : corrected === translatedText ? 'unchanged' : 'corrected';
+  onDiagnostic?.({ sourceMatchCount: occurrences.length, alignmentCandidateCount: candidateCount,
+    correctionStatus: status, reasonCode: ambiguous ? 'source_target_conflict'
+      : targetAmbiguous ? 'alignment_conflict' : uncertain ? 'alignment_count_mismatch' : null });
   return {
     translatedText: corrected,
-    status: corrected === translatedText ? 'unchanged' : 'corrected',
+    status,
     occurrences
   };
 }
@@ -57,34 +78,47 @@ export function applyGlossaryCorrectionsToCueState(state, glossaryEntries = [], 
   return changed ? { ...state, finalCues, refinedSubtitleCues } : state;
 }
 
-export function applyGlossaryCorrectionToCue(cue, glossaryEntries = []) {
+export function applyGlossaryCorrectionToCue(cue, glossaryEntries = [], { refineOnly = false } = {}) {
   if (!cue || cue.status !== 'final') return cue;
+  // Legacy Local Cues without Live version evidence remain readable, but cannot gain invented refinement provenance.
+  if (!Number.isSafeInteger(cue.translationVersion) || cue.translationVersion < 1
+    || !cue.translationProvenance || !Number.isSafeInteger(cue.translationProvenance.eventSequence)
+    || !Number.isSafeInteger(cue.translationProvenance.connectionEpoch)
+    || !Number.isSafeInteger(cue.translationProvenance.providerEpoch)
+    || !cue.initialTranslation) return cue;
   const sourceText = cue.rawSource ?? cue.sourceText ?? '';
   const providerTranslation = cue.rawTranslation ?? cue.translatedText ?? '';
   const initialCorrection = glossaryCorrectionForSource(
     { sourceText, translatedText: providerTranslation },
     glossaryEntries
   );
-  const initialTranslation = initialCorrection.translatedText;
-  const refinedCorrection = typeof cue.refinedTranslation === 'string'
+  const currentHash = cueRefinementInputHash(cue);
+  const validRefined = hasCurrentRefinementBinding(cue);
+  const refinedCorrection = validRefined
     ? glossaryCorrectionForSource({ sourceText, translatedText: cue.refinedTranslation }, glossaryEntries)
     : null;
-  const refinedTranslation = refinedCorrection?.translatedText ?? cue.refinedTranslation;
+  const refinedTranslation = refinedCorrection?.translatedText ?? initialCorrection.translatedText;
   const glossaryCorrectionStatus = [initialCorrection.status, refinedCorrection?.status]
-    .includes('correction_uncertain')
-    ? 'correction_uncertain'
+    .includes('correction_ambiguous') ? 'correction_ambiguous'
+    : [initialCorrection.status, refinedCorrection?.status].includes('correction_uncertain')
+      ? 'correction_uncertain'
     : initialCorrection.status;
-  const initialChanged = (
-    initialCorrection.status !== 'not_applicable'
-    || typeof cue.initialTranslation === 'string'
-  ) && initialTranslation !== cue.initialTranslation;
-  const refinedChanged = refinedTranslation !== cue.refinedTranslation;
+  const refinedChanged = refinedCorrection
+    ? refinedTranslation !== cue.refinedTranslation
+    : !refineOnly && refinedTranslation !== providerTranslation;
   const statusChanged = glossaryCorrectionStatus !== cue.glossaryCorrectionStatus;
-  if (!initialChanged && !refinedChanged && !statusChanged) return cue;
+  if (!refinedChanged && !statusChanged) return cue;
   return {
     ...cue,
-    ...(initialChanged ? { initialTranslation } : {}),
-    ...(refinedChanged ? { refinedTranslation } : {}),
+    ...(refinedChanged ? {
+      refinedTranslation,
+      refinement: {
+        ...(cue.refinement || {}),
+        status: 'completed',
+        version: (cue.refinement?.version || 0) + 1,
+        inputHash: currentHash
+      }
+    } : {}),
     glossaryCorrectionStatus
   };
 }
@@ -113,25 +147,35 @@ function matchSourceOccurrences(sourceText, glossaryEntries) {
     .filter(({ source, target }) => source && target)
     .sort((left, right) => right.source.length - left.source.length || left.order - right.order);
   const occurrences = [];
+  let ambiguous = false;
 
   for (let index = 0; index < source.length;) {
-    const match = entries.find((candidate) => (
+    const matches = entries.filter((candidate) => (
       source.startsWith(candidate.source, index)
       && hasSourceBoundaries(source, candidate.source, index)
     ));
-    if (!match) {
+    if (matches.length === 0) {
       index += 1;
       continue;
     }
+    const longest = matches[0].source.length;
+    const winners = matches.filter((candidate) => candidate.source.length === longest);
+    if (new Set(winners.map((candidate) => candidate.target)).size > 1) {
+      ambiguous = true;
+      index += longest;
+      continue;
+    }
+    const match = winners[0];
     occurrences.push({
       start: index,
       end: index + match.source.length,
+      entryOrder: match.order,
       source: match.entry.source,
       target: match.target
     });
     index += match.source.length;
   }
-  return occurrences;
+  return { occurrences, ambiguous };
 }
 
 function hasSourceBoundaries(source, term, index) {
@@ -142,45 +186,70 @@ function hasSourceBoundaries(source, term, index) {
     && (!after || !/[\p{L}\p{N}]/u.test(after));
 }
 
-function sourceIsFullyCovered(sourceText, occurrences) {
-  const source = comparableText(sourceText);
-  let cursor = 0;
+function replaceAlignedTranslation(translation, occurrences, glossaryEntries) {
+  const counts = new Map();
   for (const occurrence of occurrences) {
-    if (!isSeparatorOnly(source.slice(cursor, occurrence.start))) return false;
-    cursor = occurrence.end;
+    counts.set(occurrence.entryOrder, (counts.get(occurrence.entryOrder) || 0) + 1);
   }
-  return isSeparatorOnly(source.slice(cursor));
-}
-
-function renderCoveredGlossaryTranslation(sourceText, providerTranslation, occurrences) {
-  const parts = [];
+  const matches = [];
+  for (const [order] of counts) {
+    const entry = glossaryEntries[order];
+    const aliases = Array.isArray(entry.replacementAliases) ? entry.replacementAliases : [];
+    const candidates = [entry.source, ...aliases, entry.target]
+      .filter((value) => typeof value === 'string' && value.length > 0);
+    for (const candidate of new Set(candidates)) {
+      const targetAlreadyPresent = comparableText(candidate) === comparableText(entry.target);
+      const pattern = containsCjk(candidate)
+        ? new RegExp(escapeRegExp(candidate), 'giu')
+        : new RegExp(`(^|[^\\p{L}\\p{N}])(${escapeRegExp(candidate)})(?=$|[^\\p{L}\\p{N}])`, 'giu');
+      for (const match of translation.matchAll(pattern)) {
+        const start = match.index + (containsCjk(candidate) ? 0 : match[1].length);
+        matches.push({ start, end: start + candidate.length, order, target: entry.target, targetAlreadyPresent });
+      }
+    }
+  }
+  matches.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start) || a.order - b.order);
+  const selected = [];
+  let ambiguous = false;
+  for (const match of matches) {
+    if (selected.length && match.start < selected.at(-1).end) continue;
+    const sameRange = matches.filter((candidate) => candidate.start === match.start && candidate.end === match.end);
+    const aliases = sameRange.filter((candidate) => !candidate.targetAlreadyPresent);
+    const aliasTargets = new Set(aliases.map((candidate) => candidate.target));
+    if (aliasTargets.size > 1) {
+      ambiguous = true;
+      selected.push({ ...match, ambiguous: true });
+      continue;
+    }
+    const protective = sameRange.filter((candidate) => candidate.targetAlreadyPresent && candidate.order !== aliases[0]?.order);
+    const unresolvedProtection = protective.some((candidate) => !matches.some((other) =>
+      other.order === candidate.order && !other.targetAlreadyPresent
+      && (other.start !== match.start || other.end !== match.end)));
+    if (aliases.length && unresolvedProtection) {
+      ambiguous = true;
+      selected.push({ ...match, ambiguous: true });
+      continue;
+    }
+    selected.push(aliases[0] || sameRange[0]);
+  }
+  const seen = new Map();
+  for (const match of selected) {
+    if (!match.ambiguous) seen.set(match.order, (seen.get(match.order) || 0) + 1);
+  }
+  const unsafe = new Set([...counts].filter(([order]) => (seen.get(order) || 0) > counts.get(order)).map(([order]) => order));
+  let uncertain = false;
+  for (const [order] of counts) {
+    if ((seen.get(order) || 0) !== counts.get(order) || unsafe.has(order)) uncertain = true;
+  }
   let cursor = 0;
-  occurrences.forEach((occurrence, index) => {
-    const separator = sourceText.slice(cursor, occurrence.start);
-    if (index === 0) parts.push(separator);
-    else parts.push(separator || ', ');
-    parts.push(occurrence.target);
-    cursor = occurrence.end;
-  });
-
-  const sourceTrailing = sourceText.slice(cursor);
-  const providerTrailing = terminalPunctuation(providerTranslation);
-  const trailing = providerTrailing || sourceTrailing;
-  const result = parts.join('');
-  return `${stripDuplicateTerminalPunctuation(result, trailing)}${trailing}`;
-}
-
-function isSeparatorOnly(value) {
-  return value === '' || /^[\s\p{P}\p{S}]*$/u.test(value);
-}
-
-function terminalPunctuation(value) {
-  return value.match(/[\p{P}\p{S}]+\s*$/u)?.[0] || '';
-}
-
-function stripDuplicateTerminalPunctuation(value, trailing) {
-  if (!trailing) return value;
-  return value.replace(/[\p{P}\p{S}]+\s*$/u, '');
+  let text = '';
+  for (const match of selected) {
+    text += translation.slice(cursor, match.start);
+    text += match.ambiguous || match.targetAlreadyPresent || unsafe.has(match.order)
+      ? translation.slice(match.start, match.end) : match.target;
+    cursor = match.end;
+  }
+  return { text: text + translation.slice(cursor), uncertain, ambiguous, candidateCount: selected.length };
 }
 
 function comparableText(value) {

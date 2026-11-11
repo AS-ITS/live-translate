@@ -3,10 +3,13 @@ import test from 'node:test';
 import { applyCueMutation } from '../../src/domain/subtitleCue/cueMutation.js';
 import { cueRefinementInputHash } from '../../src/lib/cueContent.js';
 import { createInMemoryLocalMeetingManifestStore } from '../../src/lib/localMeetingStorage.js';
-import { createCueMutationCoordinator } from '../../src/lib/cueMutationCoordinator.js';
+import { createCueMutationCoordinator, cueMutationsForChange } from '../../src/lib/cueMutationCoordinator.js';
+import { applyGlossaryCorrectionToCue } from '../../src/lib/glossaryReplacement.js';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { rolldown } from 'rolldown';
+import { normalizeGeminiLiveCueEvents } from '../../src/lib/geminiLiveCueEvent.js';
+import { applySubtitleCueEvent, createSubtitleCueState } from '../../src/lib/subtitleCues.js';
 
 const base = () => {
   const cue = {
@@ -26,19 +29,67 @@ const base = () => {
   return cue;
 };
 
-const lateTranslation = (cue) => {
-  const next = {
-    ...cue, translatedText: 'translation revised', rawTranslation: 'translation revised',
-    initialTranslation: 'translation revised', translationVersion: cue.translationVersion + 1,
-    providerEventSequence: 40,
-    translationProvenance: {
-      audioTurnId: 'turn-1', turnKey: 'turn-1', connectionEpoch: 1,
-      providerEpoch: 1, eventSequence: 40
-    }
-  };
-  next.refinement = { status: 'pending', version: 1, inputHash: cueRefinementInputHash(next) };
-  return next;
+const lateTranslation = (existing) => {
+ const cue = {
+  ...existing,
+  translatedText: 'translation revised',
+  rawTranslation: 'translation revised',
+  initialTranslation: 'translation revised',
+  translationVersion: existing.translationVersion + 1,
+  providerEventSequence: 40,
+  translationProvenance: { ...existing.translationProvenance, eventSequence: 40 }
+ };
+ cue.refinement = { status: 'pending', version: 1, inputHash: cueRefinementInputHash(cue) };
+ cue.refinedTranslation = null;
+ return cue;
 };
+
+test('Issue 41: Gemini output event 380 advances translation 5 to 6 after source 6', () => {
+  const existing = { ...base(), sourceVersion: 6, translationVersion: 5,
+    connectionEpoch: 5, providerEpoch: 1, providerEventSequence: 377,
+    audioTurnId: 'audio-turn-5-4', turnKey: 'local:audio-turn-5-4',
+    translationProvenance: { audioTurnId: 'audio-turn-5-4', turnKey: 'local:audio-turn-5-4',
+      connectionEpoch: 5, providerEpoch: 1, eventSequence: 377 } };
+  existing.refinement = { status: 'completed', version: 2,
+    inputHash: cueRefinementInputHash(existing) };
+  existing.refinedTranslation = 'older refined output';
+  const [event] = normalizeGeminiLiveCueEvents({ serverContent: {
+    outputTranscription: { text: 'translation revised' }
+  } }, { sessionId: existing.sessionId, segmentId: existing.segmentId,
+    connectionEpoch: 5, providerEpoch: 1, eventSequence: 380,
+    translationAudioTurnId: existing.audioTurnId, translationTurnKey: existing.turnKey,
+    sessionTimeMs: 110 });
+  assert.equal(event.stream, 'translation');
+  const proposed = applySubtitleCueEvent(createSubtitleCueState({ finalCues: [existing] }), event)
+    .finalCues.find((cue) => cue.cueId === existing.cueId);
+  assert.ok(proposed);
+  assert.equal(proposed.sourceVersion, 6);
+  assert.equal(proposed.translationVersion, 6);
+  assert.equal(proposed.translationProvenance.eventSequence, 380);
+  const accepted = applyCueMutation(existing, { side: 'translation', cue: proposed });
+  assert.equal(accepted.status, 'committed');
+  assert.equal(accepted.cue.sourceVersion, 6);
+  assert.equal(accepted.cue.translationVersion, 6);
+  assert.equal(accepted.cue.refinement?.status, 'pending');
+  assert.equal(accepted.cue.refinedTranslation, null);
+
+  for (const badProof of [
+    { providerEpoch: null }, { eventSequence: 377 }, { audioTurnId: 'another-turn' }
+  ]) {
+    const rejected = applyCueMutation(existing, { side: 'translation', cue: {
+      ...proposed, translationProvenance: { ...proposed.translationProvenance, ...badProof }
+    } });
+    assert.equal(rejected.status, 'rejected');
+    assert.equal(rejected.reason, 'cue_translation_event_unproven');
+  }
+  const unprovenCurrent = { ...existing, translationProvenance: {
+    ...existing.translationProvenance, providerEpoch: null, eventSequence: null
+  } };
+  const rejected = applyCueMutation(unprovenCurrent, { side: 'translation', cue: proposed });
+  assert.equal(rejected.reason, 'cue_translation_event_unproven');
+  assert.equal(rejected.versionState.provenanceChecks.providerEpochsValid, false);
+  assert.equal(rejected.versionState.provenanceChecks.eventSequencesValid, false);
+});
 
 test('final same-turn translation revision retains independent source version', () => {
   const existing = base();
@@ -55,7 +106,9 @@ test('late source event 38 followed by same-turn translation event 40 commits bo
   const existing = base();
   const source = applyCueMutation(existing, { side: 'source', cue: {
     ...existing, sourceText: 'source extended', rawSource: 'source extended',
-    sourceVersion: 2, providerEventSequence: 38
+    sourceVersion: 2, providerEventSequence: 38,
+    sourceProvenance: { audioTurnId: 'turn-1', turnKey: 'turn-1',
+      connectionEpoch: 1, providerEpoch: 1, eventSequence: 38 }
   } });
   assert.equal(source.status, 'committed');
   assert.equal(source.cue.translationVersion, 1);
@@ -102,6 +155,57 @@ test('stale translation is rejected without overwriting a newer Cue', () => {
       providerEpoch: 1, eventSequence: 41 }
   } });
   assert.equal(crossTurn.status, 'rejected', JSON.stringify(crossTurn));
+});
+
+test('out-of-order translation reports the first rejected versions without committing', () => {
+  const existing = base();
+  const older = lateTranslation(existing);
+  older.providerEventSequence = 30;
+  older.translationProvenance = { ...older.translationProvenance, eventSequence: 30 };
+  const result = applyCueMutation(existing, { side: 'translation', cue: older });
+  assert.equal(result.reason, 'cue_translation_event_unproven');
+  assert.equal(result.versionState.expectedSideVersion, 2);
+  assert.equal(result.versionState.currentTranslationVersion, 1);
+  assert.equal(result.versionState.incomingTranslationVersion, 2);
+  assert.equal(result.versionState.currentSideSequence, 31);
+  assert.equal(result.versionState.incomingSideSequence, 30);
+  assert.equal(existing.translatedText, 'translation');
+  assert.equal(existing.revision, 1);
+});
+
+test('dictionary correction of async refinement does not fabricate a Gemini translation', async () => {
+  const existing = base();
+  existing.sourceText = '你好';
+  existing.rawSource = '你好';
+  existing.translatedText = 'Hello';
+  existing.rawTranslation = 'Hello';
+  existing.initialTranslation = 'Hello';
+  existing.refinement = { status: 'pending', version: 1, inputHash: cueRefinementInputHash(existing) };
+  const refined = { ...existing, refinedTranslation: 'Hello',
+    refinement: { ...existing.refinement, status: 'completed', version: 2 } };
+  const corrected = applyGlossaryCorrectionToCue(refined,
+    [{ source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }],
+    { refineOnly: true });
+  assert.equal(corrected.initialTranslation, 'Hello');
+  assert.notEqual(corrected.refinedTranslation, refined.refinedTranslation);
+  assert.deepEqual(cueMutationsForChange(existing, corrected).map(({ side }) => side), ['refinement']);
+  let stored = existing;
+  const coordinator = createCueMutationCoordinator({
+    commit(job) {
+      const result = applyCueMutation(stored, job);
+      if (result.status === 'committed') stored = result.cue;
+      return result;
+    },
+    createEventKey: () => 'refinement-1'
+  });
+  const [{ result: committed }] = await coordinator.enqueue({ meetingId: 'meeting-1',
+    segmentId: existing.segmentId, changes: [{ before: existing, cue: corrected }] });
+  assert.deepEqual(await coordinator.flush(), []);
+  assert.equal(committed.status, 'committed', JSON.stringify(committed));
+  assert.equal(stored.translationVersion, 1);
+  assert.equal(stored.rawTranslation, 'Hello');
+  assert.equal(stored.initialTranslation, 'Hello');
+  assert.equal(stored.refinement.version, 3);
 });
 
 test('source-only same-turn final revision resets refinement before its queued mutation', async () => {
@@ -184,7 +288,7 @@ test('late refinement for prior input cannot overwrite a newer same-turn Final C
     ...initial, refinement: { ...initial.refinement, status: 'completed', version: 3 },
     refinedSource: 'old source', refinedTranslation: 'old translation'
   } });
-  assert.deepEqual([late.status, late.reason], ['rejected', 'versioned_state_regression']);
+  assert.deepEqual([late.status, late.reason], ['rejected', 'cue_refinement_input_conflict']);
   assert.equal(current.cue.refinement.inputHash, changed.refinement.inputHash);
   assert.equal(current.cue.sourceVersion, 2);
 });
@@ -280,7 +384,9 @@ test('local IndexedDB Cue and checkpoint survive reload after translation flush'
     cue.refinement = { status: 'pending', version: 1, inputHash: cueRefinementInputHash(cue) };
     const revised = { ...cue, translatedText: 'translation revised',
       rawTranslation: 'translation revised', initialTranslation: 'translation revised',
-      translationVersion: 2, providerEventSequence: 40 };
+      translationVersion: 2, providerEventSequence: 40,
+      translationProvenance: { audioTurnId: 'turn-1', turnKey: 'turn-1',
+        connectionEpoch: 1, providerEpoch: 1, eventSequence: 40 } };
     revised.refinement = { status: 'pending', version: 1, inputHash: cueRefinementInputHash(revised) };
     let event = 0;
     const coordinator = createCueMutationCoordinator({

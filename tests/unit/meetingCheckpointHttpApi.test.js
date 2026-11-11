@@ -533,6 +533,38 @@ test('metadata-only Viewer share route preserves token, code, and expiry checks 
   assert.equal((await request(handler, { url: expiringCodePath })).status, 404);
 });
 
+test('Meeting dictionary PATCH logs safe failure stage without exposing entry contents', async () => {
+  const events = [];
+  const repository = {
+    ...createMemoryMeetingRepository(),
+    updateMeeting() {
+      const error = new Error('private dictionary content must stay out of logs');
+      error.name = 'DatabaseError';
+      error.supabaseCode = 'P0043';
+      error.supabaseStatus = 400;
+      error.meetingPatchStage = 'database_write';
+      error.meetingPatchWriteStatus = 'not_committed';
+      throw error;
+    }
+  };
+  const handler = createHandler({ meetingRepository: repository, requestLogger: (event) => events.push(event) });
+  const created = (await request(handler, { method: 'POST', url: '/api/meetings', body: '{}' })).json();
+  const response = await request(handler, {
+    method: 'PATCH', url: `/api/meetings/${created.meeting.id}`,
+    body: JSON.stringify({ glossaryEntries: [{ source: 'private dictionary content', target: 'private target' }] })
+  });
+  const diagnostic = events.find((event) => event.event === 'meeting_dictionary_patch_failure');
+  assert.equal(response.status, 500);
+  assert.equal(response.json().error.code, 'internal_error');
+  assert.equal(diagnostic.requestId, response.json().error.requestId);
+  assert.equal(diagnostic.stage, 'database_write');
+  assert.equal(diagnostic.postgresSqlstate, 'P0043');
+  assert.equal(diagnostic.databaseWriteStatus, 'not_committed');
+  assert.equal(diagnostic.mappingStatus, 'not_reached');
+  assert.deepEqual(diagnostic.requestShape, [{ field: 'glossaryEntries', type: 'array' }]);
+  assert.equal(JSON.stringify({ response: response.json(), diagnostic }).includes('private dictionary content'), false);
+});
+
 function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService, meetingRepository, meetingMembershipService, meetingDeletionService: injectedMeetingDeletionService, accessControl, profileService, strictCheckpointPathIds = false, requestLogger } = {}) {
   const repository = meetingRepository || createMemoryMeetingRepository();
   let meetingId = 0;

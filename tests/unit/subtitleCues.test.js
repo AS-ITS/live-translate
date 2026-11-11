@@ -14,6 +14,7 @@ import {
 import { missingNumericIntegrity } from '../../src/lib/numericIntegrity.js';
 import { normalizeGeminiLiveCueEvents } from '../../src/lib/geminiLiveCueEvent.js';
 import { enqueueLiveCueEvent } from '../../src/lib/liveCueEventQueue.js';
+import { projectAdjacentFinalCues } from '../../src/lib/adjacentCueProjection.js';
 
 test('aggregates source and translation partials into one pending cue', () => {
   let state = createSubtitleCueState();
@@ -567,17 +568,16 @@ test('merges adjacent short bilingual cues until sentence punctuation', () => {
   appendFinalPair("it's very", '很', 200);
   appendFinalPair('Right now,', '現在，', 300);
 
-  assert.equal(state.finalCues.length, 1);
-  assert.deepEqual(state.finalCues[0], {
-    ...state.finalCues[0],
-    sourceText: "Actually, it's very Right now,",
-    translatedText: '其實，很現在，',
-    finalizedReason: 'merged'
-  });
+  assert.equal(state.finalCues.length, 3);
+  assert.equal(new Set(state.finalCues.map((cue) => cue.cueId)).size, 3);
+  const displayed = projectAdjacentFinalCues(state.finalCues);
+  assert.equal(displayed.length, 1);
+  assert.equal(displayed[0].sourceText, "Actually, it's very Right now,");
+  assert.equal(displayed[0].translatedText, '其實，很現在，');
   assert.equal(state.finalCues[0].sequence, 1);
   assert.equal(state.finalCues[0].startTimeMs, 100);
-  assert.equal(state.finalCues[0].endTimeMs, 400);
-  assert.equal(state.nextSequence, 3);
+  assert.equal(displayed[0].endTimeMs, state.finalCues.at(-1).endTimeMs);
+  assert.equal(state.nextSequence, 4);
 });
 
 test('does not merge after sentence punctuation', () => {
@@ -606,8 +606,8 @@ test('does not merge after sentence punctuation', () => {
   const options = { maxCueChars: 12 };
   appendFinalPair('first,', '第一，', 100, options);
   appendFinalPair('second', '第二', 200, options);
-  assert.equal(state.finalCues.length, 1);
-  assert.deepEqual(state.finalCues.map((cue) => cue.sourceText), ['first, second']);
+  assert.equal(state.finalCues.length, 2);
+  assert.deepEqual(projectAdjacentFinalCues(state.finalCues).map((cue) => cue.sourceText), ['first, second']);
 });
 
 test('merges adjacent final number fragments within the idle window without loss or duplication', () => {
@@ -622,9 +622,11 @@ test('merges adjacent final number fragments within the idle window without loss
   appendFinalPair('567', '567', 500);
   appendFinalPair('8910', '8910', 900);
 
-  assert.equal(state.finalCues.length, 1);
-  assert.equal(state.finalCues[0].sourceText, '1234 567 8910');
-  assert.equal(state.finalCues[0].translatedText, '1234 567 8910');
+  assert.equal(state.finalCues.length, 3);
+  const displayed = projectAdjacentFinalCues(state.finalCues);
+  assert.equal(displayed.length, 1);
+  assert.equal(displayed[0].sourceText, '1234 567 8910');
+  assert.equal(displayed[0].translatedText, '1234 567 8910');
 });
 
 test('does not merge final Cues after sentence punctuation or after a long gap', () => {

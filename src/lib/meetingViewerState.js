@@ -107,7 +107,7 @@ function mergeCue(existing, incoming) {
 
   for (const [version, fields] of [
     ['sourceVersion', ['sourceText', 'sourceStatus', 'rawSource']],
-    ['translationVersion', ['translatedText', 'translationStatus', 'rawTranslation']],
+    ['translationVersion', ['translatedText', 'translationStatus', 'rawTranslation', 'initialTranslation', 'translationProvenance']],
   ]) {
     const previousVersion = Number(existing[version]) || 0;
     const incomingVersion = Number(incoming[version]) || 0;

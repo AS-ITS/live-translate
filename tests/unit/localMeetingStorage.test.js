@@ -28,6 +28,69 @@ function bundledLocalStorageSource() {
   return storageBundle;
 }
 
+test('browser IndexedDB initializes v13 and upgrades v12 Cue Authority stores', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://local-schema.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://local-schema.test/');
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalStorageSource()).toString('base64')}`;
+
+  for (const previousVersion of [0, 12]) {
+    const result = await page.evaluate(async ({ moduleUrl, dbName, previousVersion }) => {
+      if (previousVersion === 12) {
+        const oldDatabase = await new Promise((resolve, reject) => {
+          const opening = indexedDB.open(dbName, 12);
+          opening.onupgradeneeded = () => opening.result.createObjectStore('recordings', { keyPath: 'meetingId' });
+          opening.onsuccess = () => resolve(opening.result);
+          opening.onerror = () => reject(opening.error);
+        });
+        oldDatabase.close();
+      }
+      const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+      const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+      const before = await store.inspectCueAuthority('meeting-schema');
+      const pendingBefore = await store.listPendingCues('meeting-schema');
+      const committed = await store.commitCueMutation({
+        meetingId: 'meeting-schema', side: 'pending', eventKey: 'pending-1',
+        cue: { cueId: 'cue-1', sessionId: 'session-1', sequence: 1,
+          startTimeMs: 0, endTimeMs: 100, status: 'final', sourceText: 'hello' }
+      });
+      const reopenedStore = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+      const pendingAfter = await reopenedStore.listPendingCues('meeting-schema');
+      const authorityAfter = await reopenedStore.inspectCueAuthority('meeting-schema');
+      const database = await new Promise((resolve, reject) => {
+        const opening = indexedDB.open(dbName);
+        opening.onsuccess = () => resolve(opening.result);
+        opening.onerror = () => reject(opening.error);
+      });
+      const names = [...database.objectStoreNames];
+      const transaction = database.transaction(['pendingCues', 'cueAuthorities'], 'readonly');
+      const pendingKeyPath = transaction.objectStore('pendingCues').keyPath;
+      const pendingIndexes = [...transaction.objectStore('pendingCues').indexNames];
+      const authorityKeyPath = transaction.objectStore('cueAuthorities').keyPath;
+      const version = database.version;
+      database.close();
+      return { before, pendingBefore, committed: committed.status, pendingAfter: pendingAfter.length,
+        authorityAfter, version, names, pendingKeyPath, pendingIndexes, authorityKeyPath };
+    }, { moduleUrl, dbName: `local-schema-${previousVersion}-${Date.now()}`, previousVersion });
+    assert.equal(result.version, 13);
+    assert.equal(result.before, 'new');
+    assert.deepEqual(result.pendingBefore, []);
+    assert.equal(result.committed, 'pending');
+    assert.equal(result.pendingAfter, 1);
+    assert.equal(result.authorityAfter, 'b2');
+    assert.equal(result.pendingKeyPath, 'key');
+    assert.ok(result.pendingIndexes.includes('meetingId'));
+    assert.equal(result.authorityKeyPath, 'meetingId');
+    for (const name of ['recordings', 'segments', 'chunks', 'operations', 'cues', 'cueOperations',
+      'cueConflicts', 'legacyCueBackups', 'pendingCues', 'cueAuthorities', 'checkpoints',
+      'unassignedCues', 'transcripts', 'translatedAudioChunks', 'retentions']) {
+      assert.ok(result.names.includes(name), `${name} missing after v${previousVersion} open`);
+    }
+  }
+});
+
 let lifecycleRecoveryBundle;
 function bundledLifecycleRecoverySource() {
   lifecycleRecoveryBundle ||= (async () => {

@@ -100,7 +100,7 @@ test('provisional unknown-owner Cue is selected for durable storage', () => {
   assert.deepEqual(durableUnassignedFinalCues([survivor]), [survivor]);
 });
 
-test('absorbed provisional unknown-owner Cue is removed with survivor update', () => {
+test('adjacent provisional unknown-owner Cues retain independent persistence records', () => {
   let state = createSubtitleCueState();
   const unknown = (id, stream, text, time) => ({
     eventId: id, sessionId: 's', segmentId: null, stream, text,
@@ -116,12 +116,12 @@ test('absorbed provisional unknown-owner Cue is removed with survivor update', (
   pair('Actually,', 'En fait,', 100);
   const survivorId = state.finalCues[0].cueId;
   const changes = pair('it works', 'ça marche', 200);
-  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues.length, 2);
   assert.equal(state.finalCues[0].cueId, survivorId);
-  assert.equal(changes.upserts[0].cueId, survivorId);
-  assert.equal(changes.removals.length, 1);
-  assert.equal(changes.removals[0].survivorCueId, survivorId);
-  assert.deepEqual(durableUnassignedFinalCues(state.finalCues).map((cue) => cue.cueId), [survivorId]);
+  assert.equal(changes.upserts[0].cueId, state.finalCues[1].cueId);
+  assert.deepEqual(changes.removals, []);
+  assert.deepEqual(durableUnassignedFinalCues(state.finalCues).map((cue) => cue.cueId),
+    state.finalCues.map((cue) => cue.cueId));
 });
 
 test('equivalent Cue fields in a different key order are a no-op', () => {

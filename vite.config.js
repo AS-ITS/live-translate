@@ -28,6 +28,13 @@ export default defineConfig({
           fileName: 'google-g.svg',
           source: readFileSync(new URL('./public/google-g.svg', import.meta.url))
         });
+        for (const fileName of ['favicon.ico', 'favicon.svg', 'favicon-recording.svg', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png']) {
+          this.emitFile({
+            type: 'asset',
+            fileName,
+            source: readFileSync(new URL(`./public/${fileName}`, import.meta.url))
+          });
+        }
       }
     },
     {

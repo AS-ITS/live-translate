@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Live Translate 錄製中">
+  <defs><linearGradient id="bubble" x1="0" x2="0.86" y1="0" y2="1"><stop stop-color="#0879F8"/><stop offset="1" stop-color="#0755CE"/></linearGradient></defs>
+  <!-- Background is fully transparent. A unified silhouette is retained across both states. -->
+  <path d="M30 12 H98 Q116 12 116 32 V96 Q116 109 101 109 H34 L18 121 Q14 124 14 118 L17 105 Q11 99 11 91 V32 Q11 12 30 12 Z" fill="url(#bubble)"/>
+  <!-- Three meeting participants are INSIDE the caption bubble. -->
+  <circle cx="39" cy="44" r="8" fill="#BCEEFF"/>
+  <path d="M25 70 Q25 56 39 56 Q53 56 53 70 Z" fill="#BCEEFF"/>
+  <circle cx="64" cy="38" r="10.5" fill="#FFFFFF"/>
+  <path d="M46 70 Q46 51 64 51 Q82 51 82 70 Z" fill="#FFFFFF"/>
+  <circle cx="89" cy="44" r="8" fill="#BCEEFF"/>
+  <path d="M75 70 Q75 56 89 56 Q103 56 103 70 Z" fill="#BCEEFF"/>
+  <rect x="29" y="78" width="70" height="7" rx="3.5" fill="#FFFFFF"/>
+  <rect x="34" y="91" width="60" height="7" rx="3.5" fill="#FFFFFF"/>
+  <circle cx="111" cy="21" r="16" fill="#FFFFFF"/><circle cx="111" cy="21" r="12.7" fill="#EF4444"/>
+</svg>

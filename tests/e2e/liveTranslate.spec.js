@@ -4851,6 +4851,37 @@ test('live recording adapts the meeting design system across desktop and mobile 
     expect(layout.dividerContent).not.toBe('none');
   }
 
+  for (const viewport of [
+    { width: 820, height: 900, columns: 2 },
+    { width: 768, height: 900, columns: 2 },
+    { width: 430, height: 932, columns: 1 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.screenshot({ path: test.info().outputPath(`live-recording-${viewport.width}.png`) });
+    const layout = await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('.live-session-toolbar button')]
+        .filter((button) => getComputedStyle(button).visibility !== 'hidden')
+        .map((button) => button.getBoundingClientRect());
+      const overlaps = buttons.some((a, index) => buttons.slice(index + 1).some((b) =>
+        Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
+        Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1));
+      const title = document.querySelector('.meeting-app-header h1')?.getBoundingClientRect();
+      const menu = document.querySelector('.mobile-menu-trigger')?.getBoundingClientRect();
+      return {
+        overflow: document.documentElement.scrollWidth > innerWidth,
+        overlaps,
+        headerOverlap: Boolean(title && menu && title.right > menu.left),
+        columns: getComputedStyle(document.querySelector('.cue-row')).gridTemplateColumns.split(' ').length,
+        toolbarHeight: document.querySelector('.live-session-toolbar').getBoundingClientRect().height
+      };
+    });
+    expect(layout.overflow).toBe(false);
+    expect(layout.overlaps).toBe(false);
+    expect(layout.headerOverlap).toBe(false);
+    expect(layout.columns).toBe(viewport.columns);
+    expect(layout.toolbarHeight).toBeLessThan(180);
+  }
+
   await page.setViewportSize({ width: 640, height: 800 });
   await page.screenshot({ path: test.info().outputPath('live-recording-640.png') });
   const mobileLayout = await page.evaluate(() => {
@@ -4962,6 +4993,67 @@ test('live recording adapts the meeting design system across desktop and mobile 
   expect(typography.actionButtonFontSize).toBe(typography.deviceSummaryFontSize);
   expect(typography.translationFontWeight).toBe(typography.sourceFontWeight);
   expect(typography.firstRowBorder).toBe('0px');
+});
+
+test('empty live subtitles fill the remaining tablet viewport', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+  await page.setViewportSize({ width: 768, height: 900 });
+  await expect(page.getByTestId('cue-empty-state')).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('live-recording-empty-768.png') });
+  const layout = await page.evaluate(() => ({
+    panelHeight: document.querySelector('[data-testid="live-cue-panel"]').getBoundingClientRect().height,
+    overflow: document.documentElement.scrollWidth > innerWidth
+  }));
+  const previousEmptyLayout = await page.addStyleTag({ content: `
+    .live-recording-page .live-transcript-column:has(.cue-list-empty) { align-self: start; }
+    .live-recording-page .cue-panel:has(.cue-list-empty) { height: auto; grid-template-rows: auto auto; }
+    .live-recording-page .cue-list-empty { height: auto; min-height: 10rem; }
+  ` });
+  const previousHeight = await page.getByTestId('live-cue-panel').evaluate((panel) => panel.getBoundingClientRect().height);
+  await previousEmptyLayout.evaluate((style) => style.remove());
+  console.log(`EMPTY_SUBTITLE_PANEL_HEIGHT before=${previousHeight} after=${layout.panelHeight}`);
+  expect(layout.panelHeight).toBeGreaterThan(previousHeight);
+  expect(layout.panelHeight).toBeGreaterThan(350);
+  expect(layout.overflow).toBe(false);
+});
+
+test('live subtitle viewport stays stable with status details across RWD widths', async ({ page }) => {
+  await mockMeetingCheckpointApi(page, { meetingDetailCues: [{
+    cueId: `cue:viewport:${MOCK_SEGMENT_ID(1)}:1`, sessionId: 'viewport', segmentId: MOCK_SEGMENT_ID(1),
+    sequence: 1, startTimeMs: 1000, endTimeMs: 2500, status: 'final',
+    sourceText: 'viewport source', translatedText: 'viewport translation',
+    sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en'
+  }] });
+  await gotoMockMeetingLive(page);
+  await expect(page.getByText('viewport source')).toBeVisible();
+  await expect(page.getByText('viewport translation')).toBeVisible();
+  const detailsButton = page.getByTestId('live-session-toolbar').getByRole('button', { name: /詳細狀態/u });
+  const results = [];
+  for (const width of [375, 430, 640, 768, 820, 1024, 1280, 1440]) {
+    await page.setViewportSize({ width, height: width <= 430 ? 812 : 900 });
+    const measure = () => page.evaluate(() => {
+      const panel = document.querySelector('[data-testid="live-cue-panel"]').getBoundingClientRect();
+      const list = document.querySelector('[data-testid="cue-list"]').getBoundingClientRect();
+      const toolbar = document.querySelector('[data-testid="live-session-toolbar"]').getBoundingClientRect();
+      return { panelTop: panel.top, panelHeight: panel.height, listHeight: list.height,
+        toolbarHeight: toolbar.height, horizontalOverflow: document.documentElement.scrollWidth > innerWidth,
+        pageOverflow: document.documentElement.scrollHeight > innerHeight + 1 };
+    });
+    const closed = await measure();
+    await detailsButton.click();
+    await expect(page.locator('#live-session-status-details')).toBeVisible();
+    const opened = await measure();
+    results.push({ width, ...closed });
+    expect(opened.panelTop).toBeCloseTo(closed.panelTop, 0);
+    expect(opened.panelHeight).toBeCloseTo(closed.panelHeight, 0);
+    expect(closed.panelHeight).toBeGreaterThan(250);
+    expect(closed.listHeight).toBeGreaterThan(100);
+    expect(closed.horizontalOverflow).toBe(false);
+    expect(closed.pageOverflow).toBe(false);
+    await detailsButton.click();
+  }
+  console.log(`SUBTITLE_RWD_MEASUREMENTS ${JSON.stringify(results)}`);
 });
 
 test('live recording can expand secondary status and enter focus mode without hiding controls', async ({ page }) => {

@@ -3,8 +3,10 @@
   height: 100dvh;
   min-height: 100dvh;
   overflow: hidden;
-  padding-bottom: var(--space-5);
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
 }
+.live-recording-app-shell > .meeting-app-header { min-height: 0; margin-bottom: 0; padding-block: var(--space-2); }
 .live-recording-app-shell.is-live-focus-mode { grid-template-rows: minmax(0, 1fr); gap: 0; }
 .live-recording-app-shell.is-live-focus-mode > .meeting-app-header { display: none; }
 .live-recording-page { min-width: 0; }
@@ -32,8 +34,8 @@
 }
 
 .background-translation-notice strong { color: var(--color-text, #20242d); }
-.live-recording-page .live-workspace-stack { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--space-3); min-width: 0; min-height: 0; height: 100%; }
-.live-recording-page .live-session-toolbar { display: block; min-height: 0; padding: var(--space-3) var(--space-4); }
+.live-recording-page .live-workspace-stack { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--space-2); min-width: 0; min-height: 0; height: 100%; }
+.live-recording-page .live-session-toolbar { position: relative; display: block; min-height: 0; padding: var(--space-2) var(--space-3); }
 .live-recording-page .control-status-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); }
 .live-recording-page .live-meeting-summary-column { min-width: 16rem; flex: 1 1 auto; }
 .live-recording-page .live-session-status { display: grid; gap: var(--space-2); }
@@ -59,7 +61,7 @@
 .live-recording-page .meeting-elapsed-timer { display: inline-flex; align-items: center; flex: 0 0 auto; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--color-text); font-weight: 750; }
 .live-recording-page .meeting-elapsed-compact-marker { display: none; color: var(--color-danger, #c43d3d); font-size: .75rem; }
 .live-recording-page .live-status-details-button[aria-expanded="true"] svg { transform: rotate(180deg); }
-.live-recording-page .live-session-status-details { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
+.live-recording-page .live-session-status-details { position: absolute; z-index: 3; top: calc(100% + var(--space-1)); right: 0; width: min(26rem, 100%); max-height: min(60dvh, 28rem); overflow-y: auto; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-floating); }
 .live-recording-page .live-status-attention { display: grid; gap: var(--space-1); margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--color-border); color: var(--color-text-muted); font-size: var(--text-sm); }
 .live-recording-page .live-status-attention p { margin: 0; }
 .live-recording-page .live-transcript-column { display: grid; min-width: 0; min-height: 0; }
@@ -71,12 +73,12 @@
 .live-recording-page .subtitle-visibility-toggle { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 2.75rem; color: var(--color-text); font-size: var(--text-sm); font-weight: 700; white-space: nowrap; cursor: pointer; }
 .live-recording-page .subtitle-visibility-toggle.is-active { border-color: var(--color-primary-soft); background: var(--color-primary-soft); color: var(--color-primary-hover); }
 .live-recording-page .subtitle-visibility-hint { grid-column: 1 / -1; margin: 0; color: var(--color-text-muted); font-size: var(--text-xs); line-height: 1.3; text-align: right; }
-.live-recording-page .cue-list { display: grid; min-height: 0; height: 100%; max-height: none; margin-top: var(--space-5); overflow-y: auto; overscroll-behavior: contain; }
+.live-recording-page .cue-list { display: grid; min-height: 0; height: auto; max-height: none; margin-top: var(--space-2); overflow-y: auto; overscroll-behavior: contain; }
 .live-recording-page .cue-panel > .transcript-panel { margin-top: var(--space-5); }
-.live-recording-page .cue-list-empty { min-height: 18rem; place-items: center; }
+.live-recording-page .cue-list-empty { place-items: center; }
 .live-recording-page .cue-empty-prominent { display: grid; justify-items: center; gap: var(--space-2); margin: 0; color: var(--color-text-subtle); text-align: center; }
-.live-recording-page .cue-reading-layout { position: relative; display: grid; grid-template-columns: minmax(0, .3fr) minmax(0, .7fr); align-items: start; align-content: start; }
-.live-recording-page .cue-reading-layout::after { position: absolute; inset: 0 auto 0 30%; width: 1px; background: var(--color-border); content: ''; pointer-events: none; }
+.live-recording-page .cue-reading-layout { position: relative; display: grid; grid-template-columns: minmax(0, .4fr) minmax(0, .6fr); align-items: start; align-content: start; }
+.live-recording-page .cue-reading-layout::after { position: absolute; inset: 0 auto 0 40%; width: 1px; background: var(--color-border); content: ''; pointer-events: none; }
 .live-recording-page .cue-reading-layout.is-source-hidden { grid-template-columns: minmax(0, 1fr); }
 .live-recording-page .cue-reading-layout.is-translation-hidden { grid-template-columns: minmax(0, 1fr); }
 .live-recording-page .cue-reading-layout.is-source-hidden::after, .live-recording-page .cue-reading-layout.is-translation-hidden::after { display: none; }
@@ -86,7 +88,7 @@
 .live-recording-page .cue-translation-column .cue-section-header { grid-column: 2; }
 .live-recording-page .cue-section-header h3 { margin: 0; color: var(--color-text-muted); font-size: var(--text-lg); font-weight: 800; }
 .live-recording-page .cue-section-list { display: contents; }
-.live-recording-page .cue-row { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(0, .3fr) minmax(0, .7fr); gap: var(--space-6); min-width: 0; margin-top: 0; padding: var(--space-1) var(--space-3); border-radius: 0; background: transparent; }
+.live-recording-page .cue-row { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(0, .4fr) minmax(0, .6fr); gap: var(--space-4); min-width: 0; margin-top: 0; padding: var(--space-1) var(--space-3); border-radius: 0; background: transparent; }
 .live-recording-page .cue-row > .cue-row-meta { grid-column: 1 / -1; }
 .live-recording-page .cue-row-meta { color: var(--color-text-subtle); font-size: var(--text-xs); line-height: 1.3; }
 .live-recording-page .cue-partial-status { color: inherit; font-weight: 600; }
@@ -112,17 +114,17 @@
 
 @media (max-width: 900px) {
   .live-recording-app-shell .live-recording-page .control-status-row,
-  .live-recording-page .control-status-row { display: flex; align-items: stretch; flex-direction: column; }
+  .live-recording-page .control-status-row { grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2) var(--space-3); }
   .live-recording-page .live-meeting-summary-column { min-width: 0; }
-  .live-recording-page .live-toolbar-status { justify-content: flex-start; }
-  .live-recording-page .control-actions { justify-content: flex-start; }
- .live-recording-page .session-actions { justify-content: flex-start; }
+  .live-recording-page .live-toolbar-status { justify-content: flex-end; }
+  .live-recording-page .control-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .live-recording-page .session-actions { justify-content: flex-start; }
 }
 
 @media (max-width: 760px) {
  .live-error-message { align-items: flex-start; }
   .live-error-retry { margin-top: .125rem; }
-  .live-recording-page .live-session-toolbar { padding: var(--space-4); }
+  .live-recording-page .live-session-toolbar { padding: var(--space-2); }
   .live-recording-page .cue-panel { padding: var(--space-4); }
   .live-recording-app-shell .live-header-actions { width: 100%; justify-content: flex-start; }
   .live-recording-app-shell .live-header-actions .button { flex: 1 1 12rem; }
@@ -166,9 +168,9 @@
   .live-recording-page .gemini-credential-notice p { display: none; }
   .live-recording-page .gemini-credential-notice .button { display: inline-flex; width: auto; min-height: 2.75rem; justify-content: center; padding-inline: var(--space-3); }
   .live-recording-page .live-workspace-stack { gap: var(--space-1); }
-  .live-recording-page .live-session-toolbar { padding: var(--space-3); }
+  .live-recording-page .live-session-toolbar { padding: var(--space-2); }
   .live-recording-app-shell .live-recording-page .control-status-row,
-  .live-recording-page .control-status-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); }
+  .live-recording-page .control-status-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-1) var(--space-2); }
   .live-recording-page .live-meeting-summary { align-items: center; flex-direction: row; justify-content: space-between; gap: var(--space-3); }
   .live-recording-page .live-meeting-summary h2 { font-size: var(--text-md); }
   .live-recording-page .live-toolbar-status { width: auto; justify-content: flex-end; }

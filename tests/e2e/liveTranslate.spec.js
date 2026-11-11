@@ -1330,8 +1330,49 @@ test('live recording surface exposes meeting and session controls', async ({ pag
 
   await page.getByRole('button', { name: '停止錄音' }).click();
   await expect(page.getByLabel('即時字幕狀態：已暫停')).toBeVisible();
-  await expect(page.getByRole('button', { name: '繼續錄製' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^繼續(?:錄製)?$/u })).toBeVisible();
   await expect(page.getByRole('button', { name: '結束會議' })).toBeVisible();
+});
+
+test('meeting timer survives Pause Reload Continue Pause Reload', async ({ page }) => {
+  test.setTimeout(60_000);
+  await gotoMockMeetingLive(page);
+  const timer = page.getByTestId('meeting-elapsed-timer');
+  const seconds = async () => {
+    const value = await timer.locator('time').textContent();
+    const [hours, minutes, remaining] = value.trim().split(':').map(Number);
+    return hours * 3600 + minutes * 60 + remaining;
+  };
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(timer).toBeVisible();
+  await page.getByRole('button', { name: '停止錄音' }).click();
+  await expect(page.getByRole('button', { name: /^繼續(?:錄製)?$/u })).toBeVisible();
+  const firstPause = await seconds();
+  await page.waitForTimeout(1_100);
+  await page.reload();
+  await expect(page.getByRole('button', { name: /^繼續(?:錄製)?$/u })).toBeVisible();
+  await expect(timer).toBeVisible();
+  const firstReload = await seconds();
+  expect(firstReload).toBeGreaterThan(firstPause);
+
+  await configureTestGeminiCredential(page, { expectedControl: /^繼續(?:錄製)?$/u });
+  await page.getByRole('button', { name: /^繼續(?:錄製)?$/u }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByRole('button', { name: '停止錄音' })).toBeVisible();
+  await expect(timer).toBeVisible();
+  expect(await seconds()).toBeGreaterThanOrEqual(firstReload);
+  await page.getByRole('button', { name: '停止錄音' }).click();
+  await expect(page.getByRole('button', { name: /^繼續(?:錄製)?$/u })).toBeVisible();
+  const secondPause = await seconds();
+  await page.waitForTimeout(1_100);
+  await page.reload();
+  await expect(page.getByRole('button', { name: /^繼續(?:錄製)?$/u })).toBeVisible();
+  await expect(timer).toBeVisible();
+  expect(await seconds()).toBeGreaterThan(secondPause);
 });
 
 test('entering live recording from meeting settings loads the selected meeting', async ({ page }) => {
@@ -2237,10 +2278,13 @@ test('ending active recording completes meeting without stopping first', async (
     sourceText: 'direct end source',
     translatedText: 'direct end translation'
   });
+  await expect(page.getByTestId('meeting-elapsed-timer')).toBeVisible();
   page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: '結束會議' }).click();
   await expect.poll(() => completeRequests, { timeout: 12000 }).toBe(1);
   await expect.poll(() => completeCalls).toBe(1);
+  await expect.poll(() => page.evaluate((meetingId) =>
+    sessionStorage.getItem(`live-translate:meeting-timer:${meetingId}`), MOCK_MEETING_ID)).toBeNull();
   await expect(page).toHaveURL(new RegExp(`#meeting-detail\\?meetingId=${MOCK_MEETING_ID}`));
   await expect(page.getByRole('heading', { name: '會議管理', exact: true })).toHaveCount(0);
 });
@@ -5529,6 +5573,76 @@ test('copies only completed source transcript from live subtitles', async ({ pag
   await expect.poll(() => page.evaluate(() => window.__copiedText)).toBe('第一段原文\n第二段原文');
   await page.getByRole('button', { name: '複製翻譯' }).click();
   await expect.poll(() => page.evaluate(() => window.__copiedText)).toBe('第一段翻譯\n第二段翻譯');
+});
+
+test('Local Pause Reload Continue commits both subtitle segments across second Pause and Reload', async ({ page }) => {
+  page.mockMeetingLifecycleV2 = true;
+  page.mockMeetingLocalAudio = true;
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page, { meetingStatus: 'active' });
+  await page.getByRole('button', { name: /^(開始|開始錄製)$/u }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await emitFinalTranscript(page, 'first source', 'first translation');
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await page.getByRole('button', { name: '停止錄音' }).click();
+  await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+  await configureTestGeminiCredential(page, { expectedControl: '繼續' });
+  await page.getByRole('button', { name: '繼續' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await emitFinalTranscript(page, 'second source', 'second translation');
+  await expect.poll(async () => page.evaluate(async (meetingId) => {
+    const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+    return (await createLocalMeetingPersistence().listCues(meetingId)).length;
+  }, MOCK_MEETING_ID)).toBe(2);
+  await page.getByRole('button', { name: '停止錄音' }).click();
+  await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+  await expect(page.getByText('部分字幕不屬於目前段落', { exact: false })).toHaveCount(0);
+  const beforeReloadTranscript = await page.evaluate(async (meetingId) => {
+    const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+    return (await createLocalMeetingPersistence().listTranscriptItems(meetingId))
+      .map((row) => ({ id: row.item.id, segmentId: row.segmentId,
+        stream: row.item.stream, text: row.item.text }));
+  }, MOCK_MEETING_ID);
+  await page.reload();
+  const local = await page.evaluate(async (meetingId) => {
+    const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+    const persistence = createLocalMeetingPersistence();
+    const [segments, cues, transcript] = await Promise.all([
+      persistence.listLocalSegments(meetingId), persistence.listCues(meetingId),
+      persistence.listTranscriptItems(meetingId)
+    ]);
+    const cursors = await Promise.all(segments.map(async (segment) => ({
+      segmentId: segment.segmentId,
+      cursor: (await persistence.getCheckpoint({ meetingId, segmentId: segment.segmentId }))?.checkpoint?.cueCursor
+    })));
+    return {
+      segments: segments.map((segment) => segment.segmentId),
+      cursors,
+      cues: cues.map((record) => ({ segmentId: record.segmentId, cueId: record.cueId,
+        sequence: record.sequence, source: record.cue.sourceText, translation: record.cue.translatedText })),
+      transcript: transcript.map((row) => ({ id: row.item.id, segmentId: row.segmentId,
+        stream: row.item.stream, text: row.item.text }))
+    };
+  }, MOCK_MEETING_ID);
+  expect(new Set(local.segments).size).toBe(2);
+  expect(local.cues).toHaveLength(2);
+  expect(new Set(local.cues.map((cue) => cue.cueId)).size).toBe(2);
+  expect(new Set(local.cues.map((cue) => cue.segmentId))).toEqual(new Set(local.segments));
+  for (const cue of local.cues) {
+    const cursor = local.cursors.find((item) => item.segmentId === cue.segmentId)?.cursor;
+    expect(cursor?.commitCount).toBeGreaterThanOrEqual(1);
+    expect(cursor?.sequence).toBeGreaterThanOrEqual(cue.sequence);
+  }
+  expect(local.cues.map((cue) => [cue.source, cue.translation])).toEqual([
+    ['first source', 'first translation'], ['second source', 'second translation']
+  ]);
+  expect(local.transcript).toEqual(beforeReloadTranscript);
+  expect(new Set(local.transcript.map((item) => item.id)).size).toBe(local.transcript.length);
 });
 
 test('Stop finalizes visible partial transcripts without active export controls', async ({ page }) => {

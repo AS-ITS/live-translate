@@ -27,6 +27,7 @@ export function projectPendingCue(input) {
   return { status: 'valid', record: {
     key: pendingCueKey(input.meetingId, cue.sessionId, cue.cueId),
     meetingId: input.meetingId, sessionId: cue.sessionId, cueId: cue.cueId,
+    ownerSegmentId: nonEmpty(input.segmentId) ? input.segmentId : null,
     sequence: cue.sequence, cue: snapshot
   } };
 }
@@ -34,7 +35,9 @@ export function projectPendingCue(input) {
 export function advancePendingCue(existing, projected, eventKey, fingerprint) {
   if (existing && (existing.sessionId !== projected.sessionId
     || existing.cueId !== projected.cueId || existing.sequence !== projected.sequence
-    || existing.cue.startTimeMs !== projected.cue.startTimeMs)) {
+    || existing.cue.startTimeMs !== projected.cue.startTimeMs
+    || (existing.ownerSegmentId && projected.ownerSegmentId
+      && existing.ownerSegmentId !== projected.ownerSegmentId))) {
     return { status: 'rejected', reason: 'cue_pending_identity_conflict' };
   }
   const events = existing?.events || [];
@@ -46,7 +49,8 @@ export function advancePendingCue(existing, projected, eventKey, fingerprint) {
     return { status: 'rejected', reason: 'cue_pending_event_limit' };
   }
   return { status: 'pending', pending: {
-    ...projected, events: [...events, { eventKey, fingerprint, cue: projected.cue }], updatedAt: Date.now()
+    ...projected, ownerSegmentId: existing?.ownerSegmentId || projected.ownerSegmentId,
+    events: [...events, { eventKey, fingerprint, cue: projected.cue }], updatedAt: Date.now()
   } };
 }
 
@@ -60,7 +64,9 @@ export function pendingOwnershipIsProven(pending, cue, segment, candidateSegment
     && pending.cue.startTimeMs === cue.startTimeMs
     && (pending.cue.liveSessionId ?? null) === (cue.liveSessionId ?? null)
     && ['ACTIVE', 'ENDED'].includes(segment.status)
-    && candidateSegments.length === 1);
+    && (pending.ownerSegmentId
+      ? pending.ownerSegmentId === segment.segmentId
+      : candidateSegments.length === 1));
 }
 
 export function classifyCueAuthority({ marker, cues = [], checkpoints = [], unassigned = [] }) {

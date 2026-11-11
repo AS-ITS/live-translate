@@ -41,4 +41,4 @@
 
 ## 授權
 
-本專案有權授權的內容採用 [MIT License](../LICENSE)，`Copyright (c) 2026 Po-Chun Ruan`。Academia Sinica（中央研究院）僅為作者所屬機構，不是共同著作權人或官方背書。第三方套件、Gemini API 與其他服務各有自己的授權及使用條款，不因本專案採 MIT 而免費或取得額外權利。
+MIT 授權及著作權署名仍待機構確認；草稿 `LICENSE` 不屬於本次 Preview Candidate。部署或對外散布前須先確認授權文字與權利人。第三方套件、Gemini API 與其他服務各有自己的授權及使用條款。

@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+- Issue #41 Preview Candidate 整合：Reload 後歷史 Pending Cue 保留原 Segment 歸屬，跨 Segment 提交遭拒；Pause／Continue／End 的本機保存與 Cue Writer 路徑維持，Checkpoint 失敗紀錄只保存固定結構欄位，不保存原始 Stack。
+
+- Issue #41 會議計時器改由每個分頁的 `sessionStorage` 保存 Meeting ID 與首次錄音起點；Pause、Continue 和 Reload 僅依此顯示經過時間，End 成功後清除，不參與錄音或資料生命週期。
+
 - Issue #41 RC1 Cue integrity: accepted Source and Translation mutations now allocate each side version from the latest committed Cue only after newer same-turn provider provenance is proven. Stale events cannot advance a side version; the Local Writer continues rejecting same-version authority text conflicts.
 
 - Issue #41: Adjacent Final Cues now retain separate authority and local persistence identities. Recorder, viewer, and TXT/SRT/VTT output derive adjacent sentence grouping from a deterministic read-only projection.

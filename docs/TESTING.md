@@ -1,5 +1,10 @@
 # Testing
 
+Issue #41 Pause → Reload → Continue 定向驗證：`tests/e2e/liveTranslate.spec.js` 的
+`Local Pause Reload Continue commits both subtitle segments across second Pause and Reload`
+會核對兩段 Cue、Transcript 與各段 Checkpoint cursor。`tests/unit/cueB2PendingIndexedDb.test.js`
+另外驗證歷史 Pending Cue 在 Reload 後不能提交到新 Segment，原始歸屬與失敗診斷仍留在 IndexedDB。
+
 For current Issue #41 Local acceptance, use only this repository and run
 `npm run start -- --check`, then `npm run start`. The launcher checks the
 repository's Local Supabase migrations, Google Provider, and loopback Redis.

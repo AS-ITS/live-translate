@@ -761,7 +761,11 @@ useEffect(() => {
     },
     requestNumericCorrection(currentState) {
       if (transcriptionOnly) return;
-      const target = [...(currentState.finalCues || [])].reverse().find((candidate) => candidate.status === 'final' && candidate.sourceText && candidate.translatedText && !candidate.numericCorrectionRequested && missingNumericIntegrity(candidate.sourceText, candidate.translatedText));
+      const activeSegmentId = recovery.activeMeetingCheckpointRef.current?.segmentId;
+      const target = [...(currentState.finalCues || [])].reverse().find((candidate) =>
+        (!activeSegmentId || candidate.segmentId === activeSegmentId) && candidate.status === 'final'
+        && candidate.sourceText && candidate.translatedText && !candidate.numericCorrectionRequested
+        && missingNumericIntegrity(candidate.sourceText, candidate.translatedText));
       if (!target) return;
       const next = markNumericCorrectionRequested(currentState, target.cueId);
       commitCueTransition(cue, currentState, next);
@@ -1335,7 +1339,7 @@ useEffect(() => {
       } catch (nextError) {
         recovery.activeMeetingCheckpointRef.current = null;
         checkpointController.cancel();
-        recovery.setMeetingCheckpointStatus('error');
+        recovery.setMeetingCheckpointStatus('error', { operation: 'MEETING_CHECKPOINT_START', error: nextError });
         throw new Error('無法建立長會議同步紀錄。請稍後再試。', { cause: nextError });
       }
     },
@@ -1475,8 +1479,8 @@ useEffect(() => {
         if (recovery.navigateAfterEnd) recovery.navigateAfterEnd(destination);
         else window.location.hash = destination;
         return { success: true };
-      } catch {
-        recovery.setMeetingCheckpointStatus?.('error');
+      } catch (error) {
+        recovery.setMeetingCheckpointStatus?.('error', { operation: 'END_PAUSED_SESSION', error });
         recovery.setError('無法結束會議，請稍後再試。');
         recovery.setStatus('error');
         return { success: false, errorCode: 'END_FAILED' };
@@ -1487,7 +1491,7 @@ useEffect(() => {
         try {
           return await controller.endCurrentSessionLifecycle(options);
         } catch (error) {
-          recovery.setMeetingCheckpointStatus?.('error');
+          recovery.setMeetingCheckpointStatus?.('error', { operation: 'END_CURRENT_SESSION', error });
           recovery.setError('無法結束會議，本機資料已保留。請重新載入以恢復會議。');
           recovery.setStatus('error');
           return { success: false, errorCode: error?.code || 'END_FAILED' };
@@ -1534,7 +1538,7 @@ useEffect(() => {
       if (meetingLifecycleRef.current) {
         try { await executeMeetingLifecycleCommand('stop'); }
         catch (error) {
-          recovery.setMeetingCheckpointStatus?.('error');
+          recovery.setMeetingCheckpointStatus?.('error', { operation: 'STOP_LIFECYCLE_SYNC', error });
           recovery.setMeetingCheckpointErrorMessage?.('本機內容已保存，但會議生命週期同步失敗。請保留本機資料並重試。');
           throw error;
         }
@@ -1547,7 +1551,7 @@ useEffect(() => {
         await store.clearPendingCompletion({ meetingId: endedMeetingId, meeting: result.meeting });
       }
       catch (error) {
-        recovery.setMeetingCheckpointStatus?.('error');
+        recovery.setMeetingCheckpointStatus?.('error', { operation: 'MEETING_COMPLETION_SYNC', error });
         recovery.setMeetingCheckpointErrorMessage?.('本機內容已保存，但會議完成狀態同步失敗。請保留本機資料並重試。');
         throw error;
       }
@@ -1984,6 +1988,7 @@ if (routeMeetingId) {
         recovery.setStatus('listening');
         recovery.updateLiveMeetingUrl(meetingCheckpoint.meetingId);
         recovery.startSegmentSwitch?.();
+        return { success: true };
       } catch (error) {
         if (!microphoneStreamClaimed && microphoneWarmupPromise) {
           void microphoneWarmupPromise.then(({ stream }) => stopMicrophoneStream(stream));
@@ -2419,7 +2424,7 @@ if (routeMeetingId) {
           reason: rolloverStage
         });
         if (meetingLifecycleRef.current?.localOnly && !rolloverCommandCommitted) {
-        recovery.setMeetingCheckpointStatus?.('error');
+        recovery.setMeetingCheckpointStatus?.('error', { operation: 'SEGMENT_ROLLOVER', error: cause });
         recovery.setMeetingCheckpointErrorMessage?.('本機切段未完成；目前 Segment 與未同步資料已保留。');
         try {
           await audioController.startRawAudioContainerForSegment();

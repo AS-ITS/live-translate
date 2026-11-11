@@ -22,6 +22,9 @@ test('B2 Pending survives reload, needs unique local segment proof, and leaves l
     const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
     const dbName = `b2-pending-${Date.now()}`;
     const store = createIndexedDbLocalMeetingManifestStore({ dbName });
+    await store.saveCheckpointFailure({ id: 'failure-1', meetingId: 'meeting-3',
+      segmentId: 'old-segment', activeSegmentId: 'new-segment', historical: true,
+      operation: 'RELOAD_PENDING_MUTATION_OWNERSHIP', rawStack: 'sensitive stack' });
     const cue = { cueId: 'pending-1', sessionId: 'session-1', liveSessionId: 'live-1',
       segmentId: null, sequence: 1, startTimeMs: 0, endTimeMs: 100,
       status: 'final', sourceText: 'hello', translatedText: 'world',
@@ -33,6 +36,7 @@ test('B2 Pending survives reload, needs unique local segment proof, and leaves l
     const sameEvent = await store.commitCueMutation({ meetingId: 'meeting-1', segmentId: null,
       eventKey: 'event-1', side: 'pending', cue });
     const freshStore = createIndexedDbLocalMeetingManifestStore({ dbName });
+    const recoveredFailure = await freshStore.listCheckpointFailures('meeting-3');
     const recovered = await freshStore.listPendingCues('meeting-1');
     const ownerless = await freshStore.commitCueMutation({ meetingId: 'meeting-1',
       segmentId: 'segment-1', eventKey: 'event-2', side: 'initial',
@@ -105,10 +109,32 @@ test('B2 Pending survives reload, needs unique local segment proof, and leaves l
     const ambiguousCues = await freshStore.listCues('meeting-2');
     const ambiguousPending = await freshStore.listPendingCues('meeting-2');
     const ambiguousCursor = await freshStore.getCheckpoint('meeting-2', 'rollover-2');
+    const ownedCue = { ...cue, cueId: 'owned-after-reload', sessionId: 'session-3',
+      liveSessionId: 'live-old', sequence: 3 };
+    await freshStore.commitCueMutation({ meetingId: 'meeting-3', segmentId: 'old-segment',
+      eventKey: 'owned-pending', side: 'pending', cue: ownedCue });
+    const reloadedStore = createIndexedDbLocalMeetingManifestStore({ dbName });
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('segments', 'readwrite');
+      for (const segmentId of ['old-segment', 'new-segment']) {
+        tx.objectStore('segments').put({ key: `meeting-3:${segmentId}`, meetingId: 'meeting-3',
+          segmentId, recordingId: 'session-3', status: 'ENDED' });
+      }
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    const wrongOwner = await reloadedStore.commitCueMutation({ meetingId: 'meeting-3',
+      segmentId: 'new-segment', eventKey: 'wrong-owner', side: 'initial',
+      cue: { ...ownedCue, segmentId: 'new-segment' } });
+    const pendingAfterWrongOwner = await reloadedStore.listPendingCues('meeting-3');
+    const rightOwner = await reloadedStore.commitCueMutation({ meetingId: 'meeting-3',
+      segmentId: 'old-segment', eventKey: 'right-owner', side: 'initial',
+      cue: { ...ownedCue, segmentId: 'old-segment' } });
+    const ownedReadback = await reloadedStore.listCues('meeting-3');
     await freshStore.clearMeetingContent('meeting-2');
     const pendingAfterClear = await freshStore.listPendingCues('meeting-2');
     db.close();
-    return { pendingStatus: pending.status, duplicateStatus: sameEvent.status,
+    return { recoveredFailure, pendingStatus: pending.status, duplicateStatus: sameEvent.status,
       cursorBefore, recovered: recovered.length, pendingRevision: recovered[0]?.cue?.revision,
       ownerless: ownerless.reason, promoted: promoted.status,
       committed: committed.length, committedRevision: committed[0]?.cue?.revision,
@@ -117,9 +143,15 @@ test('B2 Pending survives reload, needs unique local segment proof, and leaves l
       legacyReadback: legacyReadback.length, legacyUnassigned: legacyUnassigned.length, oldWriterBlocked,
       rollover: rollover.reason, handoff: handoff.reason,
       ambiguousCues: ambiguousCues.length, ambiguousPending: ambiguousPending.length,
-      ambiguousCursor, pendingAfterClear: pendingAfterClear.length };
+      ambiguousCursor, pendingAfterClear: pendingAfterClear.length,
+      wrongOwner: wrongOwner.reason, rightOwner: rightOwner.status,
+      pendingAfterWrongOwner: pendingAfterWrongOwner.length,
+      ownedReadback: ownedReadback.map((row) => [row.segmentId, row.cueId]) };
   }, `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
   assert.equal(result.pendingStatus, 'pending');
+  assert.equal(result.recoveredFailure[0].operation, 'RELOAD_PENDING_MUTATION_OWNERSHIP');
+  assert.equal(result.recoveredFailure[0].rawStack, undefined);
+  assert.equal(result.recoveredFailure[0].historical, true);
   assert.equal(result.duplicateStatus, 'duplicate');
   assert.equal(result.cursorBefore, null);
   assert.equal(result.recovered, 1);
@@ -140,5 +172,9 @@ test('B2 Pending survives reload, needs unique local segment proof, and leaves l
   assert.equal(result.ambiguousCues, 0);
   assert.equal(result.ambiguousPending, 1);
   assert.equal(result.ambiguousCursor, null);
+  assert.equal(result.wrongOwner, 'cue_pending_ownership_unproven');
+  assert.equal(result.pendingAfterWrongOwner, 1);
+  assert.equal(result.rightOwner, 'committed');
+  assert.deepEqual(result.ownedReadback, [['old-segment', 'owned-after-reload']]);
   assert.equal(result.pendingAfterClear, 0);
 });

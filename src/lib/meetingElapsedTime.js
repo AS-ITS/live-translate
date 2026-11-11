@@ -5,13 +5,38 @@ export function meetingElapsedMs(startedAt, now = Date.now()) {
   return Math.max(0, nowMs - startedAtMs);
 }
 
-const VISIBLE_MEETING_TIMER_STATUSES = new Set([
-  'requesting-permission', 'connecting', 'listening', 'paused', 'stopping',
-  'reconnecting', 'switching-segment', 'provider-recovery', 'provider-recovery-failed'
-]);
+const timerKey = (meetingId) => `live-translate:meeting-timer:${meetingId}`;
 
-export function shouldShowMeetingElapsedTimer(status, startedAt) {
-  return meetingElapsedMs(startedAt, startedAt) !== null && VISIBLE_MEETING_TIMER_STATUSES.has(status);
+export function readMeetingTimerStart(meetingId) {
+  if (!meetingId) return null;
+  try {
+    const value = JSON.parse(globalThis.sessionStorage.getItem(timerKey(meetingId)));
+    return value?.meetingId === meetingId && Number.isFinite(value.startedAt)
+      ? value.startedAt : null;
+  } catch {
+    return null;
+  }
+}
+
+export function startMeetingTimer(meetingId, now = Date.now()) {
+  if (!meetingId || !Number.isFinite(now)) return null;
+  const existing = readMeetingTimerStart(meetingId);
+  if (existing !== null) return existing;
+  try {
+    globalThis.sessionStorage.setItem(timerKey(meetingId), JSON.stringify({ meetingId, startedAt: now }));
+    return now;
+  } catch {
+    return null;
+  }
+}
+
+export function clearMeetingTimer(meetingId) {
+  if (!meetingId) return;
+  try {
+    globalThis.sessionStorage.removeItem(timerKey(meetingId));
+  } catch {
+    // The timer is optional UI state.
+  }
 }
 
 export function formatMeetingElapsed(elapsedMs) {

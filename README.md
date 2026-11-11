@@ -96,7 +96,7 @@ npm run start
 
 - Project Author / Lead Developer：Po-Chun Ruan
 - Organization：Academia Sinica（中央研究院）
-- Intended License：[MIT License](LICENSE)
+- Intended License：MIT（待機構確認）
 - Copyright：2026 Academia Sinica
 
-機構授權尚待確認；上述預定授權及著作權署名不表示已正式取得中央研究院的 MIT 開源授權。第三方套件與服務各有其授權或使用條款；本專案的 MIT License 不涵蓋 Gemini API 或其他第三方服務，也不表示這些服務免費或可任意使用。
+機構授權尚待確認；尚未將草稿 `LICENSE` 納入 Preview Candidate，也不表示已正式取得中央研究院的 MIT 開源授權。第三方套件與服務各有其授權或使用條款；預定的 MIT 授權不涵蓋 Gemini API 或其他第三方服務，也不表示這些服務免費或可任意使用。

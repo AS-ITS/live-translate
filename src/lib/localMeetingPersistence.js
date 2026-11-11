@@ -538,6 +538,12 @@ export function createLocalMeetingPersistence({
       await retention.assertReadable(input.meetingId);
       return manifestStore.commitCueMutation(input);
     },
+    async saveCheckpointFailure(input) {
+      return manifestStore.saveCheckpointFailure(input);
+    },
+    async listCheckpointFailures(meetingId) {
+      return manifestStore.listCheckpointFailures(meetingId);
+    },
 
     async listPendingCues(meetingId) {
       await retention.check(meetingId);

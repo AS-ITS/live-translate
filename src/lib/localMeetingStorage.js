@@ -140,10 +140,19 @@ export function reconcileLocalMeetingChunks({ manifest = [], files = [] } = {}) 
   return Object.freeze({ chunks: Object.freeze(reconciled), orphans: Object.freeze(orphans) });
 }
 
+function projectCheckpointFailure(input) {
+  const { id, meetingId, segmentId, recordingId, cueId, mutationId,
+    activeSegmentId, historical, operation, errorName, originalError, at } = input;
+  return { id, meetingId, segmentId, recordingId, cueId, mutationId,
+    activeSegmentId, historical, operation, errorName, originalError, at,
+    key: JSON.stringify(['checkpoint-failure', meetingId, id]), type: 'checkpoint_failure' };
+}
+
 export function createInMemoryLocalMeetingManifestStore(initial = []) {
   const records = new Map();
   const recordings = new Map();
   const operations = new Map();
+  const checkpointFailures = new Map();
   const segments = new Map();
   const cues = new Map();
   const cueOperations = new Map();
@@ -163,6 +172,14 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
   }
 
   return Object.freeze({
+    saveCheckpointFailure(input) {
+      const record = projectCheckpointFailure(input);
+      checkpointFailures.set(record.key, record);
+      return record;
+    },
+    listCheckpointFailures(meetingId) {
+      return [...checkpointFailures.values()].filter((record) => record.meetingId === meetingId);
+    },
     getRecording(meetingId) {
       const value = recordings.get(meetingId);
       return value ? Object.freeze({ ...value }) : null;
@@ -501,7 +518,7 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     async clearMeetingContent(meetingId) {
       deletedMeetings.add(meetingId);
-    for (const collection of [records, recordings, operations, segments, cues, cueOperations, cueConflicts, legacyCueBackups, pendingCues, cueAuthorities, unassignedCues, checkpoints, transcripts, translatedAudioChunks]) {
+    for (const collection of [records, recordings, operations, checkpointFailures, segments, cues, cueOperations, cueConflicts, legacyCueBackups, pendingCues, cueAuthorities, unassignedCues, checkpoints, transcripts, translatedAudioChunks]) {
         for (const [key, value] of collection) {
           if (value.meetingId === meetingId) collection.delete(key);
         }
@@ -567,6 +584,20 @@ export function createIndexedDbLocalMeetingManifestStore({
   let databasePromise;
 
   return Object.freeze({
+    async saveCheckpointFailure(input) {
+      const database = await openDatabase();
+      const record = projectCheckpointFailure(input);
+      return runNamedTransaction(database, 'operations', 'readwrite', async (transaction) => {
+        await request(transaction.objectStore('operations').put(record));
+        return record;
+      });
+    },
+    async listCheckpointFailures(meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'operations', 'readonly', async (transaction) =>
+        (await request(transaction.objectStore('operations').getAll()))
+          .filter((record) => record.type === 'checkpoint_failure' && record.meetingId === meetingId));
+    },
     async getRetention(meetingId) {
       const database = await openDatabase();
       return runNamedTransaction(database, 'retentions', 'readonly', async (transaction) =>

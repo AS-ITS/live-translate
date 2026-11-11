@@ -220,7 +220,7 @@ End, Pause, and Continue on one Host recording share a synchronous operation gat
 
 If Pause fails at the Checkpoint barrier, the Host remains on the live route and must reload before continuing. Reload uses the Local-only v2 manifest as the recording authority. Before capture restarts, recovery checks Cue ownership, rebuilds the Checkpoint barrier from durable transcript items, and verifies the PCM Journal Pause receipt. A verified receipt permits the pending Pause commit and the existing Continue transition; an incomplete barrier or unresolved ownership keeps recording blocked without claiming a successful Pause.
 
-The Host timer shows wall-clock time since Meeting `startedAt` through permission, listening, pause, stopping, rollover, and provider recovery. It hides after End. This differs from cumulative recorded-audio duration.
+The Host timer shows wall-clock time from the first successful Start in the current browser tab. Pause, Continue, and Reload retain the same UI start through `sessionStorage`; successful End clears it. The timer does not set recording timestamps, Meeting metadata, or cumulative recorded-audio duration. A separate tab does not inherit the timer.
 
 ## UI State Mapping
 

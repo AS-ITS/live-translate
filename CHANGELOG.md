@@ -1,6 +1,14 @@
 # Changelog
 
+- Issue #41 Cue refinement binding: canonicalized optional Live translation provenance before hashing refinement input, so null and omitted fields bind to the same committed Initial snapshot. The mutation coordinator discards only empty pending refinement resets already covered by an acknowledged, proven Cue; completed or mismatched Refined updates still reject. Batch failures include safe index-0 ACK metadata.
+
+- Issue #41 RC-M1: Bumped the Host local Meeting IndexedDB version to 13 so existing v12 databases run the schema upgrade that creates `pendingCues` and `cueAuthorities`. New and upgraded database initialization, Cue Authority access, and repeat opens are covered by a targeted browser test.
+
 ## Unreleased
+
+- Issue #41 RC1 Cue integrity: accepted Source and Translation mutations now allocate each side version from the latest committed Cue only after newer same-turn provider provenance is proven. Stale events cannot advance a side version; the Local Writer continues rejecting same-version authority text conflicts.
+
+- Issue #41: Adjacent Final Cues now retain separate authority and local persistence identities. Recorder, viewer, and TXT/SRT/VTT output derive adjacent sentence grouping from a deterministic read-only projection.
 
 - Issue #41 Local Viewer metadata authorization: Viewer metadata GET requests now reach the existing share credential, role, and expiry checks without a login Bearer token. Formal `npm run start` on isolated Supabase returned 200 for a valid Viewer code and 404 for invalid or expired codes; Host API authentication and cross-account isolation remained intact. Mock Viewer received Snapshot, Append, and Update; Final Cue matched Host. A forced Viewer peer close reconnected automatically with the Cue retained. Cue, WebRTC, and Local Storage core were unchanged.
 

@@ -212,9 +212,15 @@ The captured PCM Journal stores committed PCM and claim records under `pcm-journ
 
 Rollover, checkpoint, Cue persistence, and provider transition do not own the WebRTC DataChannel lifecycle. A healthy Viewer channel must remain open through Supabase or lifecycle failures.
 
-Local-only Pause waits for the PCM END receipt and closes the writer before Continue verifies ownership. Continue opens a fresh writer for the next epoch after the verifier releases its handle.
+Local-only Pause waits for the PCM END receipt and closes the writer before Continue verifies ownership. Continue opens a fresh writer for the next epoch after the verifier releases its handle. Continue reuses the in-memory Session record for the same Session ID, advances its Segment binding, and retains appended transcript items.
 
 Pause keeps the Host Viewer sidecar active through `stopping`. After local Cue mutations commit, the Host publishes the committed final Cues before transitioning to `paused`; a Viewer cursor alone does not establish Cue convergence.
+
+End, Pause, and Continue on one Host recording share a synchronous operation gate. End waits for an already started Pause to succeed; a failed Pause blocks End and navigation while local data remains available for reload recovery. A started End rejects later Pause, and successful End navigation synchronously marks the recording ended before changing routes.
+
+If Pause fails at the Checkpoint barrier, the Host remains on the live route and must reload before continuing. Reload uses the Local-only v2 manifest as the recording authority. Before capture restarts, recovery checks Cue ownership, rebuilds the Checkpoint barrier from durable transcript items, and verifies the PCM Journal Pause receipt. A verified receipt permits the pending Pause commit and the existing Continue transition; an incomplete barrier or unresolved ownership keeps recording blocked without claiming a successful Pause.
+
+The Host timer shows wall-clock time since Meeting `startedAt` through permission, listening, pause, stopping, rollover, and provider recovery. It hides after End. This differs from cumulative recorded-audio duration.
 
 ## UI State Mapping
 
@@ -278,3 +284,9 @@ Meeting, Session, Segment, lifecycle version, owner, and authorized principal
 may receive a new lease and attempt ID. Identity/version conflicts and missing
 authorization stop automatic retry. Retention expiry removes the local intent
 and does not restore meeting content.
+
+### Adjacent Final Cue presentation
+
+Each finalized Cue retains its own ID, sequence, turn, side versions, and event provenance in local authority and viewer transport. Adjacent sentence grouping is a deterministic read-only projection for recorder/viewer display and TXT/SRT/VTT export. A projection row identifies its contributing Cue IDs, uses the first start and last end time, and is rebuilt from authority after reload. Late-final updates revise only the matching authoritative Cue; projection never writes a merged Cue or deletes its contributors.
+
+Source and Translation pending transcripts retain their original callback connection epoch, provider epoch, and event sequence through terminal replay. A replay never invents missing event proof.

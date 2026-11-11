@@ -19,17 +19,18 @@ export function localE2EAuthSession() {
     token,
     profile: { id: claims.sub, email: claims.email, role: 'owner', status: 'active' },
     storageKey: `sb-${url.hostname.split('.')[0]}-auth-token`,
-    expiresAt: claims.exp
+    expiresAt: claims.exp,
+    refreshToken: process.env.E2E_LOCAL_REFRESH_TOKEN || null
   };
 }
 const E2E_SUPABASE_STORAGE_KEY = `sb-${new URL(E2E_SUPABASE_URL).hostname.split('.')[0]}-auth-token`;
 
 export async function installE2EAuth(page, profile = { id: 'owner-1', email: 'owner@example.com', role: 'owner', status: 'active' }) {
   const localSession = localE2EAuthSession();
-  await page.addInitScript(({ profile: sessionProfile, storageKey, token, expiresAt }) => {
+  await page.addInitScript(({ profile: sessionProfile, storageKey, token, refreshToken, expiresAt }) => {
     window.__liveTranslateE2EAuthEvents = true;
     const session = {
-      access_token: token, refresh_token: 'e2e-refresh-token', token_type: 'bearer',
+      access_token: token, refresh_token: refreshToken || 'e2e-refresh-token', token_type: 'bearer',
       expires_in: expiresAt - Math.floor(Date.now() / 1000), expires_at: expiresAt,
       user: { id: sessionProfile.id, email: sessionProfile.email, role: 'authenticated' }
     };
@@ -41,6 +42,7 @@ export async function installE2EAuth(page, profile = { id: 'owner-1', email: 'ow
     profile: localSession?.profile || profile,
     storageKey: localSession?.storageKey || E2E_SUPABASE_STORAGE_KEY,
     token: localSession?.token || 'e2e-access-token',
+    refreshToken: localSession?.refreshToken || null,
     expiresAt: localSession?.expiresAt || Math.floor(Date.now() / 1000) + 3600
   });
   if (!localSession) await page.route('**/api/profile', async (route) => route.fulfill({ json: { profile } }));

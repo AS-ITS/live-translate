@@ -1,9 +1,11 @@
 import { defineConfig, devices } from '@playwright/test';
+import { fileURLToPath } from 'node:url';
 import { E2E_SUPABASE_URL, E2E_SUPABASE_PUBLISHABLE_KEY, localE2EAuthSession } from './authBootstrap.js';
 
 const localSession = localE2EAuthSession();
 const apiPort = process.env.ISSUE41_E2E_API_PORT || '3000';
 const frontendPort = process.env.ISSUE41_E2E_FRONTEND_PORT || '5174';
+const serverFetchAuditModule = fileURLToPath(new URL('./issue41ServerFetchAudit.mjs', import.meta.url));
 if (localSession && (
   !process.env.SUPABASE_SECRET_KEY || !process.env.SUPABASE_JWKS_URL ||
   !process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
@@ -28,7 +30,7 @@ export default defineConfig({
   webServer: [
     {
       command: localSession
-        ? `env NODE_ENV=test E2E_TEST_MODE=true LIVE_PIPELINE_TRACE_ENABLED=true dev_frontend_origin=http://127.0.0.1:${frontendPort} GEMINI_API_KEY=${process.env.ISSUE41_REAL_GEMINI_AUDIO === 'true' ? '' : 'test'} npm run server`
+      ? `env NODE_ENV=test E2E_TEST_MODE=true LIVE_PIPELINE_TRACE_ENABLED=true dev_frontend_origin=http://127.0.0.1:${frontendPort} GEMINI_API_KEY=${process.env.ISSUE41_REAL_GEMINI_AUDIO === 'true' ? '' : 'test'} ${process.env.ISSUE41_SERVER_FETCH_AUDIT_FILE ? `NODE_OPTIONS=--import=${serverFetchAuditModule} ` : ''}npm run server`
         : `env NODE_ENV=test E2E_TEST_MODE=true SUPABASE_URL= SUPABASE_SECRET_KEY= SUPABASE_JWKS_URL= AUTH_ALLOWED_EMAIL_DOMAINS= LIVE_PIPELINE_TRACE_ENABLED=true dev_frontend_origin=http://127.0.0.1:${frontendPort} GEMINI_API_KEY=test SESSION_RECORDS_FILE=/private/tmp/live-translate-e2e-session-records-${apiPort}.json npm run server`,
       url: `http://127.0.0.1:${apiPort}/healthz`,
       reuseExistingServer: false,

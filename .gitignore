@@ -1,6 +1,8 @@
 node_modules/
 dist/
 test-results/
+artifacts/
+live-translate-favicon-final.zip
 playwright-report/
 .playwright-cli/
 .zvec-grep/

@@ -6,7 +6,8 @@ import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { serializeEffectiveGlossary } from '../../src/lib/glossaryRevision.js';
 import { installE2EAuth, localE2EAuthSession } from './authBootstrap.js';
-import { databaseSnapshot, installWriteAudit, recordedWrites } from './issue41DbWriteAudit.js';
+import { databaseSnapshot, installWriteAudit, recordedWrites, rolledBackRecordingWriteControl } from './issue41DbWriteAudit.js';
+import { evaluateCloudZeroWrite, evaluateNormalCloudContentWrite, classifyCloudContentRequest, classifyServerSupabaseWrite, redactCloudAuditEvidence } from './issue41CloudZeroWriteContract.js';
 import { attachPauseDiagnostics, createPauseDiagnostics } from './issue41PauseDiagnostics.js';
 import { collectIssue41OwnershipEvidence } from './issue41OwnershipEvidence.js';
 import { PROVISIONAL_RAM_THRESHOLDS } from '../../scripts/issue41-ram-gate.mjs';
@@ -21,6 +22,7 @@ if (coreAcceptance && (!zeroWriteAudit || !shortValidation || recordingOnly)) {
 }
 const recordingSoak = recordingOnly && !shortValidation;
 const recordingContract = recordingOnly && process.env.ISSUE41_ROLLOVER_CONTRACT === 'true';
+const authExpirySmoke = recordingContract && process.env.ISSUE41_AUTH_EXPIRY_SMOKE === 'true';
 const ram2Diagnostic = recordingContract && process.env.ISSUE41_RAM2_DIAGNOSTIC === 'true';
 const ram10Diagnostic = recordingOnly && process.env.ISSUE41_RAM10_DIAGNOSTIC === 'true';
 const ramAttributionSmoke = recordingOnly && process.env.ISSUE41_RAM_ATTRIBUTION_SMOKE === 'true';
@@ -68,7 +70,7 @@ const publishableKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 const serviceKey = process.env.SUPABASE_SECRET_KEY;
 const seriesFile = process.env.ISSUE41_RESOURCE_FILE;
 
-async function runRecordingRam10Diagnostic({ page, browser, meetingId, initialSegmentId, localState, dbRows, evidence, save }) {
+async function runRecordingRam10Diagnostic({ page, browser, meetingId, initialSegmentId, localState, evidence, save }) {
   const cdp = await page.context().newCDPSession(page);
   const system = await browser.newBrowserCDPSession();
   await cdp.send('Performance.enable');
@@ -180,7 +182,7 @@ async function runRecordingRam10Diagnostic({ page, browser, meetingId, initialSe
   expect(evidence.ram10.samples[5].cueCount).toBeGreaterThan(0);
   expect(evidence.ram10.samples[10].cueCount).toBe(evidence.ram10.samples[5].cueCount);
   await page.getByRole('button', { name: '結束會議' }).click();
-  evidence.ram10.sessionRows = (await dbRows('sessions', `select=id,meeting_id,segment_id&meeting_id=eq.${meetingId}`)).length;
+  evidence.ram10.localSegments = (await localState(meetingId)).segments.length;
   evidence.ram10.initialSegmentId = initialSegmentId;
   evidence.result = 'RAM10_DIAGNOSTIC_CAPTURED';
   evidence.finishedAt = new Date().toISOString();
@@ -227,11 +229,36 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     attachPauseDiagnostics(page, fetchDiagnostics);
     evidence.failedFetches = fetchDiagnostics.requestfailed;
   }
-  const save = () => { if (evidenceFile) writeFileSync(evidenceFile, JSON.stringify(evidence, null, 2)); };
-  const headers = { Authorization: `Bearer ${auth.token}` };
+  if (zeroWriteAudit || ramGateMode) evidence.cloudZeroWrite = { status: 'NOT_VERIFIED' };
+  const save = () => {
+    if (evidenceFile) writeFileSync(evidenceFile, JSON.stringify(
+      zeroWriteAudit || ramGateMode ? redactCloudAuditEvidence(evidence) : evidence, null, 2));
+  };
+  if (ramGateMode) {
+    const recordRuntimeTermination = (kind) => {
+      if (evidence.finishedAt || evidence.runtimeTermination) return;
+      evidence.runtimeTermination = { kind, at: new Date().toISOString() };
+      save();
+    };
+    page.on('crash', () => recordRuntimeTermination('renderer_crash'));
+    browser.on('disconnected', () => recordRuntimeTermination('browser_disconnected'));
+  }
   const dbHeaders = { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` };
+  const auditRequests = [];
+  if (zeroWriteAudit) {
+    evidence.auditCoverage = installWriteAudit();
+    evidence.dbBefore = databaseSnapshot();
+  }
   const apiJson = async (method, path, data) => {
-    const response = await page.request.fetch(`/api${path}`, { method, headers, data });
+    if (method !== 'GET') auditRequests.push({ method, path: `/api${path}` });
+    const token = page.url().startsWith('http') ? await page.evaluate(async () => {
+      const { supabase } = await import('/src/lib/supabaseAuth.js');
+      return (await supabase.auth.getSession()).data.session?.access_token || null;
+    }) : auth.token;
+    expect(token, 'E2E API request requires a current browser session').toBeTruthy();
+    const response = await page.request.fetch(`/api${path}`, {
+      method, headers: { Authorization: `Bearer ${token}` }, data
+    });
     evidence.api.push({ method, path: path.replace(/\?.*$/u, ''), status: response.status() });
     save();
     const payload = await response.json();
@@ -243,19 +270,23 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     expect(response.ok(), `DB ${table}: HTTP ${response.status()}`).toBe(true);
     return response.json();
   };
-  const segments = (meetingId) => dbRows('meeting_segments', `select=id,meeting_id,session_id,sequence,status,checkpoint&meeting_id=eq.${meetingId}&order=sequence.asc`);
+  const cloudSegments = (meetingId) => dbRows('meeting_segments', `select=id,meeting_id,session_id,sequence,status,checkpoint&meeting_id=eq.${meetingId}&order=sequence.asc`);
   const localState = (meetingId) => page.evaluate(async (id) => {
     const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
     const store = createIndexedDbLocalMeetingManifestStore();
     const cues = await store.listCues(id);
     const transcripts = await store.listTranscriptItems(id);
     const checkpoints = await store.listCheckpoints(id);
+    const segments = await store.listSegments(id);
     const recording = await store.getRecording(id);
     const chunks = await store.list(id);
     const retention = await store.getRetention(id);
-    return { cues: cues.map((row) => row.cue), transcripts, checkpoints: checkpoints.map((row) => ({ segmentId: row.segmentId, revision: row.checkpoint?.revision })),
+    return { cues: cues.map((row) => row.cue), transcripts, checkpoints: checkpoints.map((row) => ({ segmentId: row.segmentId, revision: row.checkpoint?.revision })), segments,
       recording, chunks: chunks.map((row) => ({ segmentId: row.segmentId, byteSize: row.byteSize, state: row.state })), retention };
   }, meetingId);
+  const segments = async (meetingId) => (await localState(meetingId)).segments.map((row) => ({
+    id: row.segmentId, sequence: row.sequence, status: row.status, recordingId: row.recordingId
+  }));
   const storageObjects = async (bucket) => {
     const response = await page.request.post(`${supabaseUrl}/storage/v1/object/list/${bucket}`, {
       headers: { ...dbHeaders, 'content-type': 'application/json' }, data: { prefix: '', limit: 1000 }
@@ -263,11 +294,37 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     expect(response.ok(), `Storage ${bucket}: HTTP ${response.status()}`).toBe(true);
     return response.json();
   };
+  if (zeroWriteAudit) {
+    evidence.storageBefore = {
+      audio: await storageObjects('meeting-audio'),
+      exports: await storageObjects('meeting-exports')
+    };
+    const storagePath = `issue41-policy-probe-${Date.now()}`;
+    const upload = await page.request.post(`${supabaseUrl}/storage/v1/object/meeting-audio/${storagePath}`, {
+      headers: { apikey: publishableKey, Authorization: `Bearer ${auth.token}`,
+        'content-type': 'audio/wav' },
+      data: Buffer.from('issue41-policy-probe-not-audio')
+    });
+    if (upload.ok()) throw new Error('AUTHENTICATED_STORAGE_UPLOAD_SUCCEEDED: stop Cloud Zero Gate');
+    const objects = await storageObjects('meeting-audio');
+    evidence.authenticatedStorageDenial = {
+      status: upload.status(), objectAbsent: !objects.some((item) => item.name === storagePath)
+    };
+    save();
+    expect(evidence.authenticatedStorageDenial.objectAbsent).toBe(true);
+  }
+  if (zeroWriteAudit || localRamMeasurement) page.on('request', (request) => {
+    if (request.method() === 'GET') return;
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith('/api/') || path.startsWith('/rest/v1/') || path.startsWith('/storage/v1/')) {
+      auditRequests.push({ method: request.method(), path });
+    }
+  });
   const cloudInventory = async (meetingId) => {
     const [cues, events, segmentRows, sessionRows, audio, exports] = await Promise.all([
       dbRows('subtitle_cues', 'select=id'),
       dbRows('meeting_events', `select=id,payload&meeting_id=eq.${meetingId}`),
-      segments(meetingId),
+      cloudSegments(meetingId),
       dbRows('sessions', `select=id,transcript_items,payload&meeting_id=eq.${meetingId}`),
       storageObjects('meeting-audio'), storageObjects('meeting-exports')
     ]);
@@ -289,7 +346,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
   });
 
   await installE2EAuth(page);
-  if (coreAcceptance) await page.addInitScript(installCoreContinueRolloverClock);
+  if (coreAcceptance || zeroWriteAudit) await page.addInitScript(installCoreContinueRolloverClock);
   if (ramAbcMode || ramAbcSmoke || ramProfileC || naturalRollover21 || ramGateMode || recordingContract || ramAttributionSmoke) await page.addInitScript((mode) => {
     const originalDebug = console.debug.bind(console);
     window.__issue41DiagnosticMode = mode;
@@ -315,7 +372,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       }
     };
   });
-  if (recordingContract) await page.addInitScript((ram2) => {
+  if (recordingContract && !zeroWriteAudit) await page.addInitScript((ram2) => {
     const nativeSetTimeout = window.setTimeout.bind(window);
     const nativeRecorderStart = MediaRecorder.prototype.start;
     const nativeRecorderStop = MediaRecorder.prototype.stop;
@@ -463,7 +520,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     });
     expect(entry.entry.id).toBeTruthy();
     expect((await apiJson('GET', '/glossary')).entries.some((row) => row.id === entry.entry.id)).toBe(true);
-    if (coreAcceptance) {
+    if (coreAcceptance || zeroWriteAudit) {
       const updated = await apiJson('PUT', `/glossary/entries/${entry.entry.id}`, {
         source: entry.entry.source, translations: { en: 'Issue 41 updated' }, scope: 'both'
       });
@@ -471,12 +528,21 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       expect((await apiJson('GET', '/glossary')).entries.find((row) => row.id === entry.entry.id)?.translations.en)
         .toBe('Issue 41 updated');
       evidence.dictionaryUpdated = true;
+      if (zeroWriteAudit) {
+        const selected = [{ source: updated.entry.source, target: updated.entry.translations.en }];
+        await apiJson('PATCH', `/meetings/${meetingId}`, { glossaryEntries: selected });
+        const detail = await apiJson('GET', `/meetings/${meetingId}`);
+        expect(detail.meeting.glossaryEntries).toEqual([{ ...selected[0], replacementAliases: [] }]);
+        evidence.dictionaryApplied = true;
+      }
     }
-    evidence.auditCoverage = installWriteAudit();
-    evidence.dbBefore = databaseSnapshot();
-    evidence.storageBefore = {
-      audio: await storageObjects('meeting-audio'), exports: await storageObjects('meeting-exports')
-    };
+    if (!zeroWriteAudit) {
+      evidence.auditCoverage = installWriteAudit();
+      evidence.dbBefore = databaseSnapshot();
+      evidence.storageBefore = {
+        audio: await storageObjects('meeting-audio'), exports: await storageObjects('meeting-exports')
+      };
+    }
     evidence.glossaryEntryId = entry.entry.id;
     save();
   }
@@ -515,14 +581,72 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     save();
     expect(evidence.startPreconditions).toEqual({ credentialPresent: true, audioConfirmed: true });
   }
-  const auditRequests = [];
-  if (zeroWriteAudit || localRamMeasurement) page.on('request', (request) => {
-    if (request.method() === 'GET') return;
-    const path = new URL(request.url()).pathname;
-    if (path.startsWith('/api/') || path.startsWith('/rest/v1/') || path.startsWith('/storage/v1/')) {
-      auditRequests.push({ method: request.method(), path });
-    }
+ const assertCloudZeroWrite = () => {
+  evidence.recordingHttpWrites = auditRequests.flatMap((request) => {
+   const route = classifyCloudContentRequest(request);
+   return route ? [{ method: request.method, route }] : [];
   });
+    expect(process.env.ISSUE41_SERVER_FETCH_AUDIT_FILE, 'Runner must provide the server fetch audit file').toBeTruthy();
+    const serverRequests = readFileSync(process.env.ISSUE41_SERVER_FETCH_AUDIT_FILE, 'utf8')
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    if (!zeroWriteAudit) {
+      evidence.cloudContentWrite = evaluateNormalCloudContentWrite({
+        events: evidence.writeEvents, coverage: evidence.auditCoverage,
+        before: evidence.dbBefore, after: evidence.dbAfter,
+        storageBefore: evidence.storageBefore, storageAfter: evidence.storageAfter,
+        cloudBefore: evidence.cloudBefore, cloudAfter: evidence.cloudAfter,
+        requests: auditRequests, complete: true
+      }, serverRequests);
+      if (evidence.evidenceChecks) evidence.evidenceChecks.cloudContentWrite = evidence.cloudContentWrite.status;
+      save();
+      expect(evidence.cloudContentWrite.status, JSON.stringify(evidence.cloudContentWrite.violations)).toBe('PASS');
+      return;
+    }
+    const serverWrites = serverRequests.filter((request) => !['GET', 'HEAD', 'OPTIONS'].includes(request.method));
+    const illegalServerRequests = serverWrites.filter((request) => classifyServerSupabaseWrite(request));
+    const negative = evidence.negativeControl;
+    const negativePass = negative?.database?.observedIllegalWrite === true
+      && negative.database.rolledBack === true && negative.database.contentGuardRejected === true
+      && negative.rpc.status >= 400
+      && negative.storage.status >= 400 && negative.storage.objectAbsent === true
+      && negative.legacy.status === 410;
+    const matrix = {
+      browserApi: { observedVia: 'Playwright page request events', count: auditRequests.length,
+        illegalAttempts: evidence.recordingHttpWrites.length },
+      apiSupabaseDatabase: { observedVia: 'Server fetch log plus PostgreSQL row triggers',
+        outgoingWrites: serverWrites.length, committedWrites: evidence.writeEvents?.length ?? 0,
+        triggerTables: evidence.auditCoverage?.monitoredTables?.length ?? 0,
+        illegalAttempts: illegalServerRequests.length },
+      supabaseRpc: { observedVia: 'Server fetch log and authenticated denied RPC probe',
+        outgoing: serverRequests.filter(({ route }) => route.startsWith('/rest/v1/rpc/')).length,
+        negativeStatus: negative?.rpc?.status ?? null },
+      supabaseStorage: { observedVia: 'storage.objects trigger, object inventory and denied upload probe',
+        negativeStatus: negative?.storage?.status ?? null, objectAbsent: negative?.storage?.objectAbsent ?? null },
+      legacyEndpoints: { observedVia: 'Authenticated POST to legacy Cue endpoint',
+        negativeStatus: negative?.legacy?.status ?? null }
+    };
+    matrix.complete = matrix.browserApi.count > 0 && matrix.apiSupabaseDatabase.outgoingWrites > 0
+      && matrix.apiSupabaseDatabase.triggerTables === evidence.auditCoverage.expectedTables.length
+      && matrix.supabaseRpc.outgoing > 0 && negativePass;
+    evidence.auditCoverageMatrix = matrix;
+    evidence.positiveIllegalAttempts = evidence.recordingHttpWrites.length + illegalServerRequests.length;
+    evidence.negativeControlPass = negativePass;
+    evidence.serverSupabaseWrites = serverWrites;
+    writeFileSync(join(process.env.ISSUE41_RUN_DIR, 'audit-coverage-matrix.json'),
+      `${JSON.stringify(matrix, null, 2)}\n`);
+  evidence.cloudZeroWrite = evaluateCloudZeroWrite({
+   events: evidence.writeEvents, coverage: evidence.auditCoverage,
+   before: evidence.dbBefore, after: evidence.dbAfter,
+   storageBefore: evidence.storageBefore, storageAfter: evidence.storageAfter,
+   cloudBefore: evidence.cloudBefore, cloudAfter: evidence.cloudAfter,
+   requests: auditRequests, complete: true
+  });
+  if (evidence.evidenceChecks) evidence.evidenceChecks.cloudZeroWrite = evidence.cloudZeroWrite.status;
+  save();
+    expect(matrix.complete, 'All five Cloud Zero channels must be observed').toBe(true);
+    expect(evidence.positiveIllegalAttempts, 'Positive flow must have zero illegal attempts').toBe(0);
+  expect(evidence.cloudZeroWrite.status, JSON.stringify(evidence.cloudZeroWrite.violations)).toBe('PASS');
+ };
   await page.getByRole('button', { name: '開始錄製' }).click();
   if (zeroWriteAudit) {
     expect(!coreAcceptance || !recordingOnly, 'Core acceptance requires the Host/Viewer path').toBe(true);
@@ -744,6 +868,14 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     }
       await page.getByRole('button', { name: '停止錄音' }).click();
       await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+      const firstPaused = await localState(meetingId);
+      expect(firstPaused.recording).toMatchObject({ recordingId: first.recording.recordingId,
+        segmentId: firstSegmentId, state: 'paused' });
+      const firstPausedPcm = await page.evaluate(() => window.__issue41PcmCount);
+      const firstPausedBytes = (await opfsSnapshot(meetingId)).pcmBytes;
+      await page.waitForTimeout(500);
+      expect(await page.evaluate(() => window.__issue41PcmCount), 'Pause must stop PCM callbacks').toBe(firstPausedPcm);
+      expect((await opfsSnapshot(meetingId)).pcmBytes, 'Pause must stop persisted PCM growth').toBe(firstPausedBytes);
       expect(await page.evaluate(() => window.__issue41CoreRolloverClock.shortened),
         'Initial recording must keep its 15-minute rollover clock').toBe(0);
       await page.evaluate(() => window.__issue41ArmContinueRolloverClock());
@@ -834,8 +966,52 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
         evidence.viewer.push({ phase: 'subsequent-cue', source: 'issue41 audit after' });
         save();
       }
+      await page.getByRole('button', { name: '停止錄音' }).click();
+      await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+      const secondPaused = await localState(meetingId);
+      expect(secondPaused.recording).toMatchObject({ recordingId: first.recording.recordingId,
+        segmentId: rolloverCommit.newSegmentId, state: 'paused' });
+      const secondPausedPcm = await page.evaluate(() => window.__issue41PcmCount);
+      const secondPausedBytes = (await opfsSnapshot(meetingId)).pcmBytes;
+      await page.waitForTimeout(500);
+      expect(await page.evaluate(() => window.__issue41PcmCount), 'Second Pause must stop PCM callbacks').toBe(secondPausedPcm);
+      expect((await opfsSnapshot(meetingId)).pcmBytes, 'Second Pause must stop PCM writes').toBe(secondPausedBytes);
+      await page.getByRole('button', { name: '繼續' }).click();
+      await expect(page.getByRole('button', { name: '停止錄音' })).toBeVisible({ timeout: 30_000 });
+      const secondContinueSegmentId = (await localState(meetingId)).recording?.segmentId;
+      expect(Number(secondContinueSegmentId.match(/:(\d+)$/u)?.[1])).toBe(successorSequence + 1);
+      expect((await localState(meetingId)).recording.recordingId).toBe(first.recording.recordingId);
+      await expect.poll(() => page.evaluate(() => window.__issue41PcmCount), { timeout: 30_000 })
+        .toBeGreaterThan(secondPausedPcm);
+
+      await page.getByRole('link', { name: '返回會議管理' }).click();
+      await expect.poll(async () => (await localState(meetingId)).recording?.state,
+        { message: 'Navigation must await the durable Pause barrier', timeout: 60_000 }).toBe('paused');
+      await expect(page.getByRole('heading', { name: '會議管理' })).toBeVisible({ timeout: 30_000 });
+      await expect.poll(() => page.evaluate(() => window.location.hash)).toBe('#meetings');
+      const navigationPaused = await localState(meetingId);
+      expect(navigationPaused.recording).toMatchObject({ recordingId: first.recording.recordingId,
+        segmentId: secondContinueSegmentId, state: 'paused' });
+      expect((await apiJson('GET', `/meetings/${meetingId}`)).meeting.status).not.toBe('completed');
+      const navigationPausedPcm = await page.evaluate(() => window.__issue41PcmCount);
+      const navigationPausedBytes = (await opfsSnapshot(meetingId)).pcmBytes;
+      await page.waitForTimeout(500);
+      expect(await page.evaluate(() => window.__issue41PcmCount), 'Navigation Pause must stop PCM callbacks')
+        .toBe(navigationPausedPcm);
+      expect((await opfsSnapshot(meetingId)).pcmBytes, 'Navigation Pause must stop PCM writes')
+        .toBe(navigationPausedBytes);
+      await page.evaluate((id) => { window.location.hash = `#live?meetingId=${encodeURIComponent(id)}`; }, meetingId);
+      await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+      await page.getByRole('button', { name: '繼續' }).click();
+      await expect(page.getByRole('button', { name: '停止錄音' })).toBeVisible({ timeout: 30_000 });
+      const navigationContinueSegmentId = (await localState(meetingId)).recording?.segmentId;
+      expect(Number(navigationContinueSegmentId.match(/:(\d+)$/u)?.[1])).toBe(successorSequence + 2);
+      expect((await localState(meetingId)).recording.recordingId).toBe(first.recording.recordingId);
+      evidence.lifecycleResume = { secondContinueSegmentId, navigationContinueSegmentId,
+        recordingId: first.recording.recordingId, navigationPausedPcm, navigationPausedBytes };
+      save();
       const second = await localState(meetingId);
-      expect(second.recording?.segmentId).toBe(rolloverCommit.newSegmentId);
+      expect(second.recording?.segmentId).toBe(navigationContinueSegmentId);
       expect(second.cues.find((cue) => cue.sourceText === 'issue41 audit before')?.segmentId).toBe(firstSegmentId);
       expect(second.cues.find((cue) => cue.sourceText === 'issue41 audit after')?.segmentId)
         .toBe(rolloverCommit.newSegmentId);
@@ -846,7 +1022,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
         chunkBytes: second.chunks.reduce((sum, chunk) => sum + chunk.byteSize, 0),
         opfs: await opfsSnapshot(meetingId), checkpoints: second.checkpoints
       };
-      if (coreAcceptance) {
+      if (coreAcceptance || zeroWriteAudit) {
         await page.getByRole('button', { name: '停止錄音' }).click();
         await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
         evidence.finalStop = { at: new Date().toISOString(), continueAvailable: true };
@@ -875,10 +1051,28 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
   await expect.poll(() => page.evaluate(() => window.location.hash),
     { message: 'End lifecycle must finish before Reload', timeout: 30_000 }).toBe(endRoute);
   evidence.endBarrier = { at: new Date().toISOString(), recordingState: 'stopped_local', route: endRoute };
+  const endOperationId = `end:${meetingId}:${second.recording.recordingId}`;
+  let endReceipt = null;
+  await expect.poll(async () => {
+    endReceipt = await page.evaluate(async ({ id, operationId }) => {
+      const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+      return createIndexedDbLocalMeetingManifestStore().getOperation(id, operationId);
+    }, { id: meetingId, operationId: endOperationId });
+    return endReceipt !== null;
+  }, { message: 'End receipt must be durable before assertion', timeout: 30_000 }).toBe(true);
+  expect(endReceipt).toMatchObject({
+    operationId: endOperationId, type: 'finalize',
+    result: { state: 'stopped_local', recordingId: second.recording.recordingId }
+  });
+  evidence.endReceipt = { operationId: endOperationId, state: endReceipt.result.state,
+    finalSequence: endReceipt.result.finalSequence };
       save();
-      if (coreAcceptance) {
+  if (coreAcceptance || zeroWriteAudit) {
         try {
-          evidence.localAfterEnd = { opfs: await opfsSnapshot(meetingId) };
+      const afterEnd = await localState(meetingId);
+      evidence.localAfterEnd = { opfs: await opfsSnapshot(meetingId),
+        recording: afterEnd.recording, cues: afterEnd.cues,
+        checkpoints: afterEnd.checkpoints, chunks: afterEnd.chunks };
           save();
           evidence.ownershipBeforeReload = await ownershipSnapshot(meetingId);
           save();
@@ -898,12 +1092,18 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
         chunkBytes: restored.chunks.reduce((sum, chunk) => sum + chunk.byteSize, 0),
         opfs: await opfsSnapshot(meetingId), checkpoints: restored.checkpoints
       };
-      if (coreAcceptance) {
+  if (coreAcceptance || zeroWriteAudit) {
         try {
           evidence.ownershipAfterReload = await ownershipSnapshot(meetingId);
           save();
-          const expectedSegmentIds = [firstSegmentId, evidence.continueReadiness.segmentId,
-            evidence.rolloverReadiness.commit.newSegmentId];
+        const expectedSegmentIds = [firstSegmentId, evidence.continueReadiness.segmentId,
+          evidence.rolloverReadiness.commit.newSegmentId, evidence.lifecycleResume.secondContinueSegmentId,
+          evidence.lifecycleResume.navigationContinueSegmentId];
+        expect(evidence.localAfterReload.cueSegments.every((cue) => expectedSegmentIds.includes(cue.segmentId)))
+          .toBe(true);
+        expect(evidence.localAfterReload.checkpoints.every((checkpoint) => expectedSegmentIds.includes(checkpoint.segmentId)))
+          .toBe(true);
+        expect(evidence.localAfterReload.checkpoints).toEqual(evidence.localAfterEnd.checkpoints);
           assertCoreOwnership(evidence.ownershipBeforeReload, evidence.localAfterEnd.opfs,
             second.recording.recordingId, expectedSegmentIds);
           assertCoreOwnership(evidence.ownershipAfterReload, evidence.localAfterReload.opfs,
@@ -925,27 +1125,46 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       expect(evidence.localAfterReload.checkpoints.length).toBeGreaterThan(0);
       expect(evidence.localAfterReload.cueSegments).toEqual(evidence.localBeforeEnd.cueSegments);
       expect(evidence.localAfterReload.state).toBe('stopped_local');
-  if (coreAcceptance) {
+  expect(restored.recording).toEqual(evidence.localAfterEnd.recording);
+  expect(restored.cues).toEqual(evidence.localAfterEnd.cues);
+  expect(restored.checkpoints).toEqual(evidence.localAfterEnd.checkpoints);
+  expect(restored.chunks).toEqual(evidence.localAfterEnd.chunks);
+  expect(evidence.localAfterReload.opfs).toEqual(evidence.localAfterEnd.opfs);
+  if (coreAcceptance || zeroWriteAudit) {
     await page.getByRole('navigation', { name: '會議內容目錄' }).getByRole('button', { name: '匯出' }).click();
     const exportPanel = page.getByRole('region', { name: '本機字幕匯出' });
-    const expectedExport = await page.evaluate(async (id) => {
+    const expectedExports = await page.evaluate(async (id) => {
       const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
-      const { exportCuesToTxt } = await import('/src/lib/subtitleCueExport.js');
+      const { exportCuesToTxt, exportCuesToSrt, exportCuesToVtt } = await import('/src/lib/subtitleCueExport.js');
       const records = await createIndexedDbLocalMeetingManifestStore().listCues(id);
-      return exportCuesToTxt(records.map((record) => record.cue), { stream: 'translation' });
+      const cues = records.map((record) => record.cue);
+      return {
+        txt: exportCuesToTxt(cues, { stream: 'translation' }),
+        srt: exportCuesToSrt(cues, { stream: 'translation' }),
+        vtt: exportCuesToVtt(cues, { stream: 'translation' })
+      };
     }, meetingId);
-    const downloadPromise = page.waitForEvent('download');
-    await exportPanel.getByRole('button', { name: '開始匯出' }).click();
-    const download = await downloadPromise;
-    const bytes = readFileSync(await download.path());
-    expect(bytes.toString('utf8')).toBe(expectedExport);
-    evidence.localExport = { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+    evidence.localExports = {};
+    for (const format of ['txt', 'srt', 'vtt']) {
+      await page.getByLabel('字幕匯出格式').selectOption(format);
+      const downloadPromise = page.waitForEvent('download');
+      await exportPanel.getByRole('button', { name: '開始匯出' }).click();
+      const download = await downloadPromise;
+      const bytes = readFileSync(await download.path());
+      expect(bytes.toString('utf8')).toBe(expectedExports[format]);
+      evidence.localExports[format] = { bytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex') };
+    }
+    evidence.localExport = evidence.localExports.txt;
     save();
   }
       expect(evidence.localAfterReload.cueSegments.find((cue) => cue.source === 'issue41 audit before')?.segmentId)
         .toBe(firstSegmentId);
       expect(evidence.localAfterReload.cueSegments.find((cue) => cue.source === 'issue41 audit after')?.segmentId)
-        .toBe(second.recording.segmentId);
+        .toBe(rolloverCommit.newSegmentId);
+      expect((await apiJson('GET', `/meetings/${meetingId}`)).meeting.status).toBe('completed');
+      await page.evaluate((id) => { window.location.hash = `#live?meetingId=${encodeURIComponent(id)}`; }, meetingId);
+      await expect(page.getByRole('button', { name: '開始錄製' })).toHaveCount(0);
       const secondDevice = await browser.newContext();
       try {
         const userHeaders = { apikey: publishableKey, Authorization: `Bearer ${auth.token}` };
@@ -1009,6 +1228,30 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       } finally {
         await secondDevice.close();
       }
+    if (zeroWriteAudit) {
+      const database = rolledBackRecordingWriteControl(meetingId);
+      expect(database).toEqual({ observedIllegalWrite: true, before: 0, after: 0,
+        persistedAuditRows: 0, rolledBack: true, contentGuardRejected: true });
+      const rpc = await page.request.post(`${supabaseUrl}/rest/v1/rpc/resume_legacy_meeting_segment`, {
+        headers: { apikey: publishableKey, Authorization: `Bearer ${auth.token}` },
+        data: { p_owner_user_id: auth.profile.id, p_meeting_id: meetingId,
+          p_source_segment_id: firstSegmentId, p_operation_id: 'issue41-negative-control',
+          p_payload_hash: 'negative-control', p_next_live_session_id: 'negative-control',
+          p_expected_session_id: null, p_checkpoint: {} }
+      });
+      const legacy = await page.request.post(`/api/meetings/${meetingId}/segments/${firstSegmentId}/cues`, {
+        headers: { Authorization: `Bearer ${auth.token}` }, data: { cue: 'negative-control' }
+      });
+      evidence.negativeControl = { database, rpc: { status: rpc.status() },
+        storage: evidence.authenticatedStorageDenial,
+        legacy: { status: legacy.status() } };
+      save();
+      expect(rpc.ok(), 'Legacy RPC must reject content write').toBe(false);
+      expect(evidence.negativeControl.storage.status, 'Authenticated Storage upload must be denied')
+        .toBeGreaterThanOrEqual(400);
+      expect(evidence.negativeControl.storage.objectAbsent).toBe(true);
+      expect(legacy.status(), 'Legacy Cue endpoint must reject content write').toBe(410);
+    }
     } finally {
       if (!evidence.localAfterReload) {
         evidence.firstDivergence = { events: await pipelineEvents().catch(() => []),
@@ -1020,23 +1263,10 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       evidence.storageAfter = {
         audio: await storageObjects('meeting-audio'), exports: await storageObjects('meeting-exports')
       };
-      evidence.recordingHttpWrites = auditRequests.filter(({ path }) =>
-        /\/api\/(?:sessions|meetings\/[^/]+\/(?:recording|segments))(?:\/|$)/u.test(path)
-        || /\/rest\/v1\/(?:sessions|meeting_recordings|meeting_segments|subtitle_cues|meeting_events)/u.test(path)
-        || path.startsWith('/storage/v1/object/'));
+  evidence.cloudAfter = await cloudInventory(meetingId);
       save();
     }
-  const allowedMetadataTables = new Set(['public.meetings', 'public.observability_metric_buckets']);
-  expect(evidence.writeEvents.filter((event) => !allowedMetadataTables.has(event.relation_name)))
-      .toEqual([]);
-    for (const [relation, before] of Object.entries(evidence.dbBefore.tables)) {
-    if (allowedMetadataTables.has(relation)) continue;
-      expect(evidence.dbAfter.tables[relation], relation).toEqual(before);
-    }
-    expect(evidence.storageAfter).toEqual(evidence.storageBefore);
-    expect(evidence.recordingHttpWrites).toEqual([]);
-  evidence.cloudZeroWrite = { status: 'PASS', prohibitedContentWrites: 0,
-    allowedMetadataWrites: evidence.writeEvents.filter((event) => allowedMetadataTables.has(event.relation_name)).length };
+ assertCloudZeroWrite();
     evidence.result = 'ZERO_RECORDING_WRITE_PASS';
     if (coreAcceptance) {
       expect(evidence.viewer.map((row) => row.phase)).toEqual(['join-snapshot', 'subsequent-cue']);
@@ -1118,6 +1348,24 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
         chromiumRssBytes, jsHeapBytes: metrics.metrics.find((entry) => entry.name === 'JSHeapUsedSize')?.value ?? 'NOT_MEASURED',
         arrayBufferExternalBytes: 'NOT_MEASURED_BY_CDP_PERFORMANCE' };
     };
+  const sampleResourceAttribution = async (phase, secondsAfterBarrier = null) => {
+    const [heap, dom, targets] = await Promise.all([
+      cdp.send('Runtime.getHeapUsage').catch(() => null),
+      cdp.send('Memory.getDOMCounters').catch(() => null),
+      system.send('Target.getTargets').catch(() => null)
+    ]);
+    const row = { phase, at: new Date().toISOString(), secondsAfterBarrier,
+      heapUsedBytes: heap?.usedSize ?? 'NOT_MEASURED',
+      heapAllocatedBytes: heap?.totalSize ?? 'NOT_MEASURED',
+      backingStorageBytes: heap?.backingStorageSize ?? 'NOT_MEASURED',
+      embedderHeapBytes: heap?.embedderHeapUsedSize ?? 'NOT_MEASURED',
+      documents: dom?.documents ?? 'NOT_MEASURED', nodes: dom?.nodes ?? 'NOT_MEASURED',
+      jsEventListeners: dom?.jsEventListeners ?? 'NOT_MEASURED',
+      workerTargets: targets?.targetInfos?.filter((target) => target.type === 'worker').length ?? 'NOT_MEASURED' };
+    evidence.resourceAttribution ??= [];
+    evidence.resourceAttribution.push(row);
+    save();
+  };
     const browserSample = () => page.evaluate(async () => {
       const root = await navigator.storage.getDirectory();
       const opfs = { files: 0, bytes: 0 };
@@ -1164,6 +1412,19 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
     const recordingSample = () => page.evaluate(async (id) => {
       const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
       return createIndexedDbLocalMeetingManifestStore().getRecording(id);
+    }, meetingId);
+    const journalPcmBytes = () => page.evaluate(async (id) => {
+      const root = await navigator.storage.getDirectory();
+      const meeting = await (await (await root.getDirectoryHandle('pcm-journals'))
+        .getDirectoryHandle('v1')).getDirectoryHandle(id);
+      let bytes = 0;
+      for await (const [, recording] of meeting.entries()) {
+        if (recording.kind !== 'directory') continue;
+        for await (const [name, file] of recording.entries()) {
+          if (file.kind === 'file' && /^pcm-\d+\.bin$/u.test(name)) bytes += (await file.getFile()).size;
+        }
+      }
+      return bytes;
     }, meetingId);
     const readJournalClaims = () => page.evaluate(async (id) => {
       const root = await navigator.storage.getDirectory();
@@ -1276,7 +1537,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       await expect.poll(async () => (await localState(meetingId)).recording?.state,
         { timeout: 60_000 }).toBe('stopped_local');
       await expect.poll(() => page.evaluate(() => window.location.hash),
-        { timeout: 30_000 }).toBe('#meetings');
+        { timeout: 30_000 }).toBe(`#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=history`);
       evidence.ramAttributionSmoke.fixtureAudioCleanup = await releaseFixtureAudioAfterEnd();
       evidence.ramAttributionSmoke.afterEnd = { at: new Date().toISOString(), ...await memory() };
       await page.reload();
@@ -1518,7 +1779,7 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       await expect.poll(async () => (await localState(meetingId)).recording?.state,
         { timeout: 60_000 }).toBe('stopped_local');
       await expect.poll(() => page.evaluate(() => window.location.hash),
-        { timeout: 30_000 }).toBe('#meetings');
+        { timeout: 30_000 }).toBe(`#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=history`);
       const afterEnd = await localState(meetingId);
       const barrierAt = Date.now();
       for (const secondsAfterBarrier of ramAbcSmoke ? [0] : [0, 30, 60]) {
@@ -1701,7 +1962,18 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       save();
     };
     await recordCue(initialSegmentId);
-      const requiredCaptureMs = recordingContract ? 45_000 : soakMinutes * 60_000;
+      const requiredCaptureMs = authExpirySmoke ? 150_000 : recordingContract ? 45_000 : soakMinutes * 60_000;
+      if (authExpirySmoke) {
+        expect(auth.refreshToken, 'short expiry smoke requires a real refresh token').toBeTruthy();
+        expect(auth.expiresAt * 1000 - captureStart).toBeGreaterThan(30_000);
+        expect(auth.expiresAt * 1000 - captureStart).toBeLessThan(90_000);
+        evidence.authExpiry = {
+          initialExpiresAt: new Date(auth.expiresAt * 1000).toISOString(),
+          pcmBytesBefore: await journalPcmBytes(),
+          refreshObservedAt: null
+        };
+        save();
+      }
       try { while (Date.now() - captureStart < requiredCaptureMs) {
       const at = Date.now();
         gateSampleBusy = true;
@@ -1712,8 +1984,27 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
         ...ram, ...browserState, segmentId: recording?.segmentId ?? null,
         segmentNumber: recording?.segmentNumber ?? null, providerEpoch: recording?.providerEpoch ?? null };
       if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify(row)}\n`);
+      if (ramGateMode && !evidence.resourceAttribution?.length) await sampleResourceAttribution('baseline');
       expect(row.liveTracks, 'PCM source remains live').toBeGreaterThan(0);
       expect(row.lastCallbackAgeMs, 'PCM input remains live').toBeLessThan(5_000);
+      if (authExpirySmoke && at >= auth.expiresAt * 1000 + 5_000 && !evidence.authExpiry.refreshObservedAt) {
+        const current = await page.evaluate(async () => {
+          const { supabase } = await import('/src/lib/supabaseAuth.js');
+          const { data } = await supabase.auth.getSession();
+          return { token: data.session?.access_token || null,
+            expiresAt: data.session?.expires_at || null, userId: data.session?.user?.id || null };
+        });
+        expect(current.userId, 'Host remains authenticated after original token expiry').toBe(auth.profile.id);
+        expect(current.token, 'Supabase issued a new access token').not.toBe(auth.token);
+        expect(current.expiresAt * 1000, 'refreshed token remains valid').toBeGreaterThan(at);
+        await expect(page.getByRole('heading', { name: '歡迎回來' })).toHaveCount(0);
+        const pcmBytesAfter = await journalPcmBytes();
+        expect(pcmBytesAfter, 'PCM Journal grows across auth refresh').toBeGreaterThan(evidence.authExpiry.pcmBytesBefore);
+        evidence.authExpiry = { ...evidence.authExpiry,
+          refreshObservedAt: new Date(at).toISOString(),
+          refreshedExpiresAt: new Date(current.expiresAt * 1000).toISOString(), pcmBytesAfter };
+        save();
+      }
       if (previousCallbacks) expect(row.callbacks, 'PCM callbacks advance').toBeGreaterThan(previousCallbacks);
       previousCallbacks = row.callbacks;
       if (typeof row.chromiumRssBytes === 'number')
@@ -1753,7 +2044,15 @@ const evidence = { mode: recordingContract ? 'recording-rollover-contract' : rec
       }
       nextSampleAt += 30_000;
         await page.waitForTimeout(Math.max(0, nextSampleAt - Date.now()));
-      } } finally {
+    } } catch (error) {
+      evidence.captureFailure = { at: new Date().toISOString(), name: error.name };
+      try { evidence.writeEventsAtFailure = recordedWrites(); }
+      catch { evidence.auditReadErrorAtFailure = true; }
+      try { evidence.cloudAtFailure = await cloudInventory(meetingId); }
+      catch { evidence.cloudReadErrorAtFailure = true; }
+      save();
+      throw error;
+    } finally {
         clearInterval(diagnosticTimer);
         await diagnosticInFlight;
         await collectProviderTrace();
@@ -1765,6 +2064,7 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
       ...endMemory, ...endBrowser, segmentId: endRecording?.segmentId ?? null,
       segmentNumber: endRecording?.segmentNumber ?? null, providerEpoch: endRecording?.providerEpoch ?? null })}\n`);
     evidence.captureElapsedMs = Date.now() - captureStart;
+    if (authExpirySmoke) expect(evidence.authExpiry.refreshObservedAt, 'auth refresh observed during capture').toBeTruthy();
       expect(evidence.rolloverObservations).toHaveLength(recordingContract ? 1 : Math.floor(soakMinutes / 15));
     expect(evidence.rolloverObservations[0].elapsedMs).toBeGreaterThanOrEqual(recordingContract ? 10_000 : 14 * 60_000);
     expect(evidence.rolloverObservations[0].elapsedMs).toBeLessThan(recordingContract ? 40_000 : 16 * 60_000);
@@ -1779,14 +2079,32 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
     await expect.poll(async () => (await localState(meetingId)).recording?.state,
       { timeout: 60_000 }).toBe('stopped_local');
     await expect.poll(() => page.evaluate(() => window.location.hash),
-      { timeout: 30_000 }).toBe('#meetings');
+      { timeout: 30_000 }).toBe(`#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=history`);
     evidence.barrierCompletedAt = new Date().toISOString();
+    if (recordingContract) {
+      const operationId = `stop:${firstRecording.recordingId}:${previousSegmentId}`;
+      let receipt = null;
+      await expect.poll(async () => {
+        receipt = await page.evaluate(async ({ id, operationId: key }) => {
+          const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+          return createIndexedDbLocalMeetingManifestStore().getOperation(id, key);
+        }, { id: meetingId, operationId });
+        return receipt !== null;
+      }, { message: 'End receipt must be durable', timeout: 30_000 }).toBe(true);
+      expect(receipt).toMatchObject({ operationId, type: 'finalize',
+        result: { state: 'stopped_local', recordingId: firstRecording.recordingId,
+          segmentId: previousSegmentId } });
+      evidence.endReceipt = { operationId, state: receipt.result.state,
+        segmentId: receipt.result.segmentId, finalSequence: receipt.result.finalSequence };
+      save();
+    }
     const barrierAt = Date.now();
     evidence.fixtureAudioCleanup = await releaseFixtureAudioAfterEnd();
     for (const secondsAfterBarrier of [0, 30, 60]) {
       if (secondsAfterBarrier) await page.waitForTimeout(Math.max(0, barrierAt + secondsAfterBarrier * 1000 - Date.now()));
       const row = { phase: 'post_stop', at: new Date().toISOString(), secondsAfterBarrier, ...await memory() };
       if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify(row)}\n`);
+    if (ramGateMode) await sampleResourceAttribution('post_stop', secondsAfterBarrier);
     }
     const beforeReload = await localState(meetingId);
     evidence.pcm = await page.evaluate(() => ({ callbacks: window.__issue41PcmCount,
@@ -1869,25 +2187,7 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
     evidence.writeEvents = recordedWrites();
     evidence.storageAfter = { audio: await storageObjects('meeting-audio'), exports: await storageObjects('meeting-exports') };
     evidence.cloudAfter = await cloudInventory(meetingId);
-    evidence.recordingHttpWrites = auditRequests.filter(({ path }) =>
-      /\/api\/(?:sessions|meetings\/[^/]+\/(?:recording|segments|complete))(?:\/|$)/u.test(path)
-      || /\/rest\/v1\/(?:sessions|meeting_recordings|meeting_segments|subtitle_cues|meeting_events)/u.test(path)
-      || path.startsWith('/storage/v1/object/'));
-    evidence.cloudZeroWrite = { status: 'NOT_RUN', before: evidence.cloudBefore,
-      after: evidence.cloudAfter, storageBefore: evidence.storageBefore,
-      storageAfter: evidence.storageAfter,
-      transientWriteAudit: evidence.writeEvents,
-      recordingHttpWrites: evidence.recordingHttpWrites };
-    expect(evidence.writeEvents.filter((event) => event.relation_name !== 'public.observability_metric_buckets')).toEqual([]);
-    for (const [relation, before] of Object.entries(evidence.dbBefore.tables)) {
-      if (relation !== 'public.observability_metric_buckets') expect(evidence.dbAfter.tables[relation], relation).toEqual(before);
-    }
-    expect(evidence.storageAfter).toEqual(evidence.storageBefore);
-    for (const key of ['cues', 'contentEvents', 'checkpoints', 'sessionContent', 'audioObjects', 'exportObjects'])
-      expect(evidence.cloudAfter[key], `Cloud recording content ${key}`).toBe(evidence.cloudBefore[key]);
-    expect(evidence.recordingHttpWrites).toEqual([]);
-    evidence.cloudZeroWrite.status = 'PASS';
-    evidence.evidenceChecks.cloudZeroWrite = 'PASS';
+  assertCloudZeroWrite();
       evidence.result = recordingContract ? 'ROLLOVER_CONTRACT_PASS' : `RECORDING_${soakMinutes}MIN_SOAK_PASS`;
     evidence.finishedAt = new Date().toISOString();
     save();
@@ -1926,16 +2226,18 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
       evidence.initialRecordingId = started.recording.recordingId;
       initialSegmentId = started.recording.segmentId;
     } else {
-      await expect.poll(async () => (await dbRows('sessions', `select=id,meeting_id,segment_id&meeting_id=eq.${meetingId}`)).length)
+      await expect.poll(async () => (await segments(meetingId)).length)
         .toBeGreaterThan(0);
       const startedSegments = await segments(meetingId);
       expect(startedSegments).toHaveLength(1);
       initialSegmentId = startedSegments[0].id;
+      evidence.initialRecordingId = (await localState(meetingId)).recording?.recordingId;
+      expect(evidence.initialRecordingId).toBeTruthy();
     }
   evidence.initialSegmentId = initialSegmentId;
   save();
   if (ram10Diagnostic) {
-    await runRecordingRam10Diagnostic({ page, browser, meetingId, initialSegmentId, localState, dbRows, evidence, save });
+      await runRecordingRam10Diagnostic({ page, browser, meetingId, initialSegmentId, localState, evidence, save });
     return;
   }
   let samplePostStop = null;
@@ -2014,7 +2316,7 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
           try { chromiumRssBytes = Number(execFileSync('ps', ['-p', String(renderer.id), '-o', 'rss='], { encoding: 'utf8' }).trim()) * 1024; }
           catch { /* The renderer may have exited between the CDP and ps calls. */ }
         }
-        const active = authoritative.find((segment) => segment.status === 'active');
+const active = authoritative.find((segment) => segment.status === 'ACTIVE');
       const row = {
           at: new Date(at).toISOString(), elapsedMs: at - captureStart,
         phase: 'capture', rendererPid: renderer?.id ?? null,
@@ -2022,7 +2324,7 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
         chromiumRssBytes, jsHeapBytes: metrics.metrics.find((item) => item.name === 'JSHeapUsedSize')?.value ?? 'NOT_MEASURED',
           ...browserState, audioChunks: local.chunks.length,
           audioBytes: local.chunks.reduce((sum, chunk) => sum + chunk.byteSize, 0),
-          segmentId: active?.id ?? null, sessionId: active?.session_id ?? null,
+          segmentId: active?.id ?? null, recordingId: active?.recordingId ?? null,
           segmentCount: authoritative.length, recordingState: local.recording?.state ?? null,
         pcmJournalPendingWrites: browserState.pcmJournalPendingWrites,
         pcmJournalPendingScope: 'worker_requests_only'
@@ -2030,8 +2332,8 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
         if (seriesFile) appendFileSync(seriesFile, `${JSON.stringify(row)}\n`);
         if (active?.id && active.id !== lastSegmentId) {
           evidence.rolloverObservations.push({ at: row.at, elapsedMs: row.elapsedMs,
-            oldSegmentId: lastSegmentId, newSegmentId: active.id, sessionId: active.session_id,
-            segments: authoritative.map((segment) => ({ id: segment.id, sessionId: segment.session_id, sequence: segment.sequence, status: segment.status })) });
+            oldSegmentId: lastSegmentId, newSegmentId: active.id, recordingId: active.recordingId,
+            segments: authoritative.map((segment) => ({ id: segment.id, recordingId: segment.recordingId, sequence: segment.sequence, status: segment.status })) });
           lastSegmentId = active.id;
           save();
         }
@@ -2086,9 +2388,7 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
         save();
       };
       const preStopSegments = await segments(meetingId);
-      const authoritativeSessions = await dbRows('sessions', `select=id,meeting_id,segment_id,current_segment_id,recording_id&meeting_id=eq.${meetingId}`);
-      evidence.preStopSegments = preStopSegments.map((segment) => ({ id: segment.id, sessionId: segment.session_id, sequence: segment.sequence, status: segment.status }));
-      evidence.preStopSessions = authoritativeSessions;
+ evidence.preStopSegments = preStopSegments.map((segment) => ({ id: segment.id, recordingId: segment.recordingId, sequence: segment.sequence, status: segment.status }));
       evidence.captureElapsedMs = Date.now() - captureStart;
       save();
       expect(evidence.captureElapsedMs).toBeGreaterThanOrEqual(requiredCaptureMs);
@@ -2098,13 +2398,11 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
       expect(evidence.rolloverObservations[0].elapsedMs).toBeLessThan(recordingContract ? 40_000 : 1_020_000);
       if (recordingContract) expect(await page.evaluate(() => window.__issue41ControlledRolloverTimer)).toBe(true);
     expect(preStopSegments.length).toBe(requiredRollovers + 1);
-      expect(authoritativeSessions.length).toBe(1);
-    expect(preStopSegments.every((segment) => segment.session_id === authoritativeSessions[0].id)).toBe(true);
-      expect(preStopSegments.filter((segment) => segment.status === 'active').length).toBe(1);
-    expect(preStopSegments.find((segment) => segment.status === 'active')?.id).toBe(evidence.rolloverObservations.at(-1).newSegmentId);
-    expect(authoritativeSessions[0].current_segment_id).toBe(evidence.rolloverObservations.at(-1).newSegmentId);
+ expect(preStopSegments.every((segment) => segment.recordingId === evidence.initialRecordingId)).toBe(true);
+ expect(preStopSegments.filter((segment) => segment.status === 'ACTIVE').length).toBe(1);
+ expect(preStopSegments.find((segment) => segment.status === 'ACTIVE')?.id).toBe(evidence.rolloverObservations.at(-1).newSegmentId);
       if (recordingContract) {
-        expect(evidence.lifecycleResponses?.filter((entry) => entry.meetingId === meetingId && entry.command === 'rollover' && entry.method === 'POST' && entry.status === 201)).toHaveLength(requiredRollovers);
+    expect(preStopSegments.slice(0, -1).every((segment) => segment.status === 'ENDED')).toBe(true);
       }
     } else {
       await page.waitForTimeout(12_000);
@@ -2178,7 +2476,7 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
     expect(evidence.journalBeforeStop.some((file) => file.name.startsWith('pcm-') && file.bytes > 0)).toBe(true);
     await page.getByRole('button', { name: '結束會議' }).click();
     await expect.poll(async () => (await localState(meetingId)).recording?.state, { timeout: 30_000 }).toBe('stopped_local');
-    if (!recordingSmoke) await expect.poll(() => evidence.lifecycleResponses?.filter((entry) => entry.meetingId === meetingId && entry.command === 'stop' && entry.method === 'POST' && entry.status === 200).length ?? 0, { timeout: 30_000 }).toBe(1);
+    expect((await localState(meetingId)).segments.every((segment) => segment.status === 'ENDED')).toBe(true);
     evidence.barrierCompletedAt = new Date().toISOString();
       if (samplePostStop) {
         const barrierAt = Date.now();
@@ -2260,7 +2558,7 @@ const [endMemory, endBrowser, endRecording] = await Promise.all([memory(), light
       expect(beforeReload.chunks.every((chunk) => chunk.segmentId === initialSegmentId)).toBe(true);
     }
     if (recordingSoak || recordingContract) {
-      expect(beforeReload.recording?.recordingId).toBe(evidence.preStopSessions[0].recording_id);
+      expect(beforeReload.recording?.recordingId).toBe(evidence.initialRecordingId);
       expect(evidence.journalClaims[0].recordingId).toBe(beforeReload.recording.recordingId);
     }
     evidence.beforeReload = { recordingState: beforeReload.recording.state, chunks: beforeReload.chunks };
@@ -2377,12 +2675,8 @@ const exported = {
     for (const key of ['cues', 'contentEvents', 'checkpoints', 'sessionContent', 'audioObjects', 'exportObjects']) {
       expect(evidence.cloudAfter[key], `Cloud content ${key}`).toBe(evidence.cloudBefore[key]);
     }
-    if (recordingSmoke) {
-      expect(evidence.cloudAfter.sessions).toBe(evidence.cloudBefore.sessions);
-      expect(evidence.cloudAfter.segments).toBe(evidence.cloudBefore.segments);
-    } else {
-      expect(evidence.cloudAfter.sessions).toBeGreaterThanOrEqual(1);
-    }
+    expect(evidence.cloudAfter.sessions).toBe(evidence.cloudBefore.sessions);
+    expect(evidence.cloudAfter.segments).toBe(evidence.cloudBefore.segments);
     expect(evidence.browserErrors).toEqual([]);
 evidence.result = recordingContract ? 'ROLLOVER_CONTRACT_PASS' : recordingSoak ? `RECORDING_${soakMinutes}MIN_SOAK_PASS` : 'RECORDING_SMOKE_PASS';
     evidence.finishedAt = new Date().toISOString();
@@ -2411,8 +2705,8 @@ evidence.result = recordingContract ? 'ROLLOVER_CONTRACT_PASS' : recordingSoak ?
   const listeningAt = Date.now();
   evidence.listeningAt = new Date(listeningAt).toISOString();
   await expect.poll(() => page.evaluate(() => window.__issue41PcmCount)).toBeGreaterThan(0);
-  await expect.poll(async () => (await dbRows('sessions', `select=id,meeting_id,segment_id&meeting_id=eq.${meetingId}`)).length).toBeGreaterThan(0);
-  evidence.sessions = await dbRows('sessions', `select=id,meeting_id,segment_id&meeting_id=eq.${meetingId}`);
+  await expect.poll(async () => (await segments(meetingId)).length).toBeGreaterThan(0);
+  evidence.localSegments = await segments(meetingId);
   const viewer = await browser.newPage();
   viewer.on('pageerror', (error) => { evidence.browserErrors.push(`viewer:${error.name}`); save(); });
   await viewer.goto(`/${share.url || share.codeUrl}`);
@@ -2487,9 +2781,9 @@ evidence.result = recordingContract ? 'ROLLOVER_CONTRACT_PASS' : recordingSoak ?
     expect(firstNext.sequence).toBeGreaterThan(first.sequence);
     const beforeRolloverPcm = await page.evaluate(() => window.__issue41PcmCount);
     const beforeRolloverProcessors = await page.evaluate(() => window.__issue41Processors.length);
-    await expect.poll(async () => (await segments(meetingId)).find((row) => row.sequence === 1) || null,
+    await expect.poll(async () => (await segments(meetingId)).find((row) => row.sequence === 2) || null,
       { timeout: 17 * 60_000, intervals: [1000, 5000, 15_000] }).not.toBeNull();
-    const next = (await segments(meetingId)).find((row) => row.sequence === 1);
+    const next = (await segments(meetingId)).find((row) => row.sequence === 2);
     evidence.rollover = { at: new Date().toISOString(), segmentId: next.id, sequence: next.sequence };
     await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBeGreaterThan(1);
     await expect.poll(() => page.evaluate(() => window.__issue41PcmCount)).toBeGreaterThan(beforeRolloverPcm);
@@ -2507,7 +2801,7 @@ evidence.result = recordingContract ? 'ROLLOVER_CONTRACT_PASS' : recordingSoak ?
     evidence.elapsedMs = Date.now() - listeningAt;
   }
   clearInterval(resourceTimer);
-  evidence.segments = (await segments(meetingId)).map((row) => ({ id: row.id, sessionId: row.session_id,
+  evidence.segments = (await segments(meetingId)).map((row) => ({ id: row.id, recordingId: row.recordingId,
     sequence: row.sequence, status: row.status }));
   const localBeforeStop = await localState(meetingId);
   evidence.localBeforeStop = { cues: localBeforeStop.cues.length, transcripts: localBeforeStop.transcripts.length,
@@ -2565,8 +2859,8 @@ evidence.result = recordingContract ? 'ROLLOVER_CONTRACT_PASS' : recordingSoak ?
   for (const key of ['cues', 'contentEvents', 'checkpoints', 'sessionContent', 'audioObjects', 'exportObjects']) {
     expect(evidence.cloudAfter[key], `Cloud content ${key}`).toBe(evidence.cloudBefore[key]);
   }
-  expect(evidence.cloudAfter.segments).toBeGreaterThanOrEqual(1);
-  expect(evidence.cloudAfter.sessions).toBeGreaterThanOrEqual(1);
+  expect(evidence.cloudAfter.segments).toBe(evidence.cloudBefore.segments);
+  expect(evidence.cloudAfter.sessions).toBe(evidence.cloudBefore.sessions);
   expect(evidence.browserErrors).toEqual([]);
   evidence.result = shortValidation ? 'SHORT_VALIDATION_PASS_NO_ROLLOVER_CLAIM' : 'REAL_TIME_SOAK_PASS';
   evidence.finishedAt = new Date().toISOString();

@@ -25,7 +25,7 @@ test('Viewer joins from Host snapshot and reconnects without HTTP or SSE Cue', a
   expect(state.cloudContentReads).toBe(0);
 });
 
-test('new Segment metadata arrives after Cue and no Replay sequence is skipped', async ({ page }) => {
+test('Viewer keeps Host Cues when Segment metadata arrives later', async ({ page }) => {
   const firstSegment = { id: 'segment-1', sessionId: 'session-1', sequence: 1 };
   const secondSegment = { id: 'segment-2', sessionId: 'session-2', sequence: 2 };
   const state = await installHostViewerHarness(page, {
@@ -44,8 +44,8 @@ test('new Segment metadata arrives after Cue and no Replay sequence is skipped',
       sessionId: 'session-2', segmentId: 'segment-2', sequence: 2,
       sourceText: 'Third', sourceVersion: 1 });
   });
-  await expect(viewport.locator('[data-cue-id="second"]')).toHaveCount(0);
-  await expect(viewport.locator('[data-cue-id="third"]')).toHaveCount(0);
+  await expect(viewport.locator('[data-cue-id="second"]')).toContainText('Second');
+  await expect(viewport.locator('[data-cue-id="third"]')).toContainText('Third');
   state.segments = [firstSegment, secondSegment];
   state.lifecycleVersion += 1;
   await expect(viewport.locator('[data-cue-id="second"]')).toContainText('Second');

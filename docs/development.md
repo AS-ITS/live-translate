@@ -1,18 +1,40 @@
 # Live Translate Development Guide
 
-Local runtime persistence is Supabase-only. JSON files under `data/` are
-legacy test fixtures and are not read by the application.
+## 正式本機安裝與啟動（現行 Local-only 路徑）
 
-```bash
-supabase start
-supabase db reset
-supabase db lint
-```
+本節供首次安裝者使用。下方既有 Phase 與雲端能力段落保留為開發／歷史脈絡；若描述 Supabase 保存錄音、Cue、Transcript 或 Viewer 從雲端重播，應以[現行架構](architecture/architecture-overview.md#現行正式產品架構local-only)為準。
 
-Copy the local API URL and service-role key from `supabase status` into the
-server-only `SUPABASE_URL` and `SUPABASE_SECRET_KEY` values in `.env`. Never
-commit or log the service key. Use `/readyz` to distinguish an unavailable
-Supabase endpoint, missing migrations, and invalid credentials.
+### 系統需求
+
+CI 使用 Node.js 22；長會議測試也涵蓋 Node.js 24。`package.json` 未宣告最低版本，建議先用 Node.js 22 與 npm。另需 Docker、Supabase CLI、`redis-cli`、`redis-server`、本機 Google OAuth client，以及支援麥克風、Web Audio、OPFS／IndexedDB、WebRTC 的瀏覽器。正式瀏覽器版本矩陣尚未完成 RC1 實機驗收。
+
+### 安裝與環境變數
+
+在本專案根目錄執行 `npm ci` 安裝 lockfile 指定的依賴。這會修改本機 `node_modules`；不是檢查命令。`supabase/config.toml` 設定本機 Google OAuth client ID；將自己的 client secret 以 `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET` 放入 Git 忽略的 `supabase/.env.local`，檔案需為一般檔案且權限為 `600`。不要把 secret、Supabase service key、Gemini API key 或短效 token 寫入 Git、前端 `VITE_` 變數或日誌。
+
+正式本機啟動器 `scripts/start-local.mjs` 從 loopback Supabase 讀取 URL 與金鑰，為 API／Vite 設定 `SUPABASE_URL`、`SUPABASE_SECRET_KEY`、`SUPABASE_JWKS_URL`、`VITE_SUPABASE_URL`、`VITE_SUPABASE_PUBLISHABLE_KEY`、`AUTH_ALLOWED_EMAIL_DOMAINS=as.edu.tw`、`WEBRTC_SIGNALING_REDIS_URL` 與 `APP_ORIGIN`。它不把根目錄 `.env` 當成本機必填設定；[`.env.example`](../.env.example) 主要供其他手動／部署環境核對。真實 Live 翻譯的 API key 由錄製者在介面提供，僅供該次請求換取短效 token；啟動器將伺服器端 `GEMINI_API_KEY` 設為空值，後者只供另行設定的非 Live 後端工作使用。
+
+### 本機資料庫與啟動順序
+
+| 階段 | 指令 | 作用與副作用 |
+| --- | --- | --- |
+| 安裝 | `npm ci` | 安裝依賴，修改 `node_modules`。 |
+| 初次建立**可拋棄的空白本機**資料庫 | `npm run db:start`，必要時 `npm run db:reset` | 啟動 Local Supabase；`db:reset` 會重建本機資料，**不得對既有會議或長測資料執行**。 |
+| 前置檢查 | `npm run start -- --check` | 驗證 Docker、Local Supabase、Google OAuth、migration、Redis；必要時會啟動 Local Supabase／Redis，**不是純唯讀**。migration 不一致時會阻止啟動，不會自動 reset。 |
+| 正式本機啟動 | `npm run start` | 啟動 API（預設 `127.0.0.1:3000`）與 Vite（預設 `127.0.0.1:5173`）；`start:local` 是同一腳本。 |
+
+僅在確認目標為**新建、沒有需保留資料的本機 Supabase** 時才考慮 `db:reset`。不要把 Local 的 Supabase URL 或金鑰指向 Preview／Production。開啟終端印出的 Vite URL；實際連接埠若被占用，以啟動輸出為準。`npm run dev` 與 `npm run server` 是分開啟動的開發腳本，不會替代正式本機啟動器的前置檢查。
+
+### 常見問題
+
+- **顯示 `Local startup blocked`：**檢查 Docker、Supabase CLI、Google OAuth secret 的檔案權限，以及本專案 migration 是否已套用；先閱讀錯誤訊息，不要直接 reset 既有資料。
+- **Redis 無法連線：**本機腳本只接受 loopback `LOCAL_REDIS_URL`，需要 `redis-cli` 與 `redis-server`；若服務已在執行，先確認其實際連接埠。
+- **無法登入或開始翻譯：**本機登入限目前授權網域及帳號規則；真實 Gemini Live 需要錄製者提供可用 API key。測試模式與真實 API 用量分開，參見[測試政策](TESTING.md)。
+- **跨裝置 Viewer 無法連線：**WebRTC signaling 需要 Redis，跨網路可能需要可達 TURN；實機矩陣仍待驗收，參見[WebRTC 驗證文件](verification/webrtc-browser-deployment.md)。
+
+## 舊版手動開發流程（非上方正式本機啟動流程）
+
+下列章節保留舊版與其他能力的開發紀錄。舊文件中的「Supabase-only」僅可用於當時的伺服器資料路徑，不適用於現行 Host 錄製內容；`data/` JSON 檔為歷史測試資料。原有 `supabase start`、`supabase db reset`、`supabase db lint` 可用於隔離開發環境，但 `db reset` 會重建資料，不應當作一般啟動步驟。手動分開啟動時，後端需由環境提供 `SUPABASE_URL` 與 `SUPABASE_SECRET_KEY`；正式本機啟動器則自行從 Local Supabase 組出這些值。`/readyz` 可協助區分端點、migration 與憑證問題。不要提交或記錄 service key。
 
 ## Environment Variables
 
@@ -89,7 +111,6 @@ Use the Supabase CLI migration workflow locally:
 
 ```bash
 npm run db:start
-npm run db:reset
 npm run db:lint
 ```
 
@@ -97,7 +118,6 @@ Use the local stack as the staging-equivalent validation environment:
 
 ```bash
 npm run db:start
-npm run db:reset
 npm run db:lint
 npm run test:integration
 npm run test:e2e

@@ -165,6 +165,16 @@ Rules:
 The existing Meeting glossary snapshot behavior remains the source of truth for
 later Segments, reconnects, exports, and historical reads.
 
+### Dictionary correction contract
+
+The existing Gemini Live instruction treats the active Meeting dictionary as required terminology. It prefers complete longer names, preserves repeated uses, and applies terms only to original source speech. Provider terms refresh at the next normal Segment boundary; local correction can refresh on a later Turn.
+
+The Live Session debug snapshot records dictionary presence, effective entry count, whether the token prompt contains the active terms, source match and alignment candidate counts, correction status, and a reason code. These added diagnostic fields contain no meeting speech or translation text.
+
+Build match candidates from the original, uncorrected text. Chinese terms use substring matching; English terms require word boundaries. Overlapping source matches choose the longest term, then emit non-overlapping matches in source order. Handle each source range once; never match replacement output again. Handle separate terms and repeated occurrences independently. Equal-range matches with different targets report `correction_ambiguous` and leave that range unchanged.
+
+Gemini translation correction also requires a safely identifiable term or alias in the provider translation. Replace each aligned occurrence once. If fewer occurrences can be located than matched in the source, keep every safe local replacement, preserve all unmatched provider wording, and report `correction_uncertain`; never insert a missing target term. Partial and Final each recompute from uncorrected provider text. Preserve `rawTranslation`, provider provenance, and translation version. Correction must not create a Provider Event or an unauthorized Final Cue translation mutation. Viewer, reload, and TXT/SRT/VTT use the effective corrected Cue text.
+
 ## Meeting Viewer Sharing
 
 ### Permission separation and stop window

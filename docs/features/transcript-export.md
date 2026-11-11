@@ -1,6 +1,7 @@
 # Transcript Export
 
 Issue #41 Cutover in the current development branch supersedes the older Cloud Export flow below: the Host reads final Cues and raw/translated audio from local IndexedDB/OPFS after Reload. TXT/SRT/VTT and audio download remain on the Host; new Cloud Export requests and historical cloud download routes return `410 meeting_content_local_only`. Historical cloud rows are retained for a separate controlled cleanup.
+Meeting Detail uses meeting metadata and Host local Cues for transcript and export; it does not poll retired Session Detail or Translations content endpoints.
 
 Status: Cue-backed Session export implemented (WP5A); P7 cloud lifecycle and P8 cloud-only path completed
 

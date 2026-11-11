@@ -7,10 +7,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeExportRam, analyzeRamGate } from './issue41-ram-gate.mjs';
+import { archiveCloudZeroAuditEvidence, archiveRunEvidence, versionSnapshot } from './issue41-evidence-archive.mjs';
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(project, 'test-results/issue41-runner');
-const smokeName = 'long meeting proactively switches through three segments';
+const smokeName = 'Host local-only accelerated rollover keeps Cue ownership and durable recovery';
 const soakName = 'long meeting accelerated 130 minute schedule creates 13 segments without waiting';
 const realTimeName = 'issue41 real-time 20-minute local meeting soak';
 const soakMs = 20 * 60 * 1000;
@@ -24,6 +25,8 @@ const isolatedEnvironment = () => Object.fromEntries(Object.entries(process.env)
     'DOCKER_HOST', 'DOCKER_CONTEXT'].includes(key)));
 let child = null;
 let supabaseStarted = false;
+let redisStarted = false;
+let managedRedisPid = null;
 let interrupted = false;
 
 function fail(message) { console.error(message); process.exitCode = 1; }
@@ -74,7 +77,7 @@ function summarize(finalState, exitCode) {
   });
   const gateExitCode = options.ramGateMinutes && exitCode === 0 && ramGate.verdict !== 'PASS' ? 1 : exitCode;
   const gateFinalState = gateExitCode !== exitCode ? `ram-gate-${ramGate.verdict.toLowerCase()}` : finalState;
-  const allowedCheckStates = new Set(['PASS', 'FAIL', 'UNVERIFIED', 'NOT_RUN', 'BLOCKED']);
+  const allowedCheckStates = new Set(['PASS', 'FAIL', 'NOT_VERIFIED', 'UNVERIFIED', 'NOT_RUN', 'BLOCKED']);
   const evidenceChecks = Object.fromEntries(Object.entries(evidence.evidenceChecks || {})
     .map(([name, state]) => [name, allowedCheckStates.has(state) ? state : 'UNVERIFIED']));
   const evidenceVerdict = ['precheck-blocked', 'environment-blocked'].includes(finalState) ? 'BLOCKED'
@@ -114,7 +117,8 @@ function summarize(finalState, exitCode) {
     reloadedState: evidence.restored?.recordingState ?? null,
     exported: evidence.exported ? { audio: evidence.exported.audio, perSegment: evidence.exported.perSegment } : null,
     cloudBefore: evidence.cloudBefore ?? null, cloudAfter: evidence.cloudAfter ?? null,
-    cloudZeroWrite: evidence.cloudZeroWrite ?? { status: 'NOT_RUN' },
+    cloudZeroWrite: evidence.cloudZeroWrite ?? { status: options.zeroWriteAudit || options.ramGateMinutes ? 'NOT_VERIFIED' : 'NOT_RUN' },
+    cloudContentWrite: evidence.cloudContentWrite ?? { status: options.ramGateMinutes ? 'NOT_VERIFIED' : 'NOT_RUN' },
     evidenceChecks, EVIDENCE_VERDICT: evidenceVerdict,
     observerConfiguration: evidence.ramConfiguration ?? { observer: 'UNVERIFIED' },
     ramComparisonPolicy: 'Compare only runs with the same observer configuration; profile changes do not prove a product memory fix.',
@@ -221,14 +225,20 @@ async function run() {
   if (sha.status === 0) write('git-sha', sha.stdout.trim());
   let exitCode = 1;
   let finalState = 'failed';
+  const redisPidFile = join(runDir, 'redis.pid');
+  const serverFetchAuditFile = join(runDir, 'server-fetch-audit.ndjson');
   const secrets = [];
   try {
     const options = JSON.parse(read('options.json'));
+    if (options.ramGateMinutes) atomicJson(join(runDir, 'version.json'), versionSnapshot(project));
     let testGeminiKey = null;
     if (options.realGeminiAudio) {
       testGeminiKey = process.env.ISSUE41_TEST_GEMINI_KEY?.trim();
       if (!testGeminiKey) throw new Error('PRECHECK_BLOCKED: ISSUE41_TEST_GEMINI_KEY required in process environment.');
-      if (!/^AIza[\w-]{20,}$/u.test(testGeminiKey)) throw new Error('PRECHECK_BLOCKED: invalid test Key format.');
+      if (/[\s\x00-\x1F\x7F]/u.test(testGeminiKey) ||
+          testGeminiKey.length < 20) {
+          throw new Error('PRECHECK_BLOCKED: invalid test Key format.');
+      }
       secrets.push(testGeminiKey);
     }
     if (options.localAudioMode) {
@@ -241,19 +251,41 @@ async function run() {
       const conversion = spawnSync('/usr/bin/afconvert', ['-f', 'WAVE', '-d', 'LEI16@16000', '-c', '1', aiff, wav],
         { encoding: 'utf8' });
       if (conversion.status !== 0) throw new Error('PRECHECK_BLOCKED: fixed speech WAV conversion failed.');
-      const bytes = readFileSync(wav);
+    const bytes = readFileSync(wav);
       const durationMs = Math.round((bytes.length - 44) / 32000 * 1000);
       if (bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WAVE'
         || durationMs < 4000 || durationMs > 30000) throw new Error('PRECHECK_BLOCKED: fixed WAV duration/format invalid.');
       atomicJson(join(runDir, 'audio-fixture.json'), { path: wav, durationMs,
         sha256: createHash('sha256').update(bytes).digest('hex') });
     }
-    const apiPort = options.localAudioMode ? 31041 : 3000;
-    const frontendPort = options.localAudioMode ? 5175 : 5174;
-    const signalingPort = options.localAudioMode ? 31042 : 3001;
+    const isolatedPorts = options.localAudioMode || options.zeroWriteAudit;
+    const apiPort = isolatedPorts ? 31041 : 3000;
+    const frontendPort = isolatedPorts ? 5175 : 5174;
+    const signalingPort = isolatedPorts ? 31042 : 3001;
     for (const port of options.recordingOnly ? [apiPort, frontendPort] : [apiPort, signalingPort, frontendPort]) {
       const availability = await freePort(port);
       if (availability !== true) throw new Error(`${availability === 'EPERM' ? 'ENVIRONMENT_BLOCKED' : 'PRECHECK_BLOCKED'}: Port ${port} unavailable (${availability}).`);
+    }
+    if (options.realTime && !options.recordingOnly && !options.localAudioMode) {
+      const availability = await freePort(16379);
+      if (availability !== true) throw new Error(`ENVIRONMENT_BLOCKED: Redis port 16379 unavailable (${availability}).`);
+      const redis = spawnSync('redis-server', [
+        '--bind', '127.0.0.1', '--port', '16379', '--save', '', '--appendonly', 'no',
+        '--protected-mode', 'yes', '--daemonize', 'yes',
+        '--pidfile', redisPidFile, '--logfile', join(runDir, 'redis.log')
+      ], { cwd: project, encoding: 'utf8' });
+      if (redis.error) {
+        throw new Error('ENVIRONMENT_BLOCKED: dedicated test Redis could not start.');
+      }
+      for (let attempt = 0; attempt < 20 && !existsSync(redisPidFile); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (!existsSync(redisPidFile)) throw new Error('ENVIRONMENT_BLOCKED: dedicated test Redis PID was not created.');
+      managedRedisPid = Number(readFileSync(redisPidFile, 'utf8').trim());
+      if (!Number.isSafeInteger(managedRedisPid) || managedRedisPid <= 0) {
+        throw new Error('ENVIRONMENT_BLOCKED: dedicated test Redis PID is invalid.');
+      }
+      redisStarted = true;
     }
     let databaseContainer = null;
     if (options.supabase) {
@@ -271,6 +303,7 @@ async function run() {
         .replace(/\[studio\]\nport = \d+/, `[studio]\nport = ${base + 2}`);
       config = config.replace(/http:\/\/127\.0\.0\.1:5173/g, `http://127.0.0.1:${frontendPort}`)
         .replace(/^\[auth\.external\.google\]\n[\s\S]*?(?=^\[|$)/mu, '[auth.external.google]\nenabled = false\n');
+      if (options.authExpirySmoke) config = config.replace(/^\[auth\]\nenabled = true/mu, '[auth]\nenabled = true\njwt_expiry = 90');
       config += `\n[local_smtp]\nport = ${base + 3}\n[db.pooler]\nport = ${base + 6}\n[analytics]\nport = ${base + 7}\n`;
       writeFileSync(join(runDir, 'supabase/config.toml'), config);
       const loopbackNetwork = `issue41-loopback-${runId}`;
@@ -354,22 +387,25 @@ async function run() {
       }
       atomicJson(join(runDir, 'verified-migrations.json'), { count: appliedVersions.length, migrations: manifest });
     if (options.realTime && !options.recordingOnly && !options.localAudioMode) {
-        const redisPidFile = join(root, 'redis-local-16379/redis.pid');
         const redisPid = existsSync(redisPidFile) ? Number(readFileSync(redisPidFile, 'utf8').trim()) : 0;
         const listener = spawnSync('lsof', ['-nP', '-t', '-iTCP:16379', '-sTCP:LISTEN'], { encoding: 'utf8' });
         const ping = spawnSync('redis-cli', ['-h', '127.0.0.1', '-p', '16379', 'PING'], { encoding: 'utf8' });
         const redisConfig = spawnSync('redis-cli', ['--raw', '-h', '127.0.0.1', '-p', '16379',
           'CONFIG', 'GET', 'bind', 'protected-mode', 'appendonly'], { encoding: 'utf8' });
+        const database = spawnSync('redis-cli', ['-h', '127.0.0.1', '-p', '16379', '-n', '15', 'DBSIZE'], { encoding: 'utf8' });
         if (!Number.isSafeInteger(redisPid) || redisPid <= 0 || listener.status !== 0
           || listener.stdout.trim() !== String(redisPid) || ping.status !== 0 || ping.stdout.trim() !== 'PONG'
-          || redisConfig.status !== 0 || !redisConfig.stdout.includes('127.0.0.1')
+          || redisConfig.status !== 0 || !redisConfig.stdout.includes('bind\n127.0.0.1')
           || !redisConfig.stdout.includes('protected-mode\nyes')
-          || !redisConfig.stdout.includes('appendonly\nno')) {
+          || !redisConfig.stdout.includes('appendonly\nno')
+          || database.status !== 0 || database.stdout.trim() !== '0') {
           throw new Error('Isolated loopback Redis on port 16379 is unavailable or not the test-owned instance.');
         }
         write('verified-redis-pid', redisPid);
+        write('verified-redis-db', 15);
       }
       if (options.realTime) {
+        writeFileSync(serverFetchAuditFile, '', { flag: 'wx' });
         const values = JSON.parse(status.stdout);
         const anonKey = values.ANON_KEY;
         const serviceKey = values.SERVICE_ROLE_KEY;
@@ -385,15 +421,15 @@ async function run() {
           body: JSON.stringify({ email, password }) });
         if (!login.ok) throw new Error(`Local Supabase test-user login failed (${login.status}).`);
         const auth = await login.json();
-        if (!auth.access_token) throw new Error('Local Supabase did not issue a user token.');
-        secrets.push(auth.access_token, anonKey, serviceKey, password);
+        if (!auth.access_token || !auth.refresh_token) throw new Error('Local Supabase did not issue a renewable user session.');
+        secrets.push(auth.access_token, auth.refresh_token, anonKey, serviceKey, password);
         const authCheck = await fetch(`${localUrl}/auth/v1/user`, {
           headers: { apikey: anonKey, Authorization: `Bearer ${auth.access_token}` }
         });
         if (!authCheck.ok || (await authCheck.json()).id !== auth.user.id) {
           throw new Error(`PRECHECK_BLOCKED: isolated Auth JWT validation failed (${authCheck.status}).`);
         }
-        options.auth = { token: auth.access_token, anonKey, serviceKey, url: localUrl };
+        options.auth = { token: auth.access_token, refreshToken: auth.refresh_token, anonKey, serviceKey, url: localUrl };
         write('auth-user-id', auth.user.id);
         write('verified-auth-url', localUrl);
         if (options.localAudioMode) {
@@ -417,6 +453,9 @@ async function run() {
     const env = { ...(options.localAudioMode ? isolatedEnvironment() : process.env),
       GEMINI_API_KEY: options.realGeminiAudio ? '' : 'test',
       ENABLE_REAL_GEMINI_TEST: options.realGeminiAudio ? 'true' : 'false',
+      ...(options.zeroWriteAudit ? {
+        ISSUE41_E2E_API_PORT: String(apiPort), ISSUE41_E2E_FRONTEND_PORT: String(frontendPort)
+      } : {}),
       ...(options.localAudioMode ? {
         ISSUE41_E2E_API_PORT: String(apiPort), ISSUE41_E2E_FRONTEND_PORT: String(frontendPort),
         ISSUE41_SIGNALING_PORT: String(signalingPort), ISSUE41_LOCAL_SMOKE: 'true', ISSUE41_RUN_DIR: runDir,
@@ -471,14 +510,17 @@ async function run() {
         ISSUE41_ISOLATED_SUPABASE_URL: auth.url,
         ISSUE41_ISOLATED_DB_CONTAINER: databaseContainer,
         ISSUE41_AUDIT_NAMESPACE: auditNamespace,
-        ISSUE41_ZERO_WRITE_AUDIT: options.zeroWriteAudit ? 'true' : 'false',
+    ISSUE41_ZERO_WRITE_AUDIT: options.zeroWriteAudit ? 'true' : 'false',
+    ...(options.zeroWriteAudit ? { ISSUE41_RUN_DIR: runDir } : {}),
+      ISSUE41_SERVER_FETCH_AUDIT_FILE: serverFetchAuditFile,
       ...(options.recordingOnly ? { ISSUE41_RECORDING_ONLY: 'true' } : {
         ISSUE41_SIGNALING_URL: `http://127.0.0.1:${signalingPort}`,
         ISSUE41_REDIS_URL: `redis://127.0.0.1:16379${options.localAudioMode ? '/15' : ''}`,
         ISSUE41_SIGNALING_REQUEST_LOG: join(runDir, 'signaling-requests.ndjson'),
         WEBRTC_ICE_SERVERS_JSON: '[]'
       }),
-        E2E_LOCAL_ACCESS_TOKEN: auth.token, AUTH_ALLOWED_EMAIL_DOMAINS: 'example.com',
+        E2E_LOCAL_ACCESS_TOKEN: auth.token, E2E_LOCAL_REFRESH_TOKEN: auth.refreshToken,
+        ISSUE41_AUTH_EXPIRY_SMOKE: options.authExpirySmoke ? 'true' : 'false', AUTH_ALLOWED_EMAIL_DOMAINS: 'example.com',
         ISSUE41_SHORT_VALIDATION: options.shortValidation ? 'true' : 'false',
         ISSUE41_ROLLOVER_CONTRACT: options.recordingContract ? 'true' : 'false',
         ISSUE41_RAM2_DIAGNOSTIC: options.ram2Diagnostic ? 'true' : 'false',
@@ -560,16 +602,43 @@ async function run() {
       const code = await execute('supabase-stop', 'supabase', ['stop', '--workdir', runDir], process.env, runDir);
       if (code) { exitCode = 1; finalState = 'cleanup-failed'; }
     }
+    if (redisStarted) {
+      const listener = spawnSync('lsof', ['-nP', '-t', '-iTCP:16379', '-sTCP:LISTEN'], { encoding: 'utf8' });
+      if (listener.status !== 0 || listener.stdout.trim() !== String(managedRedisPid)) {
+        exitCode = 1;
+        finalState = 'cleanup-failed';
+      } else {
+        const shutdown = spawnSync('redis-cli', ['-h', '127.0.0.1', '-p', '16379', 'SHUTDOWN', 'NOSAVE'], { encoding: 'utf8' });
+        if (shutdown.status !== 0) { exitCode = 1; finalState = 'cleanup-failed'; }
+      }
+    }
+    let redactionSucceeded = true;
     try { if (secrets.length) redactReport(secrets); }
-    catch (error) { console.error(error.message); exitCode = 1; finalState = 'evidence-redaction-failed'; }
+    catch (error) { console.error(error.message); exitCode = 1; finalState = 'evidence-redaction-failed'; redactionSucceeded = false; }
     try { ({ exitCode, finalState } = summarize(finalState, exitCode)); }
     catch (error) { console.error(`Could not write summary: ${error.message}`); exitCode = 1; finalState = 'summary-failed'; }
     clearInterval(heartbeat);
+    await new Promise((done) => process.stdout.write(`${new Date().toISOString()} finished exit=${exitCode}\n`, done));
+  if (readJson(join(runDir, 'options.json'))?.zeroWriteAudit && redactionSucceeded) {
+    try {
+      archiveCloudZeroAuditEvidence({ project, runDir, runId });
+    } catch (error) {
+      console.error(`Cloud Zero evidence archive failed: ${error.message}`);
+      exitCode = 1;
+      finalState = 'artifact-retention-failed';
+    }
+  }
+  if (readJson(join(runDir, 'options.json'))?.ramGateMinutes && redactionSucceeded) {
+      try {
+        await new Promise((done) => process.stdout.write(`evidence archive target: ${join(project, 'artifacts/issue41-ram-gate', runId)}\n`, done));
+        archiveRunEvidence({ project, runDir, runId });
+      }
+      catch (error) { console.error(`Evidence archive failed: ${error.message}`); exitCode = 1; finalState = 'artifact-retention-failed'; }
+    }
     write('state', finalState);
     write('exit-code', exitCode);
     phase = finalState;
     status(finalState === 'environment-blocked' ? 'BLOCKED' : exitCode === 0 ? 'PASS' : 'FAIL', exitCode);
-    console.log(`${new Date().toISOString()} finished exit=${exitCode}`);
     process.exitCode = exitCode;
   }
 }
@@ -579,7 +648,8 @@ if (command === 'start') {
   const id = new Date().toISOString().replace(/[:.]/g, '-').toLowerCase() + `-${process.pid}`;
   const dir = join(root, id);
   mkdirSync(dir);
-  const recordingContract = args.includes('--recording-contract');
+    const authExpirySmoke = args.includes('--auth-expiry-smoke');
+    const recordingContract = args.includes('--recording-contract') || authExpirySmoke;
   const ram2Diagnostic = args.includes('--ram2-diagnostic');
   const ram10Diagnostic = args.includes('--ram10-diagnostic');
   const ramAttributionSmoke = args.includes('--ram-attribution-smoke');
@@ -613,7 +683,7 @@ if (command === 'start') {
   } else {
       writeFileSync(join(dir, 'options.json'), JSON.stringify({ supabase, supabasePortBase, realTime,
     localAudioMode, localPreflight, signalingPreflight, realGeminiAudio, shortValidation, recordingOnly, zeroWriteAudit,
-        recordingContract: recordingContract || ram2Diagnostic || zeroWriteAudit, ram2Diagnostic,
+        recordingContract: recordingContract || ram2Diagnostic || zeroWriteAudit, authExpirySmoke, ram2Diagnostic,
         ram10Diagnostic, ramAttributionSmoke, ramAbcSmoke, ramAbcMode, ramProfileC,
         soakMinutes: ram10Diagnostic || ramAbcMode ? 10 : naturalRollover21 ? 21 : ramGateMinutes || 20, ramGateMinutes }));
     writeFileSync(join(root, 'latest'), id);

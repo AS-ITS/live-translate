@@ -9,6 +9,7 @@ import { observeViewerUpdate, viewerUpdateTimeline } from './issue41ViewerUpdate
 import { classifyViewerAppend, viewerAppendTimeline } from './issue41ViewerAppendContract.js';
 import { observeViewerFinalState, readViewerCueStore } from './issue41ViewerFinalStateContract.js';
 import { installHostViewerHarness } from './hostViewerHarness.js';
+import { hasSmokeGeminiKey } from './issue41GeminiKey.js';
 
 const pauseDiagnosticsByPage = new WeakMap();
 const cueMutationDiagnosticsByPage = new WeakMap();
@@ -119,7 +120,7 @@ test('issue41 real Gemini audio reaches local Cue and Viewer', async ({ page, br
   const auth = localE2EAuthSession();
   expect(auth).toBeTruthy();
   const key = process.env.ISSUE41_TEST_GEMINI_KEY;
-  expect(key).toMatch(/^AIza[\w-]{20,}$/u);
+ expect(hasSmokeGeminiKey(key)).toBe(true);
   const environment = new URL(process.env.SUPABASE_URL);
   expect(environment.hostname).toBe('127.0.0.1');
   expect(process.env.VITE_SUPABASE_URL).toBe(environment.origin);

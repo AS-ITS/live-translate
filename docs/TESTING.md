@@ -14,7 +14,48 @@ Local acceptance path.
 
 **Current decision:** `RC_MANUAL_FALLBACK_VERDICT=READY_NOT_EXECUTED`; the previous `RC1_VERDICT=BLOCKED` remains. An unstable isolated Supabase Realtime container is `ENV_BLOCKED`, never `PASS`. Do not use this fallback to waive DB/RPC/Storage, ownership, share authorization, or security contracts. Stop after two unsuccessful minimal repairs of the same environment fault.
 
+### Issue #41 RC1 acceptance status (2026-11-09)
+
+Audit modes: `--zero-write-audit` retains five-channel coverage, metadata allowlist, Database/RPC/Storage negative controls, coverage matrix, and Cloud Zero archive. `--ram-gate-40` and `--ram-gate-130` retain normal-flow Cloud Content Write monitoring across browser requests, server fetches, database triggers, and before/after inventories without running those negative controls. RAM archives include `server-fetch-audit.ndjson`; a RAM-mode monitoring result does not certify the separate Cloud Zero audit.
+
+P1 End／Pause 競態定向 Chromium E2E：End 後立即返回、Pause 後立即 End、End 快速連點、Pause checkpoint 故障注入皆通過；回讀 Local-only Recording、OPFS PCM Journal、Cue、Checkpoint 與完成 API 次數。原有停止錄音→繼續→End、End 後禁錄、Cue flush 失敗回讀短版測試通過。`stopping` 故障恢復定向驗證：Checkpoint barrier 失敗不導頁、不完成 Meeting；重載後再次注入失敗時不啟動 Provider、不建立後繼 Segment；移除故障後經本機 Cue／Checkpoint 與 Journal receipt 驗證，可繼續錄音、再暫停並正常 End。這只解除 Lifecycle 已知阻擋；RC-M1／RC-M3 實機驗收及既有 RAM Gate 阻擋仍須依各自驗收完成。
+
+Host Local-only 生命週期的定向驗證須以實際本機資料回讀為準：**開始錄製 → 停止錄音 → 繼續 → 停止錄音 → 繼續**。UI「停止錄音」是可恢復的暫停；兩次繼續沿用同一 Recording ID、建立後繼 Segment，暫停期間 PCM 不再收集。檢查 Cue、Checkpoint、PCM Journal／OPFS ownership 與重新載入回讀；錄製中正常導頁須先完成暫停 barrier，失敗時留在錄製頁；End 後不得再次錄製。刷新與強制關閉仍由既有 recovery 處理，不列入正常導頁通過證據。
+
+定向短版 Local-only 稽核 `2026-11-09t03-17-00-566z-55420`：`node scripts/issue41-local-runner.mjs start --zero-write-audit` 為 `PASS`；重複暫停／繼續、正常 UI 導頁恢復、End 禁錄、OPFS／IndexedDB ownership 與 End 後回讀均由 E2E 驗證，`ownershipGate=PASS`、`cloudZeroWrite=PASS`。這不替代 130 分鐘 RAM Gate 或 RC-M1～RC-M6 實機驗收。
+
+Run `2026-11-08t15-51-28-836z-27302` remains unchanged: 40-minute recording `PASS`; Cloud Zero Write `PASS`; evidence checks 11/11 `PASS`; RAM Gate and top-level evidence verdict `FAIL`. The failing provisional RAM checks are last-30-minute RSS/Heap slopes and 60-second RSS residual. CDP baseline and End +0/+30/+60-second snapshots contain backing storage, embedder heap, DOM, and Worker target counts. `RAM_OWNER_VERDICT=UNDETERMINED`: the snapshots do not establish a product-owned leak. `RC1_RELEASE_VERDICT=BLOCKED`. The previous 40-minute Gate recorded the same declared observer settings but no CDP snapshots; do not attribute cross-run RAM differences to product regression or change either run's evidence.
+
+`RC1_FUNCTION_GATE_STATUS=PARTIAL`: targeted Local evidence covers member Meeting creation, owner/member isolation, Viewer metadata authorization, mock Viewer reconnection, and the 40-minute Local-only PCM/Journal/Cue/Checkpoint, Cloud Zero Write, End/Reload contract. An ordinary member browser flow, second-device Viewer network loss/reconnect, real-microphone Local-only integrity, and an RC1 Chrome/Safari device matrix remain unverified. The RC-M1 through RC-M6 full manual cases below remain `NOT_TESTED`; reuse passed automated evidence without rerunning those Gates.
+
+Latest 130-minute run `2026-11-09t04-29-36-305z-60018`: `RECORDING_130MIN_VERDICT=PASS` (`7,800,033 ms`); 8/8 rollovers and 9 Segments completed and ended with ownership verified. PCM／Journal／Cue／Checkpoint integrity is `PASS`: 9 Journal epochs have zero gaps and overlaps and valid ledger／PCM hashes; End and Reload readback retained 7,646 audio chunks, 9 Cues, and 9 Checkpoints in `stopped_local`. `CLOUD_ZERO_WRITE_VERDICT=PASS` (0 DB violations, 0 recording HTTP write violations; 7,783 allowed metadata writes). `EVIDENCE_AUDIT_VERDICT=PASS` (11/11 checks). The runner's top-level `EVIDENCE_VERDICT=FAIL` reflects the RAM Gate failure, not a failed evidence check. `RAM_GATE_VERDICT=FAIL`: last-30-minute RSS slope 1.999 MiB/min exceeds the provisional 0.5 MiB/min limit; the other five RAM checks pass. `RC1_RELEASE_VERDICT=BLOCKED`. Source: [`summary.json`](../test-results/issue41-runner/2026-11-09t04-29-36-305z-60018/summary.json), [`evidence.json`](../test-results/issue41-runner/2026-11-09t04-29-36-305z-60018/evidence.json), and [`resources.ndjson`](../test-results/issue41-runner/2026-11-09t04-29-36-305z-60018/resources.ndjson).
+
+RAM attribution for this run remains `UNDETERMINED`: renderer PID 60244 stayed stable, the 30-minute Gate window has 61 complete samples (largest gap 30.011 seconds), and End +0/+30/+60-second samples are present. Logs and browser errors show no OOM or browser crash. CDP backing storage, embedder heap, DOM, and Worker snapshots show no clear sustained growth; no heap snapshot was captured. The preceding 130-minute run `2026-11-09t00-54-35-131z-38411` is documented with RSS slope 0.850 MiB/min, but its raw report and observer configuration are absent from this worktree. `RAM_CROSS_RUN_COMPARABILITY=NOT_ESTABLISHED`; neither value proves product improvement or regression. Do not change the RAM threshold or infer a memory owner from these snapshots.
+
+`130MIN_READINESS_VERDICT=SUPERSEDED_BY_RUN`: `node scripts/issue41-local-runner.mjs start --ram-gate-130` selects 130 real-time minutes, eight 15-minute rollovers, a 138-minute test timeout, 30-second RSS/Heap sampling with peak safety stops, periodic Local scans, Cloud Zero Write audit, and End/Reload checks. A failed test process leaves `runner.log`, `resources.ndjson`, partial `evidence.json`, Playwright output, and a final summary. Capture failures now retain a DB write-audit read and cloud inventory when available. Renderer crash or browser disconnect records `runtimeTermination` in evidence; it detects abnormal termination, but does not prove OOM. A killed runner process may leave no final summary, so preserved logs and samples remain the diagnostic source. Run `2026-11-09t00-54-35-131z-38411` 已完成；以下為當時執行器設定與診斷檔說明。
+
+`RAM_RISK_ACCEPTANCE_OPTIONS`: keep RC1 blocked until a comparable RAM Gate passes; or request explicit, time-bounded acceptance of the measured RAM failure with an owner and rollback plan. A 130-minute functional `PASS` does not replace RAM Gate `PASS`, and no RAM threshold changes are authorized here.
+
+Next necessary functional test: run `npm run start -- --check`, then `npm run start` in this repository. Use an ordinary member account to create a Meeting and exercise Host and second-device Viewer join, network disconnect/reconnect, 停止錄音／繼續, and 結束會議 under RC-M1/RC-M3; record browser/version, device, Meeting ID, cue replay, and authorization result in the existing RC report.
+
+### RC1 驗收矩陣（依既有證據，截至 2026-11-09）
+
+本矩陣以最新 130 分鐘報告 `2026-11-09t04-29-36-305z-60018` 為正式長測基線；40 分鐘及前次 130 分鐘報告保留為歷史證據。功能通過不等於 RAM Gate 或實機驗收通過。
+
+| Gate／項目 | 現有判定 | 尚需確認 |
+| --- | --- | --- |
+| 40 分鐘 Local-only 錄製 | `PASS` | 僅代表該次錄製證據，不替代 RAM 或跨裝置 Gate。 |
+| 最新 130 分鐘錄製與資料 | `PASS` | 8/8 rollover、9 個 Segment 均結束；PCM／Journal／Cue／Checkpoint、End／Reload 回讀通過。 |
+| Cloud Zero Write | `PASS` | DB／錄製 HTTP 違規各 0；雲端仍可保存設定、字典與授權 metadata。 |
+| Evidence Checks | `11/11 PASS` | 逐項檢查全過；runner 總體 `EVIDENCE_VERDICT=FAIL` 由 RAM Gate 導致。 |
+| RAM Gate | `FAIL` | RSS 最後 30 分鐘斜率 1.999 MiB/min，大於 0.5；其餘 5 項 PASS，持有者未確定。 |
+| RC-M1～RC-M6 實機流程 | `NOT_TESTED` | 一般 member、真實麥克風、Host／第二裝置 Viewer、斷線重連、End 與 30 分鐘清理。 |
+| Chrome／Safari 實機矩陣 | `NOT_TESTED` | 瀏覽器版本、裝置、WebRTC／TURN 與匯出行為需實測。 |
+
+總判定維持 `RC1_RELEASE_VERDICT=BLOCKED`、`RC1_FUNCTION_GATE_STATUS=PARTIAL`；不可將自動化證據推論為完整實機驗收。手動個案條件見下方「Manual cases pass criteria」，WebRTC 跨網路條件見[驗證 Runbook](verification/webrtc-browser-deployment.md)。
+
 ### Dependency boundary
+
 
 The current Host records in the browser through `useLiveRecordingController`, `localMeetingPersistence`, MediaRecorder, and the PCM Journal. Its metadata and authorization use the authenticated Node API and Supabase PostgREST/RPC, not a Supabase Realtime subscription. The production Viewer page constructs `createWebRtcSubtitleTransport`; its signaling client calls `/api/webrtc/:meetingId`, and the Node handler stores signaling in Redis. The glossary client calls `/api/glossary` over HTTP. Meeting metadata, permissions, and share resolution use HTTP and Supabase database reads. None of these call paths subscribe to Supabase Realtime. `src/lib/meetingViewerRealtime.js` and `src/lib/executionEventsWebSocket.js` still contain older Supabase Realtime subscriptions, but the current Viewer page does not import them. This is a targeted call-path finding, not a complete Legacy inventory. Redis signaling and ordinary Supabase Auth/PostgREST remain necessary.
 
@@ -111,6 +152,19 @@ ssh -N -L 5173:127.0.0.1:5173 -L 55421:127.0.0.1:55421 HOST_USER@HOST_LAN_ADDRES
 The share URL is a credential. Keep it out of screenshots/logs and do not send it through Production services. An SSH tunnel is needed because this local launcher binds API/Vite to loopback; a phone on ordinary Wi-Fi cannot directly reach it. If no second-device tunnel exists, mark RC-M3 `ENV_BLOCKED`, not `MANUAL_PASS`.
 
 ### Manual cases and pass criteria
+
+#### RC-M1～RC-M6 實機執行表（本輪均 `NOT_TESTED`）
+
+使用現行 repository Local launcher、一般 `member` 帳號、真實裝置與真實麥克風；先記錄裝置型號、OS、Chrome／Safari 版本、Meeting ID 與時間。歷史 isolated-workdir fallback 不屬於本輪執行路徑。Host 的 RC-M1 及跨裝置 RC-M3 優先在實機 Chrome 和 Safari 覆蓋；其餘個案記錄實際使用的瀏覽器，不以模擬 WebKit 代替 Safari 實機結果。每項均需人工操作及判讀，未執行保持 `NOT_TESTED`，環境前置失敗記 `ENV_BLOCKED`；細節與故障注入以本節下方原契約為準。
+
+| 個案／目的及必要前置 | 實際操作與裝置／瀏覽器 | PASS／FAIL 標準 | 保存證據／人工 |
+| --- | --- | --- | --- |
+| **RC-M1 Host 生命週期**：member 已登入、真實麥克風授權、Local 服務正常。 | Host 實機 Chrome，另以 Safari 實機重做：建立 Meeting、說話確認來源／譯文、停止錄音→繼續、連錄超過 15 分鐘觀察 rollover、再停止→重新錄製→End。 | `MANUAL_PASS`：後繼 Segment 可見、Stop 保持 Meeting 開放且可再錄、End 後完成且禁錄；任一必要轉換失敗為 `FAIL`，未觀測 rollover 不得推定通過。 | 保留每步時間、UI／Console、前後 Segment ID、Cue／Checkpoint／PCM Journal／OPFS 回讀與 End 後狀態；**人工：是**。 |
+| **RC-M2 字典生效**：member Meeting 可編輯字典、麥克風可用。 | Host 實機記錄瀏覽器版本：新增／編輯並套用詞條，Pause、改詞、Continue、說出該詞，查新 Cue。 | `MANUAL_PASS`：繼續後實際譯文採用新設定且未建立舊 cloud Recording Session；僅儲存詞條、未驗證譯文或結果不符為 `FAIL`／`NOT_TESTED`。 | 詞條修訂版、遮蔽後的來源與譯文 Cue、操作時間及 Network 證據；**人工：是**。 |
+| **RC-M3 跨裝置 Viewer**：Host member Meeting、有效 Viewer share、第二實機及可用的安全連線／網路切換。 | Host 與第二裝置 Viewer 分別記錄 Chrome／Safari 版本；中途加入，核對雙語 Cue，切斷並恢復 Viewer 網路，檢查補播，再做 Host Stop、Continue、End。 | `MANUAL_PASS`：重連補齊漏失 Cue 且無重複，Stop 時仍顯示開放 Meeting，End 顯示結束；任一轉換錯誤為 `FAIL`。第二裝置無法連至 Local 服務為 `ENV_BLOCKED`。 | 雙裝置時間戳、transport 狀態、Cue sequence、去識別截圖與 Network／授權結果；**人工：是**。 |
+| **RC-M4 本機恢復**：同一 Host 瀏覽器 profile 保留 IndexedDB／OPFS，member Meeting 已錄製。 | Host 實機記錄瀏覽器版本；分別在錄製中、Pause 後、rollover 後、End 後重新載入並核對本機資料。 | `MANUAL_PASS`：Segment／Cue 恢復、無重複 MediaRecorder／Segment，且 Network 無舊 cloud Cue／Transcript／Checkpoint 下載；任一不符為 `FAIL`，清除瀏覽器儲存須另列環境損失。 | Reload 前後 Segment／Cue／Checkpoint／Journal／OPFS 計數、Console 與 Network；**人工：是**。 |
+| **RC-M5 End 失敗恢復**：獨立 Local Meeting、可用 Host DevTools、可讀本機留存與隔離 DB。 | Host 實機記錄瀏覽器版本；依下方單次攔截器注入一個 End 503，End、Reload、允許重試，再查本機與唯讀 DB。 | `MANUAL_PASS`：Network 恰一個注入 503，本機 `stopped_local` 且 PCM 封存，重試後 DB `completed`、版本只加一次、`purge_at - ended_at = 1800` 秒，無新 Recorder／Segment；否則 `FAIL`。 | 遮蔽後 Network 503、IndexedDB retention、Console、唯讀 DB 狀態與時間；**人工：是**。 |
+| **RC-M6 30 分鐘留存**：獨立已 End Meeting、可等待實際期限並檢查本機與隔離 DB。 | Host 實機記錄瀏覽器版本；期限前讀取／下載，真實等待 30 分鐘後查拒讀與 IndexedDB／OPFS 清理；另做關閉瀏覽器跨期限重開及下方本機清理失敗一次再重試。 | `MANUAL_PASS`：DB `purge_at - ended_at = 1800` 秒、到期後拒讀、補償清理成功且 Meeting 設定／字典保留；任一缺失為 `FAIL`。不得改系統時間或縮短期限。 | 期限前後時間、讀取／下載結果、IndexedDB／OPFS 前後、失敗與重試紀錄、唯讀 DB metadata；**人工：是**。 |
 
 Use a separate Meeting for destructive timing/fault tests when needed. Record timestamp, browser/version, Host/Viewer device, Meeting ID, each action, actual result, Console/Network/DB evidence, and one of `MANUAL_PASS`, `FAIL`, `ENV_BLOCKED`, `NOT_TESTED`. Screenshots must hide keys, tokens, and share URLs.
 
@@ -255,6 +309,9 @@ starting Supabase does not turn these cases into a database integration test.
 The runner rejects occupied API/Vite ports (3000/5174), never reuses their
 servers, and never calls a real Gemini API. Supabase gets a unique project ID,
 copied migrations, and its own ports under the run directory.
+For real-time Host/Viewer runs, the runner starts a dedicated loopback Redis on
+16379 only when the port is free, verifies its PID, configuration, and empty DB 15,
+then stops only that verified instance after the run.
 
 ```bash
 node scripts/issue41-local-runner.mjs start
@@ -290,8 +347,9 @@ unset ISSUE41_TEST_GEMINI_KEY
 
 If the real Gemini audio smoke reaches a Local Cue mutation failure, inspect
 `test-results/issue41-runner/<run-id>/cue-mutation-diagnostics.json`. It records only
-mutation type, batch count/index, rejection reason or safe error identifiers, and
-application stack locations. The same artifact is written inside that test's
+mutation stage/type, Cue/Segment/operation IDs, batch count/index, safe rejection reason,
+root error name/code, IndexedDB transaction state, and sanitized application stack locations.
+The same artifact is written inside that test's
 Playwright output; the Run-level copy remains separate from Playwright output cleanup.
 
 The detached worker inherits the Key only in memory, enters it into the current settings page,

@@ -1,5 +1,9 @@
 # Live Translate Architecture
 
+For Issue #41 Local-only Cues, refinement input hashing canonicalizes optional translation provenance before binding to a committed Initial snapshot. A same-batch empty pending refinement reset can be discarded only when the acknowledged Cue has matching raw input, Initial, side versions, and proven translation provenance. Completed refinement and mismatched authority remain subject to Cue Writer rejection. The Cue Writer verifies turn, epoch, sequence, version, and provenance for authority updates.
+
+> **現行路徑提示：**新建 Meeting 的正式錄製內容只保存在 Host OPFS／IndexedDB，Viewer 字幕由 WebRTC DataChannel 傳送；Supabase 只保存設定、字典及必要授權協調資料。本文保留早期階段與相容性設計，涉及雲端 Cue／錄音持久化的段落不是現行正式錄製契約。先讀[現行架構總覽](architecture/architecture-overview.md#現行正式產品架構local-only)。
+
 ## Meeting expiry authorization boundary (2026-10-07)
 
 The existing database-generated `started_at`, `ended_at`, and `purge_at`

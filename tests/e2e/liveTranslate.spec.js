@@ -3355,6 +3355,11 @@ test(issue41RealTimeRollover
     await page.addInitScript(() => { window.__liveTranslateSegmentSwitchIntervalMs = 8000; });
   }
   await mockMeetingCheckpointApi(page);
+  await page.route(`**/api/meetings/${MOCK_MEETING_ID}/complete`, async (route) => {
+    const meeting = completeMockMeeting(page);
+    await route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ meeting }) });
+  });
   await mockLiveSessionCreateApi(page);
   const recordingWrites = [];
   page.on('request', (request) => {
@@ -4363,7 +4368,7 @@ test('clears the meeting actions when live translation has no selected meeting',
   await expect(page.getByRole('button', { name: '開始' })).toBeHidden();
 });
 
-test('live meeting dictionary canonicalizes an exact-source provider append on one Cue', async ({ page }) => {
+test('live meeting dictionary preserves unmatched provider text on one Cue', async ({ page }) => {
   page.liveGlossaryEntries = [
     { source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }
   ];
@@ -4379,8 +4384,8 @@ test('live meeting dictionary canonicalizes an exact-source provider append on o
 
   await expect(finalCueRows(page)).toHaveCount(1);
   const cue = finalCueRows(page).first();
-  await expectCueRow(cue, { sourceText: '你好', translatedText: 'su3cl3.' });
-  await expect(cue).not.toContainText('Hello');
+  await expectCueRow(cue, { sourceText: '你好', translatedText: 'Hello. su3cl3.' });
+  await expect(cue).toContainText('Hello');
   await expect(cue).toHaveAttribute('data-cue-id', /.+/);
 });
 
@@ -4606,8 +4611,10 @@ test('transcript polishing retry shows the new queued execution and failure reas
 });
 
 test('final Cues stay paired and one partial Cue remains at the tail', async ({ page }) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: '開始' }).click();
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始錄製' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
 
   await page.evaluate(() => {
@@ -4627,6 +4634,12 @@ test('final Cues stay paired and one partial Cue remains at the tail', async ({ 
     }
   });
 
+  await expect(finalCueRows(page)).toHaveCount(3);
+  for (const [index, sourceText, translatedText] of [
+    [0, 'First sentence.', '第一句翻譯。'],
+    [1, 'Second sentence.', '第二句翻譯。'],
+    [2, 'Third sentence.', '第三句翻譯。']
+  ]) await expectCueRow(finalCueRows(page).nth(index), { sourceText, translatedText });
   await page.waitForTimeout(800);
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
@@ -4642,7 +4655,6 @@ test('final Cues stay paired and one partial Cue remains at the tail', async ({ 
     sourceText: '第四句辨識中',
     translatedText: '第四句翻譯中'
   });
-  await expect(finalCueRows(page)).toHaveCount(2);
 });
 
 test('live subtitles prioritize translation and can collapse the source column', async ({ page }) => {
@@ -5102,8 +5114,10 @@ test('paired Cue auto-finalizes after idle when a provider boundary is absent', 
 });
 
 test('source-only partial Cue is finalized after the turn boundary', async ({ page }) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: '開始' }).click();
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始錄製' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
 
   await page.evaluate(() => {
@@ -5118,8 +5132,13 @@ test('source-only partial Cue is finalized after the turn boundary', async ({ pa
   await expect(finalCueRows(page)).toHaveCount(1);
   await expectCueRow(finalCueRows(page).first(), {
     sourceText: '沒有翻譯的暫存句子',
-    translatedText: ''
+    translatedText: '翻譯處理中…'
   });
+  await expect.poll(() => page.evaluate(async (meetingId) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+    const cues = await createIndexedDbLocalMeetingManifestStore().listCues(meetingId);
+    return cues.find(({ cue }) => cue?.sourceText === '沒有翻譯的暫存句子')?.cue?.translatedText;
+  }, MOCK_MEETING_ID)).toBe('');
 });
 
 test('short paired Chinese Cue does not remain in recognition after turn completion', async ({ page }) => {
@@ -5226,8 +5245,10 @@ test('keeps non-cumulative numeric translation fragments in the same Cue', async
 });
 
 test('adjacent short final Cues render as one natural sentence', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
 
   await page.evaluate(() => {
@@ -5494,6 +5515,14 @@ test('B2 Reload reads committed Local Cue and provisional Pending without cursor
 });
 
 test('stopped meeting restores local cues after reload and downloads non-empty TXT', async ({ page }) => {
+  const retiredContentRequests = [];
+  const meetingMetadataRequests = [];
+  page.on('request', (request) => {
+    if (request.method() !== 'GET') return;
+    const path = new URL(request.url()).pathname;
+    if (/^\/api\/sessions\/[^/]+(?:\/translations)?$/u.test(path)) retiredContentRequests.push(path);
+    if (path === `/api/meetings/${MOCK_MEETING_ID}`) meetingMetadataRequests.push(path);
+  });
   await mockMeetingCheckpointApi(page);
   await mockLiveSessionCreateApi(page);
   await gotoMockMeetingLive(page);
@@ -5548,6 +5577,13 @@ test('stopped meeting restores local cues after reload and downloads non-empty T
   expect(content).toContain('結束前最後一句');
   expect(content).toContain('First translation');
   expect(content).toContain('Last translation');
+  await page.waitForTimeout(2200);
+  await page.goto('/#history');
+  await page.goto(`/#meeting-detail?meetingId=${MOCK_MEETING_ID}&from=history`);
+  await expect(page.getByText('已完成', { exact: true })).toBeVisible();
+  await page.waitForTimeout(2200);
+  expect(retiredContentRequests).toEqual([]);
+  expect(meetingMetadataRequests.length).toBeGreaterThan(0);
 });
 
 test('recordAudio=false keeps Cue after end without audio artifact or download', async ({ page }) => {
@@ -6632,6 +6668,259 @@ test('Meeting home searches by name and filters by status', async ({ page }) => 
   await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(1);
   await expect(interruptedCard).toContainText('可續錄');
   await expect(interruptedCard.getByRole('button', { name: '確認設定並繼續字幕' })).toBeVisible();
+});
+
+async function startHostLifecycleRaceRecording(page, onComplete) {
+  page.mockMeetingLifecycleV2 = true;
+  page.mockMeetingLocalAudio = true;
+  await mockMeetingCheckpointApi(page);
+  await page.route(`**/api/meetings/${MOCK_MEETING_ID}/complete`, async (route) => {
+    await onComplete(route);
+  });
+  await mockLiveSessionCreateApi(page);
+  await page.goto('/#meeting-settings?mode=create');
+  await page.getByLabel('會議名稱').fill('Host lifecycle race');
+  await page.getByLabel('會議設定').getByRole('button', { name: '建立會議', exact: true }).click();
+  await expect(page.locator('.success-message')).toContainText('會議已建立');
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始錄製', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'race source', 'race translation');
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expect.poll(async () => (await hostLifecycleLocalSnapshot(page)).pcmBytes).toBeGreaterThan(0);
+  await expect.poll(async () => (await hostLifecycleLocalSnapshot(page)).cues.length).toBeGreaterThan(0);
+}
+
+async function hostLifecycleLocalSnapshot(page) {
+  return page.evaluate(async (meetingId) => {
+    const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+    const restored = await createLocalMeetingPersistence().restore(meetingId);
+    const checkpoints = await createIndexedDbLocalMeetingManifestStore().listCheckpoints(meetingId);
+    const root = await navigator.storage.getDirectory();
+    const journal = await (await (await root.getDirectoryHandle('pcm-journals'))
+      .getDirectoryHandle('v1')).getDirectoryHandle(meetingId);
+    let pcmBytes = 0;
+    let journalFiles = 0;
+    for await (const [, recording] of journal.entries()) {
+      for await (const [, file] of recording.entries()) {
+        if (file.kind !== 'file') continue;
+        journalFiles += 1;
+        pcmBytes += (await file.getFile()).size;
+      }
+    }
+    return {
+      recording: restored.recording,
+      chunks: restored.chunks,
+      cues: restored.cues,
+      checkpoints,
+      pcmBytes,
+      journalFiles
+    };
+  }, MOCK_MEETING_ID);
+}
+
+function expectHostLifecycleOwnership(snapshot, { requireChunk = true } = {}) {
+  expect(snapshot.recording.recordingId).toBeTruthy();
+  expect(snapshot.recording.segmentId).toBeTruthy();
+  expect(snapshot.pcmBytes).toBeGreaterThan(0);
+  expect(snapshot.journalFiles).toBeGreaterThan(0);
+  if (requireChunk) expect(snapshot.chunks.length).toBeGreaterThan(0);
+  expect(snapshot.chunks.every((chunk) => chunk.segmentId === snapshot.recording.segmentId)).toBe(true);
+  expect(snapshot.cues.length).toBeGreaterThan(0);
+  expect(snapshot.cues.every((cue) => cue.segmentId === snapshot.recording.segmentId)).toBe(true);
+  expect(snapshot.checkpoints.length).toBeGreaterThan(0);
+  expect(snapshot.checkpoints.every((checkpoint) => checkpoint.segmentId === snapshot.recording.segmentId)).toBe(true);
+}
+
+test('Host End then immediate return does not start Pause or replace End ownership', async ({ page }) => {
+  let completeRequests = 0;
+  let releaseComplete;
+  const completeBarrier = new Promise((resolve) => { releaseComplete = resolve; });
+  const pauseEvents = [];
+  page.on('console', (message) => {
+    if (message.text().includes('ISSUE41_PAUSE {"event":"PAUSE_ENTER"')) pauseEvents.push(message.text());
+  });
+  await startHostLifecycleRaceRecording(page, async (route) => {
+    completeRequests += 1;
+    await completeBarrier;
+    await route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ meeting: completeMockMeeting(page) }) });
+  });
+  await page.getByRole('button', { name: '結束會議' }).click();
+  await expect.poll(() => completeRequests).toBe(1);
+  await page.locator('.live-header-actions a[href="#meetings"]').click();
+  await expect(page).toHaveURL(new RegExp(`#live\\?meetingId=${MOCK_MEETING_ID}$`));
+  expect(pauseEvents).toHaveLength(0);
+  releaseComplete();
+  await expect(page).toHaveURL(new RegExp(`#meeting-detail\\?meetingId=${MOCK_MEETING_ID}`));
+  const ended = await hostLifecycleLocalSnapshot(page);
+  expectHostLifecycleOwnership(ended);
+  expect(ended.recording.state).toBe('stopped_local');
+  expect(completeRequests).toBe(1);
+  expect(pauseEvents).toHaveLength(0);
+});
+
+test('Host Pause then immediate End waits for one Pause barrier', async ({ page }) => {
+  let completeRequests = 0;
+  const pauseEvents = [];
+  page.on('console', (message) => {
+    if (message.text().includes('ISSUE41_PAUSE {"event":"PAUSE_ENTER"')) pauseEvents.push(message.text());
+  });
+  await startHostLifecycleRaceRecording(page, async (route) => {
+    completeRequests += 1;
+    await route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ meeting: completeMockMeeting(page) }) });
+  });
+  await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('.session-actions button')];
+    buttons.find((button) => button.textContent.includes('停止錄音')).click();
+    buttons.find((button) => button.textContent.includes('結束會議')).click();
+  });
+  await expect(page).toHaveURL(new RegExp(`#meeting-detail\\?meetingId=${MOCK_MEETING_ID}`));
+  const ended = await hostLifecycleLocalSnapshot(page);
+  expectHostLifecycleOwnership(ended);
+  expect(ended.recording.state).toBe('stopped_local');
+  expect(pauseEvents).toHaveLength(1);
+  expect(completeRequests).toBe(1);
+});
+
+test('Host rapid repeated End archives and submits once', async ({ page }) => {
+  let completeRequests = 0;
+  await startHostLifecycleRaceRecording(page, async (route) => {
+    completeRequests += 1;
+    await route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ meeting: completeMockMeeting(page) }) });
+  });
+  await page.evaluate(() => {
+    const end = [...document.querySelectorAll('.session-actions button')]
+      .find((button) => button.textContent.includes('結束會議'));
+    end.click();
+    end.click();
+    end.click();
+  });
+  await expect(page).toHaveURL(new RegExp(`#meeting-detail\\?meetingId=${MOCK_MEETING_ID}`));
+  const ended = await hostLifecycleLocalSnapshot(page);
+  expectHostLifecycleOwnership(ended);
+  expect(ended.recording.state).toBe('stopped_local');
+  expect(completeRequests).toBe(1);
+  expect(await page.evaluate(() => window.__mockMediaRecorders.length)).toBe(1);
+  await page.goto(`/#live?meetingId=${MOCK_MEETING_ID}`);
+  await expect(page.getByRole('button', { name: '開始錄製', exact: true })).toHaveCount(0);
+  const afterAttempt = await hostLifecycleLocalSnapshot(page);
+  expect(afterAttempt.recording.state).toBe('stopped_local');
+  expect(afterAttempt.recording.recordingId).toBe(ended.recording.recordingId);
+  expect(afterAttempt.chunks).toEqual(ended.chunks);
+  expect(afterAttempt.pcmBytes).toBe(ended.pcmBytes);
+});
+
+test('Host Pause checkpoint failure blocks End and navigation while Local data remains', async ({ page }) => {
+  let completeRequests = 0;
+  await startHostLifecycleRaceRecording(page, async (route) => {
+    completeRequests += 1;
+    await route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ meeting: completeMockMeeting(page) }) });
+  });
+  const before = await hostLifecycleLocalSnapshot(page);
+  expectHostLifecycleOwnership(before, { requireChunk: false });
+  await page.evaluate(() => {
+    const original = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (stores, ...rest) {
+      const names = Array.isArray(stores) ? stores : [stores];
+      if (names.includes('cues') && names.includes('checkpoints')) {
+        throw new DOMException('injected checkpoint failure', 'AbortError');
+      }
+      return original.call(this, stores, ...rest);
+    };
+    const buttons = [...document.querySelectorAll('.session-actions button')];
+    buttons.find((button) => button.textContent.includes('停止錄音')).click();
+    buttons.find((button) => button.textContent.includes('結束會議')).click();
+    document.querySelector('.live-header-actions a[href="#meetings"]').click();
+  });
+  await expect(page.getByText('長會議同步尚未完成，本機資料已保留。請重新載入後安全恢復。')).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`#live\\?meetingId=${MOCK_MEETING_ID}$`));
+  expect(completeRequests).toBe(0);
+  expect(page.mockMeetingStatus).not.toBe('completed');
+  const cloudRecordingWrites = [];
+  const cloudSegmentReads = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'GET') {
+      if (path === `/api/meetings/${MOCK_MEETING_ID}/segments`) cloudSegmentReads.push(path);
+      return;
+    }
+    if (/\/api\/meetings\/[^/]+\/(?:recording|segments)(?:\/|$)/u.test(path)
+      || /^\/api\/sessions(?:\/|$)/u.test(path)
+      || /\/rest\/v1\/(?:sessions|meeting_segments|subtitle_cues|meeting_events)/u.test(path)) {
+      cloudRecordingWrites.push(`${request.method()} ${path}`);
+    }
+  });
+  await page.reload();
+  const restored = await hostLifecycleLocalSnapshot(page);
+  expectHostLifecycleOwnership(restored, { requireChunk: false });
+  expect(restored.chunks.length).toBeGreaterThanOrEqual(before.chunks.length);
+  expect(restored.recording.recordingId).toBe(before.recording.recordingId);
+  expect(restored.cues).toEqual(before.cues);
+  expect(restored.checkpoints).toEqual(before.checkpoints);
+  expect(restored.pcmBytes).toBeGreaterThanOrEqual(before.pcmBytes);
+  expect(completeRequests).toBe(0);
+
+  await configureTestGeminiCredential(page, { expectedControl: '繼續錄製' });
+  expect(cloudSegmentReads).toEqual([]);
+  await expect(page.getByRole('button', { name: '繼續錄製', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '繼續錄製', exact: true })).toBeEnabled({ timeout: 10_000 });
+  await page.evaluate(() => {
+    window.__issue41OriginalTransaction = IDBDatabase.prototype.transaction;
+    window.__issue41BlockedCheckpointWrites = 0;
+    IDBDatabase.prototype.transaction = function (stores, ...rest) {
+      const names = Array.isArray(stores) ? stores : [stores];
+      if (names.includes('cues') && names.includes('checkpoints')) {
+        window.__issue41BlockedCheckpointWrites += 1;
+        throw new DOMException('injected recovery barrier failure', 'AbortError');
+      }
+      return window.__issue41OriginalTransaction.call(this, stores, ...rest);
+    };
+  });
+  await page.getByRole('button', { name: '繼續錄製', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__issue41BlockedCheckpointWrites)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => window.__mockGoogleGenAI?.liveSessions.length || 0)).toBe(0);
+  const blocked = await hostLifecycleLocalSnapshot(page);
+  expect(blocked.recording.segmentId).toBe(restored.recording.segmentId);
+  expect(blocked.cues).toEqual(restored.cues);
+  expect(blocked.checkpoints).toEqual(restored.checkpoints);
+  expect(blocked.pcmBytes).toBe(restored.pcmBytes);
+  expect(completeRequests).toBe(0);
+
+  await page.evaluate(() => {
+    IDBDatabase.prototype.transaction = window.__issue41OriginalTransaction;
+  });
+  await page.getByRole('button', { name: '繼續錄製', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible({ timeout: 15_000 });
+  const resumed = await hostLifecycleLocalSnapshot(page);
+  expect(resumed.recording.recordingId).toBe(restored.recording.recordingId);
+  expect(resumed.recording.segmentId).not.toBe(restored.recording.segmentId);
+  expect(resumed.cues).toEqual(restored.cues);
+  await emitMicrophoneAudio(page);
+  await page.getByRole('button', { name: '停止錄音' }).click();
+  await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: '結束會議' }).click();
+  await expect(page).toHaveURL(new RegExp(`#meeting-detail\\?meetingId=${MOCK_MEETING_ID}`));
+  const endedAfterRecovery = await hostLifecycleLocalSnapshot(page);
+  expect(endedAfterRecovery.recording.state).toBe('stopped_local');
+  expect(endedAfterRecovery.recording.recordingId).toBe(restored.recording.recordingId);
+  expect(endedAfterRecovery.cues).toEqual(restored.cues);
+  expect(endedAfterRecovery.pcmBytes).toBeGreaterThanOrEqual(restored.pcmBytes);
+  expect(endedAfterRecovery.chunks.every((chunk) =>
+    [restored.recording.segmentId, resumed.recording.segmentId].includes(chunk.segmentId))).toBe(true);
+  expect(endedAfterRecovery.checkpoints.every((checkpoint) =>
+    [restored.recording.segmentId, resumed.recording.segmentId].includes(checkpoint.segmentId))).toBe(true);
+  expect(completeRequests).toBe(1);
+  expect(cloudRecordingWrites).toEqual([]);
 });
 
 test('Meeting home card layout captures desktop viewport references', async ({ page }) => {

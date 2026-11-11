@@ -7,6 +7,7 @@ import {
   extensionForMimeType
 } from '../../src/lib/microphoneRecording.js';
 import { createRecordingDiagnostics } from '../../src/lib/recordingDiagnostics.js';
+import { getAudioDiagnosticSnapshot } from '../../src/lib/audioFailureDiagnostic.js';
 
 test('chooseSupportedMimeType uses preferred supported recording format', () => {
   const MediaRecorderImpl = mockMediaRecorderClass({
@@ -60,8 +61,11 @@ test('controller records start, pause, resume, and finalize chunks into one blob
     fileName: '',
     errorMessage: ''
   });
+  assert.equal(getAudioDiagnosticSnapshot().recorderMimeType, 'audio/webm;codecs=opus');
+  assert.equal(getAudioDiagnosticSnapshot().recordedChunk, false);
 
   recorderInstances[0].emitChunk(new Blob(['first'], { type: 'audio/webm;codecs=opus' }));
+  assert.equal(getAudioDiagnosticSnapshot().recordedChunk, true);
   await controller.pause();
   assert.equal(controller.getState().status, 'paused');
 

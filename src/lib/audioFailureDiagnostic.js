@@ -20,6 +20,31 @@ const ERROR_NAMES = new Set([
 ]);
 const segmentCodes = new Map();
 const AUDIO_PATHS = new Set(['ORIGINAL_AUDIO', 'PCM_JOURNAL', 'TRANSLATED_AUDIO']);
+const listeners = new Set();
+let snapshot = { events: [], recorderMimeType: '', recordedChunk: false };
+
+export function getAudioDiagnosticSnapshot() {
+  return snapshot;
+}
+
+export function subscribeAudioDiagnostics(listener) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function publish(patch) {
+  snapshot = { ...snapshot, ...patch };
+  for (const listener of listeners) {
+    try { listener(); } catch { /* Diagnostics must not affect recording. */ }
+  }
+}
+
+export function recordAudioRecorderState({ mimeType = '', chunkRecorded = false } = {}) {
+  // Only known container/codec labels may enter a screenshot or clipboard summary.
+  const safeMimeType = /^(audio\/webm(?:;codecs=opus)?|audio\/mp4(?:;codecs=mp4a\.40\.2)?|audio\/ogg;codecs=opus)$/iu.test(mimeType)
+    ? mimeType.toLowerCase() : 'unknown';
+  publish({ recorderMimeType: safeMimeType, recordedChunk: Boolean(chunkRecorded) });
+}
 
 export function recordAudioFailure({ audioPath, stage, operation, error, writerState, queueDepth,
   chunkBytes, segmentId, elapsedMs } = {}) {
@@ -47,5 +72,11 @@ export function recordAudioFailure({ audioPath, stage, operation, error, writerS
     segmentId: segmentCode,
     elapsedMs: safeCount(elapsedMs)
   };
+  publish({ events: [...snapshot.events, {
+    audioPath: detail.audioPath,
+    stage: detail.stage,
+    code: detail.errorName,
+    at: new Date().toISOString()
+  }].slice(-10) });
   try { console.info('ISSUE41_AUDIO_FAILURE', detail); } catch { /* Diagnostics must not affect recording. */ }
 }

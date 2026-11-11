@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recordAudioFailure } from '../../src/lib/audioFailureDiagnostic.js';
+import { getAudioDiagnosticSnapshot, recordAudioFailure, recordAudioRecorderState, subscribeAudioDiagnostics } from '../../src/lib/audioFailureDiagnostic.js';
 
 test('audio failure diagnostic emits only bounded metadata with nonidentifying segment correlation', () => {
   const originalInfo = console.info;
@@ -35,4 +35,34 @@ test('audio failure diagnostic emits only bounded metadata with nonidentifying s
   assert.equal(entries[2][1].operation, null);
   assert.equal(entries[2][1].errorName, 'UNCLASSIFIED');
   assert.doesNotMatch(JSON.stringify(entries), /private|secret|subtitle|stack|token/u);
+});
+
+test('audio diagnostic snapshot keeps ten allowlisted events in page memory and separates MIME from chunk success', () => {
+  const originalInfo = console.info;
+  console.info = () => {};
+  let notifications = 0;
+  const unsubscribe = subscribeAudioDiagnostics(() => { notifications += 1; });
+  try {
+    recordAudioRecorderState({ mimeType: 'audio/mp4', chunkRecorded: false });
+    assert.equal(getAudioDiagnosticSnapshot().recorderMimeType, 'audio/mp4');
+    assert.equal(getAudioDiagnosticSnapshot().recordedChunk, false);
+    recordAudioRecorderState({ mimeType: 'audio/mp4', chunkRecorded: true });
+    for (let index = 0; index < 12; index += 1) {
+      recordAudioFailure({ audioPath: 'ORIGINAL_AUDIO', stage: 'PCM_CAPTURE',
+        error: { code: 'MEDIA_RECORDER_ERROR', message: 'secret token subtitle', stack: 'private stack' },
+        segmentId: 'private-meeting-id' });
+    }
+    const snapshot = getAudioDiagnosticSnapshot();
+    assert.equal(snapshot.events.length, 10);
+    assert.equal(snapshot.recordedChunk, true);
+    assert.deepEqual(Object.keys(snapshot.events[0]), ['audioPath', 'stage', 'code', 'at']);
+    assert.match(snapshot.events[0].at, /^\d{4}-\d{2}-\d{2}T/u);
+    assert.doesNotMatch(JSON.stringify(snapshot), /secret|token|subtitle|private|meetingId|segmentId|stack/u);
+    recordAudioRecorderState({ mimeType: 'audio/mp4;secret=token' });
+    assert.equal(getAudioDiagnosticSnapshot().recorderMimeType, 'unknown');
+    assert.equal(notifications, 15);
+  } finally {
+    unsubscribe();
+    console.info = originalInfo;
+  }
 });

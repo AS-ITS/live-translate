@@ -1,4 +1,4 @@
-import { recordAudioFailure } from './audioFailureDiagnostic.js';
+import { recordAudioFailure, recordAudioRecorderState } from './audioFailureDiagnostic.js';
 
 const PREFERRED_MIME_TYPES = [
   'audio/webm;codecs=opus',
@@ -198,6 +198,7 @@ export function createMicrophoneRecordingController(options = {}) {
     recorder.ondataavailable = (event) => {
       if (recorderEpoch !== captureEpoch) return;
       if (event?.data && dataHasContent(event.data)) {
+        recordAudioRecorderState({ mimeType: recorderMimeType, chunkRecorded: true });
         diagnostics?.recordRecorderChunk?.(event.data);
         if (collectChunks) chunks.push(event.data);
         if (onChunk) {
@@ -231,6 +232,8 @@ export function createMicrophoneRecordingController(options = {}) {
       recorder = null;
       return fail(error?.message || '無法啟動本機錄音。', error);
     }
+
+    recordAudioRecorderState({ mimeType: recorderMimeType });
 
     return setState({
       status: 'recording',

@@ -1,5 +1,7 @@
 # Changelog
 
+- Issue #41 Audio Failure Diagnostic: original audio, PCM Journal, and translated audio failures now emit `ISSUE41_AUDIO_FAILURE` with an explicit path, failure stage, allowlisted error class, and pseudonymous Segment code. The WebM unsupported and MediaRecorder error branches are covered; real iPhone Safari verification remains pending.
+
 - Issue #41 Cue refinement binding: canonicalized optional Live translation provenance before hashing refinement input, so null and omitted fields bind to the same committed Initial snapshot. The mutation coordinator discards only empty pending refinement resets already covered by an acknowledged, proven Cue; completed or mismatched Refined updates still reject. Batch failures include safe index-0 ACK metadata.
 
 - Issue #41 RC-M1: Bumped the Host local Meeting IndexedDB version to 13 so existing v12 databases run the schema upgrade that creates `pendingCues` and `cueAuthorities`. New and upgraded database initialization, Cue Authority access, and repeat opens are covered by a targeted browser test.

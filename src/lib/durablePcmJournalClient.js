@@ -1,6 +1,11 @@
 import { createLocalPcmGapLedger } from './localPcmGapLedger.js';
+import { recordAudioFailure } from './audioFailureDiagnostic.js';
 
 const DEFAULT_PENDING_BYTES = 512 * 1024;
+const FAILURE_STAGE_FOR_COMMAND = Object.freeze({
+  OPEN: 'AUDIO_WRITER_INIT', BEGIN: 'AUDIO_WRITER_INIT',
+  APPEND: 'AUDIO_CHUNK_WRITE', END: 'AUDIO_WRITER_FLUSH', CLOSE: 'AUDIO_WRITER_CLOSE'
+});
 let nextDiagnosticClientId = 0;
 const BATCH_BYTES = 32_000; // one second of 16 kHz mono PCM16
 
@@ -11,7 +16,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-export function createDurablePcmJournalClient({ meetingId, recordingId, workerFactory = () => new Worker(
+export function createDurablePcmJournalClient({ meetingId, recordingId, segmentId = null, workerFactory = () => new Worker(
   new URL('./durablePcmJournal.worker.js', import.meta.url), { type: 'module' }
 ), onStatus = () => {}, gapStore = createLocalPcmGapLedger(), existingOnly = false, readOnly = false,
 maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
@@ -80,6 +85,9 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
     const safeCode = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 255 ? value
       : typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(value) ? value : null;
     if (!failure) {
+      recordAudioFailure({ audioPath: 'PCM_JOURNAL', stage: ready ? 'AUDIO_ERROR_MAPPING' : 'AUDIO_WRITER_INIT',
+        operation: 'JOURNAL_CLIENT', error, writerState: state,
+        queueDepth: tasks.length, chunkBytes: batchBytes, segmentId, elapsedMs: 0 });
       console.info('ISSUE41_LOCAL_APPEND_FAILURE', {
         phase: 'LOCAL_APPEND', operation: 'PCM_JOURNAL',
         exceptionName: safeCode(error?.name), exceptionCode: safeCode(error?.code),
@@ -114,6 +122,10 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
     else {
       const error = new Error(data.error?.message || 'Journal worker failed');
       error.code = data.error?.code || 'JOURNAL_WORKER_ERROR';
+      const stage = FAILURE_STAGE_FOR_COMMAND[request.command] || 'AUDIO_ERROR_MAPPING';
+      recordAudioFailure({ audioPath: 'PCM_JOURNAL', stage, operation: data.error?.operation || request.command, error,
+        writerState: state, queueDepth: tasks.length, chunkBytes: request.chunkBytes,
+        segmentId, elapsedMs: Date.now() - request.startedAt });
       request.reject(error);
     }
   };
@@ -128,12 +140,23 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
         requests.delete(id);
         const error = new Error('JOURNAL_WORKER_TIMEOUT');
         error.code = 'JOURNAL_WORKER_TIMEOUT';
+        recordAudioFailure({ audioPath: 'PCM_JOURNAL', stage: FAILURE_STAGE_FOR_COMMAND[command] || 'AUDIO_ERROR_MAPPING',
+          operation: 'WORKER_TIMEOUT', error, writerState: state, queueDepth: tasks.length,
+          chunkBytes: args.bytes?.byteLength ?? 0, segmentId, elapsedMs: 10_000 });
         reject(error);
       }, 10_000);
       timeout.unref?.();
-      requests.set(id, { resolve, reject, timer: timeout, command, captureEpoch: args.captureEpoch });
+      requests.set(id, { resolve, reject, timer: timeout, command, captureEpoch: args.captureEpoch,
+        chunkBytes: args.bytes?.byteLength ?? 0, startedAt: Date.now() });
       try { worker.postMessage({ id, command, args, diagnosticClientId }, transfer); }
-      catch (error) { clearTimeout(timeout); requests.delete(id); reject(error); }
+      catch (error) {
+        clearTimeout(timeout);
+        requests.delete(id);
+        recordAudioFailure({ audioPath: 'PCM_JOURNAL', stage: FAILURE_STAGE_FOR_COMMAND[command] || 'AUDIO_ERROR_MAPPING',
+          operation: 'WORKER_POST_MESSAGE', error, writerState: state, queueDepth: tasks.length,
+          chunkBytes: args.bytes?.byteLength ?? 0, segmentId, elapsedMs: 0 });
+        reject(error);
+      }
     });
   }
 

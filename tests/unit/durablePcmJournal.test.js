@@ -4,6 +4,36 @@ import { createDurablePcmJournal } from '../../src/lib/durablePcmJournal.js';
 import { createDurablePcmJournalClient } from '../../src/lib/durablePcmJournalClient.js';
 import { LiveTranslateSession } from '../../src/lib/liveSession.js';
 
+test('PCM Journal worker failure emits safe path and writer-init stage', async () => {
+  const originalInfo = console.info;
+  const diagnostics = [];
+  console.info = (label, detail) => {
+    if (label === 'ISSUE41_AUDIO_FAILURE') diagnostics.push(detail);
+  };
+  const worker = {
+    onmessage: null,
+    postMessage({ id }) {
+      queueMicrotask(() => this.onmessage({ data: { id, ok: false,
+        error: { code: 'QuotaExceededError', operation: 'OPFS_OPEN_HANDLE',
+          message: 'private PCM token', stack: 'private stack' } } }));
+    },
+    terminate() {}
+  };
+  try {
+    const client = createDurablePcmJournalClient({ meetingId: 'meeting-private',
+      recordingId: 'recording-private', segmentId: 'segment-private', workerFactory: () => worker });
+    await assert.rejects(client.open(), /private PCM token/u);
+  } finally {
+    console.info = originalInfo;
+  }
+  assert.ok(diagnostics.length >= 1);
+  assert.equal(diagnostics[0].audioPath, 'PCM_JOURNAL');
+  assert.equal(diagnostics[0].stage, 'AUDIO_WRITER_INIT');
+  assert.equal(diagnostics[0].operation, 'OPFS_OPEN_HANDLE');
+  assert.equal(diagnostics[0].errorName, 'QuotaExceededError');
+  assert.doesNotMatch(JSON.stringify(diagnostics), /private|token|stack/u);
+});
+
 function memoryStore() {
   const files = new Map();
   let failNextFlush = '';

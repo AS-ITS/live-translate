@@ -4,6 +4,7 @@ import { composeLocalMeetingAudioArtifact } from './localMeetingAudioExport.js';
 import { createLocalMeetingRetention } from './localMeetingRetention.js';
 import { recordLivePipelineTrace } from './livePipelineTrace.js';
 import { createDurablePcmJournalClient } from './durablePcmJournalClient.js';
+import { recordAudioFailure } from './audioFailureDiagnostic.js';
 import { pcm16ChunksToWavBlob } from './audio.js';
 
 function safeAppendFailure(error, operation, { recordingId, segmentId } = {}) {
@@ -41,9 +42,11 @@ export function createLocalMeetingPersistence({
   let recordingEnabled = recordAudio === true;
   let nextAudioSequence = 1;
   let appendQueue = Promise.resolve();
+  let appendQueueDepth = 0;
   let inputAudioError = null;
   let segmentOwnershipError = null;
   let translatedAudioQueue = Promise.resolve();
+  let translatedQueueDepth = 0;
   let translatedAudioError = null;
   let nextTranslatedAudioSequence = null;
 
@@ -397,7 +400,15 @@ export function createLocalMeetingPersistence({
 
     appendAudioChunk(chunk = {}) {
       if (!recordingEnabled) return Promise.resolve(null);
-    if (segmentOwnershipError) return Promise.reject(segmentOwnershipError);
+      if (segmentOwnershipError) {
+        recordAudioFailure({ audioPath: 'ORIGINAL_AUDIO', stage: 'AUDIO_CHUNK_ENQUEUE', operation: 'SEGMENT_OWNERSHIP',
+          error: segmentOwnershipError, writerState: recorder.snapshot().state,
+          queueDepth: appendQueueDepth, chunkBytes: chunk.data?.size,
+          segmentId: recorder.snapshot().segmentId, elapsedMs: 0 });
+        return Promise.reject(segmentOwnershipError);
+      }
+      const startedAt = now();
+      appendQueueDepth += 1;
       const task = appendQueue.then(async () => {
         return retention.withWrite(activeMeetingId, () => appendAudioChunkLocked(chunk));
       }).then((result) => {
@@ -406,6 +417,16 @@ export function createLocalMeetingPersistence({
         }
         return result;
       });
+      void task.then(
+        () => { appendQueueDepth -= 1; },
+        (error) => {
+          recordAudioFailure({ audioPath: 'ORIGINAL_AUDIO', stage: error?.audioFailureStage || 'AUDIO_CHUNK_ENQUEUE',
+            operation: 'ORIGINAL_AUDIO', error, writerState: recorder.snapshot().state,
+            queueDepth: appendQueueDepth, chunkBytes: chunk.data?.size,
+            segmentId: recorder.snapshot().segmentId, elapsedMs: now() - startedAt });
+          appendQueueDepth -= 1;
+        }
+      );
       appendQueue = task.catch((error) => {
         if (!inputAudioError) {
           const identity = error?.localChunkDescriptor || recorder.snapshot();
@@ -428,6 +449,9 @@ export function createLocalMeetingPersistence({
     appendTranslatedAudioChunk({ meetingId = activeMeetingId, sessionId, bytes } = {}) {
       const data = bytes instanceof Uint8Array ? new Uint8Array(bytes) : new Uint8Array(bytes || []);
       if (!meetingId || !sessionId || data.byteLength === 0) throw new TypeError('Translated audio identity and PCM bytes are required.');
+      const startedAt = now();
+      let stage = 'AUDIO_CHUNK_ENQUEUE';
+      translatedQueueDepth += 1;
       const task = translatedAudioQueue.catch(() => {}).then(() => retention.withWrite(meetingId, async () => {
         if (activeMeetingId !== meetingId) throw new Error('Translated audio Meeting changed.');
         if (nextTranslatedAudioSequence === null) {
@@ -436,12 +460,24 @@ export function createLocalMeetingPersistence({
         }
         const sequence = nextTranslatedAudioSequence++;
         const path = `meetings/${meetingId}/translated-audio/${sessionId}/${String(sequence).padStart(8, '0')}.pcm`;
+        stage = 'AUDIO_CHUNK_WRITE';
         await chunkStore.write(path, data);
+        stage = 'AUDIO_SEGMENT_COMMIT';
         return manifestStore.saveTranslatedAudioChunk({
           meetingId, sessionId, sequence, path, byteSize: data.byteLength,
           checksum: await sha256(data, cryptoImpl)
         });
       }));
+      void task.then(
+        () => { translatedQueueDepth -= 1; },
+        (error) => {
+          recordAudioFailure({ audioPath: 'TRANSLATED_AUDIO', stage, operation: 'TRANSLATED_AUDIO', error,
+            writerState: recorder.snapshot().state, queueDepth: translatedQueueDepth,
+            chunkBytes: data.byteLength, segmentId: recorder.snapshot().segmentId,
+            elapsedMs: now() - startedAt });
+          translatedQueueDepth -= 1;
+        }
+      );
       translatedAudioQueue = task.catch((error) => {
         if (!translatedAudioError) console.info('ISSUE41_LOCAL_APPEND_FAILURE', safeAppendFailure(
           error, 'TRANSLATED_AUDIO', { recordingId: sessionId, segmentId: recorder.snapshot().segmentId }

@@ -350,12 +350,20 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
 
   async function appendChunkLocked(input, bytes) {
     assertCapturing();
-    const record = await manifestStore.reserve({
-      ...input,
-      meetingId: input?.meetingId || meetingId,
-      recordingId: input?.recordingId || recordingId,
-      segmentId: input?.segmentId || segmentId
-    });
+    let record;
+    try {
+      record = await manifestStore.reserve({
+        ...input,
+        meetingId: input?.meetingId || meetingId,
+        recordingId: input?.recordingId || recordingId,
+        segmentId: input?.segmentId || segmentId
+      });
+    } catch (error) {
+      if (error && typeof error === 'object') {
+        try { error.audioFailureStage = 'AUDIO_CHUNK_ENQUEUE'; } catch { /* Diagnostic only. */ }
+      }
+      throw error;
+    }
     trace('LOCAL_CHUNK_RESERVED', chunkTraceIdentity(record));
     if (record.state === 'sealed') {
       await assertStoredChunkMatches(record, bytes);
@@ -378,13 +386,24 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
         return sealed;
       }
       stopError = error;
+      if (error && typeof error === 'object') {
+        try { error.audioFailureStage = 'AUDIO_CHUNK_WRITE'; } catch { /* Diagnostic only. */ }
+      }
       throw error;
     }
-    const sealed = await manifestStore.seal(record.chunkId, {
-      byteSize: input?.byteSize,
-      checksum: input?.checksum,
-      endedAt: input?.endedAt || now()
-    });
+    let sealed;
+    try {
+      sealed = await manifestStore.seal(record.chunkId, {
+        byteSize: input?.byteSize,
+        checksum: input?.checksum,
+        endedAt: input?.endedAt || now()
+      });
+    } catch (error) {
+      if (error && typeof error === 'object') {
+        try { error.audioFailureStage = 'AUDIO_SEGMENT_COMMIT'; } catch { /* Diagnostic only. */ }
+      }
+      throw error;
+    }
     trace('LOCAL_CHUNK_SEALED', chunkTraceIdentity(sealed));
     return sealed;
   }

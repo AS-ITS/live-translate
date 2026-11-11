@@ -1,3 +1,5 @@
+import { recordAudioFailure } from './audioFailureDiagnostic.js';
+
 const PREFERRED_MIME_TYPES = [
   'audio/webm;codecs=opus',
   'audio/webm',
@@ -27,6 +29,7 @@ export function createMicrophoneRecordingController(options = {}) {
   const onStateChange = typeof options.onStateChange === 'function' ? options.onStateChange : null;
   const diagnostics = options.diagnostics || null;
   const onChunk = typeof options.onChunk === 'function' ? options.onChunk : null;
+  const segmentId = typeof options.segmentId === 'function' ? options.segmentId : () => null;
 
   let recorder = null;
   let chunks = [];
@@ -36,7 +39,9 @@ export function createMicrophoneRecordingController(options = {}) {
   let chunkSequence = 0;
   let chunkWriteQueue = Promise.resolve();
   let chunkWriteError = null;
+  let pendingChunkWrites = 0;
   let captureEpoch = 0;
+  let recorderStartedAt = 0;
   let state = { ...IDLE_STATE };
 
   function setState(patch) {
@@ -54,15 +59,15 @@ export function createMicrophoneRecordingController(options = {}) {
     resetRecordingMetadata(input);
 
     if (!isRecordingSupported(MediaRecorderImpl, BlobImpl)) {
-      return fail('此瀏覽器不支援本機錄音。');
+      return fail('此瀏覽器不支援本機錄音。', { code: 'MEDIA_RECORDER_UNSUPPORTED' });
     }
 
     if (!input.stream) {
-      return fail('無法取得麥克風音訊進行錄音。');
+      return fail('無法取得麥克風音訊進行錄音。', { code: 'MICROPHONE_STREAM_MISSING' });
     }
 
     if (requireSupportedMimeType && !selectedMimeType) {
-      return fail('此瀏覽器不支援 WebM 語音錄音。');
+      return fail('此瀏覽器不支援 WebM 語音錄音。', { code: 'WEBM_UNSUPPORTED' });
     }
 
     chunks = [];
@@ -85,16 +90,17 @@ export function createMicrophoneRecordingController(options = {}) {
   }
 
   async function resume(input = {}) {
+    recorderStartedAt = now();
     if (state.status === 'recording') {
       return getState();
     }
 
     if (!isRecordingSupported(MediaRecorderImpl, BlobImpl)) {
-      return fail('此瀏覽器不支援本機錄音。');
+      return fail('此瀏覽器不支援本機錄音。', { code: 'MEDIA_RECORDER_UNSUPPORTED' });
     }
 
     if (!input.stream) {
-      return fail('無法取得麥克風音訊進行錄音。');
+      return fail('無法取得麥克風音訊進行錄音。', { code: 'MICROPHONE_STREAM_MISSING' });
     }
 
     return startRecorder(input.stream);
@@ -163,23 +169,26 @@ export function createMicrophoneRecordingController(options = {}) {
 
   function resetRecordingMetadata(input) {
     recorder = null;
+    recorderStartedAt = now();
     sessionId = input.sessionId || '';
     startedAt = input.startedAt ?? now();
     selectedMimeType = chooseSupportedMimeType(MediaRecorderImpl, preferredMimeTypes);
     chunkSequence = 0;
     chunkWriteQueue = Promise.resolve();
     chunkWriteError = null;
+    pendingChunkWrites = 0;
     state = { ...IDLE_STATE };
   }
 
   function startRecorder(stream, { beginDiagnostics = false } = {}) {
+    recorderStartedAt = now();
     try {
       recorder = selectedMimeType
         ? new MediaRecorderImpl(stream, { mimeType: selectedMimeType })
         : new MediaRecorderImpl(stream);
     } catch (error) {
       recorder = null;
-      return fail(error?.message || '無法啟動本機錄音。');
+      return fail(error?.message || '無法啟動本機錄音。', error);
     }
 
     const recorderMimeType = recorder.mimeType || selectedMimeType;
@@ -198,23 +207,29 @@ export function createMicrophoneRecordingController(options = {}) {
             mimeType: recorderMimeType,
             receivedAt: now()
           };
+        pendingChunkWrites += 1;
+        const queuedAt = now();
         chunkWriteQueue = chunkWriteQueue.then(() => recorderEpoch === captureEpoch ? onChunk(payload) : undefined).catch((error) => {
             chunkWriteError = error;
-            fail(error?.message || '本機音訊分塊寫入失敗。');
-          });
+            recordAudioFailure({ audioPath: 'ORIGINAL_AUDIO', stage: 'AUDIO_ERROR_MAPPING', operation: 'RECORDER_CHUNK_CALLBACK',
+              error, writerState: state.status, queueDepth: pendingChunkWrites,
+              chunkBytes: event.data.size, segmentId: segmentId(), elapsedMs: now() - queuedAt });
+            fail(error?.message || '本機音訊分塊寫入失敗。', null);
+          }).finally(() => { pendingChunkWrites -= 1; });
         }
       }
     };
     recorder.onerror = (event) => {
       if (recorderEpoch !== captureEpoch) return;
-      fail(event?.error?.message || event?.message || '本機錄音發生錯誤。');
+      fail(event?.error?.message || event?.message || '本機錄音發生錯誤。',
+        event?.error || { code: 'MEDIA_RECORDER_ERROR' });
     };
 
     try {
       recorder.start(timesliceMs);
     } catch (error) {
       recorder = null;
-      return fail(error?.message || '無法啟動本機錄音。');
+      return fail(error?.message || '無法啟動本機錄音。', error);
     }
 
     return setState({
@@ -258,7 +273,10 @@ export function createMicrophoneRecordingController(options = {}) {
     captureEpoch += 1;
   }
 
-  function fail(message) {
+  function fail(message, error = null) {
+    if (error !== null) recordAudioFailure({ audioPath: 'ORIGINAL_AUDIO', stage: 'PCM_CAPTURE', operation: 'MEDIA_RECORDER',
+      error, writerState: state.status, queueDepth: pendingChunkWrites, chunkBytes: 0,
+      segmentId: segmentId(), elapsedMs: now() - recorderStartedAt });
     return setState({
       status: 'error',
       blob: null,

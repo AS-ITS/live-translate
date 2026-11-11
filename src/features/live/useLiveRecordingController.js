@@ -362,6 +362,7 @@ useEffect(() => {
         recordingControllerRef.current = createMicrophoneRecordingController({
           onStateChange: audio.setRecordingState,
           diagnostics: audio.recordingDiagnostics,
+          segmentId: () => checkpoint.activeMeetingCheckpointRef.current?.segmentId,
           collectChunks: false,
           preferredMimeTypes: ['audio/webm;codecs=opus', 'audio/webm'],
           requireSupportedMimeType: true,
@@ -417,7 +418,9 @@ useEffect(() => {
       }
       if (!pcmJournalRef.current) {
         try {
-          const client = createDurablePcmJournalClient({ meetingId, recordingId, onStatus: ({ state, code }) => {
+          const client = createDurablePcmJournalClient({ meetingId, recordingId,
+            segmentId: checkpoint.activeMeetingCheckpointRef.current?.segmentId,
+            onStatus: ({ state, code }) => {
             if (state === 'EVICTION_RISK') actions.setDeviceMessage?.('PCM Journal 儲存未取得持久權限；已提交音訊仍可能被瀏覽器清除。');
             else if (state === 'LOW_STORAGE') actions.setDeviceMessage?.('PCM Journal 可用儲存空間偏低。');
             else if (state === 'DEGRADED' || state === 'BACKPRESSURE_GAP') {

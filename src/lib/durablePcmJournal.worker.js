@@ -2,23 +2,40 @@ import { createDurablePcmJournal } from './durablePcmJournal.js';
 
 function wrap(handle) {
   return {
-    getSize: async () => handle.getSize(),
+    getSize: async () => { try { return handle.getSize(); } catch (error) { throw tagged(error, 'OPFS_GET_SIZE'); } },
     read: async (offset, length) => {
-      const bytes = new Uint8Array(length);
-      return bytes.subarray(0, handle.read(bytes, { at: offset }));
+      try {
+        const bytes = new Uint8Array(length);
+        return bytes.subarray(0, handle.read(bytes, { at: offset }));
+      } catch (error) { throw tagged(error, 'OPFS_READ'); }
     },
     write: async (offset, bytes) => {
-      let written = 0;
-      while (written < bytes.length) {
-        const count = handle.write(bytes.subarray(written), { at: offset + written });
-        if (count < 1) throw new Error('OPFS_SHORT_WRITE');
-        written += count;
-      }
+      try {
+        let written = 0;
+        while (written < bytes.length) {
+          const count = handle.write(bytes.subarray(written), { at: offset + written });
+          if (count < 1) throw new Error('OPFS_SHORT_WRITE');
+          written += count;
+        }
+      } catch (error) { throw tagged(error, 'OPFS_WRITE'); }
     },
-    flush: async () => handle.flush(),
-    truncate: async (size) => handle.truncate(size),
-    close: () => handle.close()
+    flush: async () => { try { handle.flush(); } catch (error) { throw tagged(error, 'OPFS_FLUSH'); } },
+    truncate: async (size) => { try { handle.truncate(size); } catch (error) { throw tagged(error, 'OPFS_TRUNCATE'); } },
+    close: () => { try { handle.close(); } catch (error) { throw tagged(error, 'OPFS_CLOSE'); } }
   };
+}
+function tagged(error, operation) {
+  if (error && typeof error === 'object') {
+    try { error.audioFailureOperation = operation; } catch { /* Some DOMExceptions are immutable. */ }
+  }
+  return error;
+}
+function safeWorkerCode(error) {
+  if (error?.code) return error.code;
+  if (['MEETING_LOCK_UNAVAILABLE', 'OPFS_SHORT_WRITE', 'JOURNAL_NOT_OPEN'].includes(error?.message)) {
+    return error.message;
+  }
+  return error?.name || 'JOURNAL_ERROR';
 }
 
 function validIdentity(value, field) {
@@ -38,9 +55,11 @@ async function opfsStore(meetingId, { existingOnly = false } = {}) {
     return meeting.getDirectoryHandle(validIdentity(recordingId, 'recordingId'), { create: !existingOnly });
   }
   async function open(recordingId, name, create = true) {
-    const parent = await directory(recordingId);
-    const file = await parent.getFileHandle(name, { create });
-    return wrap(await file.createSyncAccessHandle());
+    try {
+      const parent = await directory(recordingId);
+      const file = await parent.getFileHandle(name, { create });
+      return wrap(await file.createSyncAccessHandle());
+    } catch (error) { throw tagged(error, 'OPFS_OPEN_HANDLE'); }
   }
   return {
     ledger: (recordingId) => open(recordingId, 'claims.bin', !existingOnly),
@@ -129,7 +148,8 @@ self.onmessage = ({ data }) => {
       else self.postMessage({ id, ok: true, result });
     } catch (error) {
       if (command === 'END') console.info('ISSUE41_PCM_END', JSON.stringify({ stage: 'WORKER_END_ERROR', recordingId: activeRecordingId, clientId: diagnosticClientId, requestId: id, captureEpoch: args.captureEpoch, code: error?.code ?? error?.name ?? 'unknown' }));
-      self.postMessage({ id, ok: false, error: { code: error?.code || error?.name || 'JOURNAL_ERROR',
+      self.postMessage({ id, ok: false, error: { code: safeWorkerCode(error),
+        operation: error?.audioFailureOperation || command,
         message: error?.message || String(error) } });
     }
   }).catch((error) => {

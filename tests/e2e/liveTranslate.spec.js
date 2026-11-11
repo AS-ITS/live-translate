@@ -5669,6 +5669,50 @@ test('Stop finalizes visible partial transcripts without active export controls'
   await expect(page.getByRole('button', { name: '匯出', exact: true })).toHaveCount(0);
 });
 
+test('pre-writer Cue setup failure retries before later Cue and Pause readback', async ({ page }) => {
+  const diagnostics = [];
+  page.on('console', (message) => {
+    if (message.text().includes('ISSUE41_LOCAL_PERSISTENCE')) {
+      void message.args()[1]?.jsonValue().then((value) => diagnostics.push(value));
+    }
+  });
+  await gotoMockMeetingLive(page, { meetingStatus: 'active' });
+  await mockLiveSessionCreateApi(page);
+  await page.getByRole('button', { name: /^(開始錄製|繼續錄製)$/u }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await page.evaluate(() => {
+    const original = IDBDatabase.prototype.transaction;
+    let failed = false;
+    IDBDatabase.prototype.transaction = function (stores, mode, ...rest) {
+      if (!failed && stores === 'segments' && mode === 'readonly') {
+        failed = true;
+        throw new DOMException('private diagnostic text', 'AbortError');
+      }
+      return original.call(this, stores, mode, ...rest);
+    };
+  });
+  await emitFinalTranscript(page, 'first source', 'first translation');
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expect.poll(() => diagnostics.find((entry) => entry.stage === 'LOCAL_CUE_QUEUE')).toMatchObject({
+    phase: 'LOCAL_CUE_QUEUE', operation: 'LOCAL_CUE_QUEUE',
+    errorName: 'AbortError', writerJobRegistered: false, writerAck: false
+  });
+  expect(JSON.stringify(diagnostics)).not.toContain('private diagnostic text');
+  await emitFinalTranscript(page, 'second source', 'second translation');
+  await expect(finalCueRows(page)).toHaveCount(2);
+  const storedCount = () => page.evaluate(async () => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import('/src/lib/localMeetingStorage.js');
+    return (await createIndexedDbLocalMeetingManifestStore()
+      .listCues('11111111-1111-4111-8111-111111111111')).length;
+  });
+  await expect.poll(storedCount).toBe(2);
+  await page.getByRole('button', { name: '停止錄音' }).click();
+  await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+  await page.reload();
+  await expect.poll(storedCount).toBe(2);
+});
+
 test('Pause Cue flush failure exits stopping and preserves earlier Local Cue after reload', async ({ page }) => {
   await gotoMockMeetingLive(page, { meetingStatus: 'active' });
   await mockLiveSessionCreateApi(page);

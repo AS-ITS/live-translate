@@ -5,6 +5,12 @@ Issue #41 Pause → Reload → Continue 定向驗證：`tests/e2e/liveTranslate.
 會核對兩段 Cue、Transcript 與各段 Checkpoint cursor。`tests/unit/cueB2PendingIndexedDb.test.js`
 另外驗證歷史 Pending Cue 在 Reload 後不能提交到新 Segment，原始歸屬與失敗診斷仍留在 IndexedDB。
 
+Issue #41 登記前 Cue queue 失敗定向驗證：`tests/unit/issue41PreCoordinatorCueQueue.test.js`
+確認未登記的失敗會保留待重試、阻擋 Pause／End，恢復後只提交一次；
+`tests/e2e/liveTranslate.spec.js` 的 `pre-writer Cue setup failure retries before later Cue and Pause readback`
+在 Chromium／mobile WebKit 注入首次 IndexedDB Segment 讀取失敗，核對安全診斷、兩個 Cue 的保存順序、Pause 與 Reload 回讀。
+此測試使用模擬失敗，尚未取得 Safari 實機首次保存的原始 exception。
+
 For current Issue #41 Local acceptance, use only this repository and run
 `npm run start -- --check`, then `npm run start`. The launcher checks the
 repository's Local Supabase migrations, Google Provider, and loopback Redis.

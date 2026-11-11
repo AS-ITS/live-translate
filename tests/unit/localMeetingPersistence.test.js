@@ -590,13 +590,27 @@ test('failed chunk exposes one immutable descriptor for an exact retry', async (
   const data = new Blob(['retry-me']);
 
   let descriptor;
-  await assert.rejects(
-    persistence.appendAudioChunk({ data, receivedAt: 10 }),
-    (error) => {
-      descriptor = error.localChunkDescriptor;
-      return error.message === 'transient OPFS failure' && Object.isFrozen(descriptor);
-    }
-  );
+  const originalInfo = console.info;
+  let safeFailure;
+  console.info = (label, detail) => {
+    if (label === 'ISSUE41_LOCAL_APPEND_FAILURE') safeFailure = detail;
+    else originalInfo(label, detail);
+  };
+  try {
+    await assert.rejects(
+      persistence.appendAudioChunk({ data, receivedAt: 10 }),
+      (error) => {
+        descriptor = error.localChunkDescriptor;
+        return error.message === 'transient OPFS failure' && Object.isFrozen(descriptor);
+      }
+    );
+  } finally {
+    console.info = originalInfo;
+  }
+  assert.equal(safeFailure.operation, 'ORIGINAL_AUDIO');
+  assert.equal(safeFailure.recordingId, 'recording-1');
+  assert.equal(safeFailure.segmentId, 'segment-1');
+  assert.doesNotMatch(JSON.stringify(safeFailure), /transient OPFS failure|retry-me/u);
   const retried = await persistence.appendAudioChunk({ data, descriptor });
   const next = await persistence.appendAudioChunk({ data: new Blob(['next']), receivedAt: 20 });
 

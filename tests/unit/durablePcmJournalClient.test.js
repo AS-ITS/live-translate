@@ -183,7 +183,21 @@ test('Journal worker failure stays observable without resending captured PCM', a
   session.providerReady = true;
   session.inputSendingEnabled = true;
   session.sendInputAudioChunk(new Uint8Array(3200).fill(1), session.connectionEpoch, { force: true });
-  await assert.rejects(client.flush({ endEpoch: true }), { code: 'DISK_FAIL' });
+  const originalInfo = console.info;
+  let safeFailure;
+  console.info = (label, detail) => {
+    if (label === 'ISSUE41_LOCAL_APPEND_FAILURE') safeFailure = detail;
+    else originalInfo(label, detail);
+  };
+  try {
+    await assert.rejects(client.flush({ endEpoch: true }), { code: 'DISK_FAIL' });
+  } finally {
+    console.info = originalInfo;
+  }
+  assert.equal(safeFailure.operation, 'PCM_JOURNAL');
+  assert.equal(safeFailure.exceptionCode, 'DISK_FAIL');
+  assert.equal(safeFailure.recordingId, 'recording-a');
+  assert.doesNotMatch(JSON.stringify(safeFailure), /disk failure/u);
   assert.ok(statuses.some(({ state, code }) => state === 'DEGRADED' && code === 'DISK_FAIL'));
   assert.deepEqual(client.gapLedger().map(({ startSample, endSample, code }) =>
     [startSample, endSample, code]), [[0, 1600, 'DISK_FAIL']]);

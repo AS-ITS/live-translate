@@ -14,6 +14,8 @@ import { createMeetingCheckpointApiClient } from '../lib/meetingCheckpointApiCli
 import { createCloudSaveCoordinator } from '../lib/cloudSaveCoordinator.js';
 import { createLocalMeetingPersistence } from '../lib/localMeetingPersistence.js';
 import { createCueMutationCoordinator } from '../lib/cueMutationCoordinator.js';
+import { createPreCoordinatorCueRetry } from '../lib/preCoordinatorCueRetry.js';
+import { localTransactionFailureState } from '../lib/localMeetingStorage.js';
 import { describeCueMutationBatch, describeCueMutationFailures } from '../lib/cueMutationFailureDiagnostics.js';
 import { createLocalMeetingOwnerAccess } from '../lib/localMeetingOwnerAccess.js';
 import { createLocalMeetingRetention } from '../lib/localMeetingRetention.js';
@@ -244,6 +246,7 @@ export function App() {
 const localMeetingPersistenceRef = useRef(null);
 const localMeetingRetentionRef = useRef(null);
   const localMeetingCuePersistenceQueueRef = useRef(Promise.resolve());
+  const preCoordinatorCueRetryRef = useRef(createPreCoordinatorCueRetry());
 const cueMutationCoordinatorRef = useRef(null);
 const meetingRecordsRequestRef = useRef(null);
 const activeMeetingCheckpointRef = useRef(null);
@@ -266,9 +269,9 @@ const activeMeetingCheckpointRef = useRef(null);
       if (meetingId) {
         try {
           void getLocalMeetingPersistence().saveCheckpointFailure(record).catch((error) =>
-            console.error('ISSUE41_CHECKPOINT_FAILURE_JOURNAL', error));
+            console.error('ISSUE41_CHECKPOINT_FAILURE_JOURNAL', safePersistenceDiagnostic(error, 'CHECKPOINT_FAILURE_JOURNAL')));
         } catch (error) {
-          console.error('ISSUE41_CHECKPOINT_FAILURE_JOURNAL', error);
+          console.error('ISSUE41_CHECKPOINT_FAILURE_JOURNAL', safePersistenceDiagnostic(error, 'CHECKPOINT_FAILURE_JOURNAL'));
         }
       }
     }
@@ -1534,14 +1537,10 @@ const activeMeetingCheckpointRef = useRef(null);
         }))));
       localMeetingCuePersistenceQueueRef.current = localSave;
       void localSave.catch((error) => {
-        console.error('ISSUE41_LOCAL_PERSISTENCE', {
-          operation: 'LOCAL_TRANSCRIPT_ITEM_SAVE', meetingId,
-          recordingId: activeSessionRecordId,
-          segmentId: changedItems[0]?.segmentId ?? null,
-          cueId: null, mutationId: null,
-          transactionErrorName: error?.name ?? null,
-          transactionErrorMessage: error?.message ?? null,
-        }, error);
+        console.error('ISSUE41_LOCAL_PERSISTENCE', safePersistenceDiagnostic(
+          error, 'LOCAL_TRANSCRIPT_ITEM_SAVE', 'TRANSCRIPT_SAVE_FAILURE',
+          { recordingId: activeSessionRecordId, segmentId: changedItems[0]?.segmentId }
+        ));
         setMeetingCheckpointStatus('error', { operation: 'LOCAL_TRANSCRIPT_ITEM_SAVE', error,
           meetingId, segmentId: changedItems[0]?.segmentId ?? null });
         setMeetingCheckpointErrorMessage('本機逐字稿未能持久保存；請保持此頁面開啟。');
@@ -1681,13 +1680,12 @@ const activeMeetingCheckpointRef = useRef(null);
           setMeetingCheckpointErrorMessage(`本機字幕 ${job.cue.cueId} 保存遭拒；其他字幕仍會繼續保存。`);
         },
         onError: (error, job, stage) => {
-          console.error('ISSUE41_LOCAL_PERSISTENCE', {
-            operation: 'LOCAL_CUE_MUTATION', meetingId: job.meetingId,
-            recordingId: job.cue?.sessionId ?? null, segmentId: job.segmentId,
-            cueId: job.cue?.cueId ?? null, mutationId: job.eventKey ?? null,
-            transactionErrorName: error?.name ?? null,
-            transactionErrorMessage: error?.message ?? null,
-          }, error);
+          console.error('ISSUE41_LOCAL_PERSISTENCE', safePersistenceDiagnostic(
+            error, 'LOCAL_CUE_MUTATION', 'CUE_SAVE_FAILURE', {
+              recordingId: job.cue?.sessionId, segmentId: job.segmentId,
+              writerJobRegistered: true, writerAck: false
+            }
+          ));
           console.info('ISSUE41_CUE_MUTATION', JSON.stringify({ failures: describeCueMutationFailures([{ error, job, stage }]) }));
           setMeetingCheckpointStatus('error', { operation: 'LOCAL_CUE_MUTATION', error,
             meetingId: job.meetingId, segmentId: job.segmentId, cueId: job.cue?.cueId,
@@ -1789,8 +1787,10 @@ const activeMeetingCheckpointRef = useRef(null);
     ));
     const unassignedChanges = unassignedCuePersistenceChanges(previous, next);
     const pendingChanges = unassignedChanges.upserts.map((cue) => ({ side: 'pending', cue }));
-    const cueSave = checkpointCues.length > 0 || pendingChanges.length > 0
-      ? (async () => {
+    let writerJobRegistered = false;
+    const hasCueWrites = checkpointCues.length > 0 || pendingChanges.length > 0;
+    const cueSave = hasCueWrites
+      ? async () => {
         const segments = await getLocalMeetingPersistence().listLocalSegments(activeMeetingCheckpoint.meetingId);
         const ownedSegments = new Map(segments.map((segment) => [segment.segmentId, segment]));
         const grouped = new Map();
@@ -1815,9 +1815,11 @@ const activeMeetingCheckpointRef = useRef(null);
           [...pendingChanges, ...(grouped.get(activeMeetingCheckpoint.segmentId) || [])]);
         const results = [];
         for (const [segmentId, changes] of grouped) {
-          results.push(...await getCueMutationCoordinator().enqueue({
+          const writerJob = getCueMutationCoordinator().enqueue({
             meetingId: activeMeetingCheckpoint.meetingId, segmentId, changes
-          }));
+          });
+          writerJobRegistered = true;
+          results.push(...await writerJob);
         }
         const failures = results.filter(({ error, result }) => error || result?.status === 'rejected');
         if (failures.length) {
@@ -1826,11 +1828,20 @@ const activeMeetingCheckpointRef = useRef(null);
           ) }));
           throw new Error('One or more Local Cue mutations were not committed.');
         }
-      })() : Promise.resolve();
+      } : async () => {};
     const priorSave = localMeetingCuePersistenceQueueRef.current;
-    localMeetingCuePersistenceQueueRef.current = priorSave.catch(() => {}).then(() => cueSave);
+    localMeetingCuePersistenceQueueRef.current = priorSave.catch(() => {}).then(() =>
+      hasCueWrites
+        ? preCoordinatorCueRetryRef.current.run(cueSave, () => writerJobRegistered)
+        : preCoordinatorCueRetryRef.current.drain());
     void localMeetingCuePersistenceQueueRef.current.catch((error) => {
-      console.error('ISSUE41_LOCAL_PERSISTENCE', safePersistenceDiagnostic(error, 'LOCAL_CUE_QUEUE', 'CUE_SAVE_FAILURE'));
+      console.error('ISSUE41_LOCAL_PERSISTENCE', safePersistenceDiagnostic(
+        error, 'LOCAL_CUE_QUEUE', 'CUE_SAVE_FAILURE', {
+          recordingId: activeSessionRecordIdRef.current,
+          segmentId: activeMeetingCheckpoint?.segmentId,
+          writerJobRegistered, writerAck: false
+        }
+      ));
       setMeetingCheckpointStatus('error', { operation: 'LOCAL_CUE_QUEUE', error,
         meetingId: activeMeetingCheckpoint?.meetingId, segmentId: activeMeetingCheckpoint?.segmentId });
       if (!cueOwnershipIssueRef.current) setMeetingCheckpointErrorMessage('本機字幕保存失敗，資料仍保留在當前頁面。請勿關閉頁面，並再次結束以重試。');
@@ -1842,6 +1853,7 @@ const activeMeetingCheckpointRef = useRef(null);
     onPhase?.('LOCAL_CUE_QUEUE_DRAIN');
     const meetingCheckpoint = activeMeetingCheckpointRef.current;
     const localSave = localMeetingCuePersistenceQueueRef.current.catch(() => {}).then(async () => {
+      await preCoordinatorCueRetryRef.current.drain();
       onPhase?.('LOCAL_CUE_PERSISTENCE_SETUP');
       const persistence = getLocalMeetingPersistence();
       const meetingId = meetingCheckpoint?.meetingId;
@@ -1998,23 +2010,23 @@ const activeMeetingCheckpointRef = useRef(null);
     clearMeetingCheckpointError();
   }
 
-  function safePersistenceDiagnostic(error, stage = null, classification = null) {
+  function safePersistenceDiagnostic(error, stage = null, classification = null, context = {}) {
     const safeIdentifier = (value) => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value) ? value : null;
-    const safeMessages = new Set([
-      'IndexedDB transaction failed.', 'IndexedDB transaction aborted.',
-      'IndexedDB is unavailable.', 'Web Crypto is unavailable.',
-      'Local meeting transcript could not be read.',
-      'One or more Local Cue mutations were not committed.',
-      'Unable to flush meeting checkpoint before completion.'
-    ]);
+    const safeId = (value) => typeof value === 'string' && /^[A-Za-z0-9:_-]{1,128}$/.test(value) ? value : null;
     return {
       classification: safeIdentifier(classification),
+      phase: safeIdentifier(stage),
       stage: safeIdentifier(stage),
       errorName: safeIdentifier(error?.name),
-      message: safeMessages.has(error?.message) ? error.message : error?.message ? '[redacted]' : null,
       status: Number.isInteger(error?.status) ? error.status : null,
-      code: safeIdentifier(error?.code),
-      operation: safeIdentifier(error?.operation),
+      code: Number.isSafeInteger(error?.code) && error.code >= 0 && error.code <= 255
+        ? error.code : safeIdentifier(error?.code),
+      operation: safeIdentifier(error?.operation) || safeIdentifier(stage),
+      transactionState: localTransactionFailureState(error),
+      recordingId: safeId(context.recordingId),
+      segmentId: safeId(context.segmentId),
+      writerJobRegistered: typeof context.writerJobRegistered === 'boolean' ? context.writerJobRegistered : null,
+      writerAck: typeof context.writerAck === 'boolean' ? context.writerAck : null,
       requestId: null
     };
   }
@@ -2038,15 +2050,12 @@ const activeMeetingCheckpointRef = useRef(null);
   }
 
   function reportMeetingCheckpointSyncError(error) {
-    console.error('Meeting checkpoint persistence failed.', {
-      operation: 'CHECKPOINT_FLUSH',
-      meetingId: activeMeetingCheckpointRef.current?.meetingId ?? null,
-      recordingId: activeSessionRecordIdRef.current,
-      segmentId: activeMeetingCheckpointRef.current?.segmentId ?? null,
-      cueId: null, mutationId: null,
-      transactionErrorName: error?.name ?? null,
-      transactionErrorMessage: error?.message ?? null,
-    }, error);
+    console.error('Meeting checkpoint persistence failed.', safePersistenceDiagnostic(
+      error, 'CHECKPOINT_FLUSH', 'CHECKPOINT_FAILURE', {
+        recordingId: activeSessionRecordIdRef.current,
+        segmentId: activeMeetingCheckpointRef.current?.segmentId
+      }
+    ));
     const diagnostic = error?.requestId ? `（請提供 Request ID：${error.requestId}）` : '';
     const invalidMessage = meetingCheckpointErrorMessageFor(error);
     if (invalidMessage) {

@@ -1,10 +1,21 @@
 import { createLocalMeetingRecorder } from './localMeetingRecorder.js';
-import { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore } from './localMeetingStorage.js';
+import { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore, localTransactionFailureState } from './localMeetingStorage.js';
 import { composeLocalMeetingAudioArtifact } from './localMeetingAudioExport.js';
 import { createLocalMeetingRetention } from './localMeetingRetention.js';
 import { recordLivePipelineTrace } from './livePipelineTrace.js';
 import { createDurablePcmJournalClient } from './durablePcmJournalClient.js';
 import { pcm16ChunksToWavBlob } from './audio.js';
+
+function safeAppendFailure(error, operation, { recordingId, segmentId } = {}) {
+  const safeId = (value) => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/u.test(value) ? value : null;
+  const safeCode = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 255 ? value
+    : typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(value) ? value : null;
+  return { phase: 'LOCAL_APPEND', operation,
+    exceptionName: safeCode(error?.name), exceptionCode: safeCode(error?.code),
+    transactionState: localTransactionFailureState(error),
+    recordingId: safeId(recordingId), segmentId: safeId(segmentId),
+    writerJobRegistered: null, writerAck: false };
+}
 
 export function createLocalMeetingPersistence({
   manifestStore = createIndexedDbLocalMeetingManifestStore(),
@@ -395,7 +406,13 @@ export function createLocalMeetingPersistence({
         }
         return result;
       });
-      appendQueue = task.catch((error) => { inputAudioError = error; });
+      appendQueue = task.catch((error) => {
+        if (!inputAudioError) {
+          const identity = error?.localChunkDescriptor || recorder.snapshot();
+          console.info('ISSUE41_LOCAL_APPEND_FAILURE', safeAppendFailure(error, 'ORIGINAL_AUDIO', identity));
+        }
+        inputAudioError = error;
+      });
       return task;
     },
     async sealSegmentWrites(meetingId = activeMeetingId) {
@@ -425,7 +442,12 @@ export function createLocalMeetingPersistence({
           checksum: await sha256(data, cryptoImpl)
         });
       }));
-      translatedAudioQueue = task.catch((error) => { translatedAudioError = error; });
+      translatedAudioQueue = task.catch((error) => {
+        if (!translatedAudioError) console.info('ISSUE41_LOCAL_APPEND_FAILURE', safeAppendFailure(
+          error, 'TRANSLATED_AUDIO', { recordingId: sessionId, segmentId: recorder.snapshot().segmentId }
+        ));
+        translatedAudioError = error;
+      });
       return task;
     },
     async finalizeTranslatedAudio(meetingId = activeMeetingId) {

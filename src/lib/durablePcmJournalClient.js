@@ -77,13 +77,24 @@ maxPendingBytes = DEFAULT_PENDING_BYTES, commitIntervalMs = 1000 } = {}) {
   }
 
   function fail(error) {
+    const safeCode = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 255 ? value
+      : typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(value) ? value : null;
+    if (!failure) {
+      console.info('ISSUE41_LOCAL_APPEND_FAILURE', {
+        phase: 'LOCAL_APPEND', operation: 'PCM_JOURNAL',
+        exceptionName: safeCode(error?.name), exceptionCode: safeCode(error?.code),
+        transactionState: null, recordingId, segmentId: null,
+        writerJobRegistered: requests.size > 0 || tasks.length > 0, writerAck: false
+      });
+    }
     failure = error instanceof Error ? error : new Error(String(error));
+    const failureCode = safeCode(failure.code) || safeCode(failure.name) || 'JOURNAL_ERROR';
     for (const task of tasks) {
-      if (task.kind === 'pcm') recordGap(task, failure.code || failure.name || 'JOURNAL_ERROR');
+      if (task.kind === 'pcm') recordGap(task, failureCode);
     }
     if (batch.length) recordGap({ localEpoch, startSample: batchStart,
-      endSample: batchStart + batchBytes / 2 }, failure.code || failure.name || 'JOURNAL_ERROR');
-    emit('DEGRADED', { code: failure.code || failure.name || 'JOURNAL_ERROR', message: failure.message });
+      endSample: batchStart + batchBytes / 2 }, failureCode);
+    emit('DEGRADED', { code: failureCode });
     for (const request of requests.values()) { clearTimeout(request.timer); request.reject(failure); }
     requests.clear();
     for (const task of tasks.splice(0)) task.result.reject(failure);

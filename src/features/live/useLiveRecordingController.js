@@ -1429,6 +1429,9 @@ useEffect(() => {
       recovery.setError('');
       recovery.setMeetingCheckpointStatus?.('ending');
       try {
+        // Hydration reads the paused recording without binding it to this tab's
+        // recorder. End must restore that local owner before finalizing audio.
+        await audio.getLocalMeetingPersistence().restore(currentMeetingId);
         await completeMeetingAfterRecordingFinalize({
           flushAudio: async () => {
             const result = await audioController.finalizeRawAudioRecording();

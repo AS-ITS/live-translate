@@ -3266,6 +3266,51 @@ test('Host local-only Start Pause Continue End survives cloud recording write ou
   });
 });
 
+test('Host local paused Reload End preserves audio without another Gemini token', async ({ page }) => {
+    page.mockMeetingLifecycleV2 = true;
+    page.mockMeetingLocalAudio = true;
+    await mockMeetingCheckpointApi(page);
+    await page.route(`**/api/meetings/${MOCK_MEETING_ID}/complete`, async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ meeting: completeMockMeeting(page) }) });
+    });
+    await mockLiveSessionCreateApi(page);
+    await page.goto('/#meeting-settings?mode=create');
+    await page.getByLabel('會議名稱').fill('Reload End 本機會議');
+    await page.getByLabel('會議設定').getByRole('button', { name: '建立會議', exact: true }).click();
+    await expect(page.locator('.success-message')).toContainText('會議已建立');
+    await gotoMockMeetingLive(page);
+    await page.getByRole('button', { name: '開始錄製', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+    await emitMicrophoneAudio(page);
+    await expect(page.getByText('聆聽中')).toBeVisible();
+    await page.getByRole('button', { name: '停止錄音' }).click();
+    await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole('button', { name: '結束會議' })).toBeVisible();
+
+    const tokenCountBeforeEnd = page.liveTokenRequests.length;
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('button', { name: '結束會議' }).click();
+    await expect(page).toHaveURL(new RegExp(`#meeting-detail\\?meetingId=${MOCK_MEETING_ID}`));
+    expect(page.liveTokenRequests).toHaveLength(tokenCountBeforeEnd);
+    const local = await page.evaluate(async (meetingId) => {
+      const { createLocalMeetingPersistence } = await import('/src/lib/localMeetingPersistence.js');
+      const restored = await createLocalMeetingPersistence().restore(meetingId);
+      const root = await navigator.storage.getDirectory();
+      const journal = await (await (await root.getDirectoryHandle('pcm-journals')).getDirectoryHandle('v1')).getDirectoryHandle(meetingId);
+      let pcmBytes = 0;
+      for await (const [, recording] of journal.entries()) {
+        for await (const [, file] of recording.entries()) {
+          if (file.kind === 'file') pcmBytes += (await file.getFile()).size;
+        }
+      }
+      return { state: restored.recording.state, chunks: restored.chunks.length, pcmBytes };
+    }, MOCK_MEETING_ID);
+    expect(local.state).toBe('stopped_local');
+    expect(local.chunks).toBeGreaterThanOrEqual(1);
+    expect(local.pcmBytes).toBeGreaterThan(0);
+  });
+
 test('Host Reload retries failed End metadata without reopening sealed recording', async ({ page }) => {
   page.mockMeetingLifecycleV2 = true;
   page.mockMeetingLocalAudio = true;

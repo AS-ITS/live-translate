@@ -647,3 +647,59 @@ test('legacy unscoped chunk IDs remain readable without rewriting IndexedDB or O
   assert.equal(await artifact.blob.text(), 'legacy');
   assert.equal(artifact.segments[0].chunkId, 'audio-00000001');
 });
+
+for (const continuedAfterFirstReload of [false, true]) {
+  test(`paused local End after reload seals once and survives metadata retry (continued: ${continuedAfterFirstReload})`, async () => {
+    const retentions = new Map();
+    const manifestStore = {
+      ...createInMemoryLocalMeetingManifestStore(),
+      async getRetention(meetingId) { return retentions.get(meetingId) || null; },
+      async listRetentions() { return [...retentions.values()]; },
+      async saveRetention(input) {
+        const record = { ...retentions.get(input.meetingId), ...input };
+        retentions.set(input.meetingId, record);
+        return record;
+      }
+    };
+    const chunkStore = fakeChunkStore();
+    const options = {
+      manifestStore, chunkStore, cryptoImpl: fakeCrypto(),
+      createOperationId: operationIds(), composeAudioArtifact: concatenateTestArtifact
+    };
+    const meetingId = 'meeting-reload-end';
+    const host = createLocalMeetingPersistence(options);
+    await host.start({ meetingId, recordingId: 'recording-1', segmentId: 'segment-1' });
+    await host.appendAudioChunk({ data: new Blob(['first']), mimeType: 'audio/webm', receivedAt: 10 });
+    await host.pause({ operationId: 'pause-1' });
+
+    if (continuedAfterFirstReload) {
+      const continued = createLocalMeetingPersistence(options);
+      await continued.start({ meetingId, recordingId: 'recording-1', segmentId: 'segment-1' });
+      await continued.resume({ operationId: 'continue-1' });
+      await continued.appendAudioChunk({ data: new Blob(['second']), mimeType: 'audio/webm', receivedAt: 20 });
+      await continued.pause({ operationId: 'pause-2' });
+    }
+
+    const reloaded = createLocalMeetingPersistence(options);
+    await assert.rejects(reloaded.finalizeAudio(), /Local audio chunks are not completely sealed/u);
+    assert.equal((await reloaded.getLocalRecording(meetingId)).state, 'paused');
+    await reloaded.restore(meetingId);
+    assert.equal((await reloaded.finalizeAudio()).status, 'sealed');
+    await reloaded.endLifecycle({ operationId: 'end-1' });
+    await reloaded.savePendingCompletion({ meetingId, operationId: 'end-1' });
+    assert.equal((await reloaded.getLocalRecording(meetingId)).state, 'stopped_local');
+    assert.equal((await reloaded.getPendingCompletion(meetingId)).operationId, 'end-1');
+
+    const retry = createLocalMeetingPersistence(options);
+    await retry.restore(meetingId);
+    assert.equal((await retry.finalizeAudio()).status, 'sealed');
+    await retry.endLifecycle({ operationId: 'end-1' });
+    await retry.savePendingCompletion({ meetingId, operationId: 'end-1' });
+    const segments = await retry.listLocalSegments(meetingId);
+    assert.equal(segments.length, continuedAfterFirstReload ? 2 : 1);
+    const [artifact] = await retry.listFinalizedAudioArtifacts(meetingId, { kind: 'input' });
+    assert.equal(await artifact.blob.text(), continuedAfterFirstReload ? 'firstsecond' : 'first');
+    await retry.clearPendingCompletion({ meetingId, meeting: { purgeAt: new Date(Date.now() + 30 * 60 * 1000).toISOString() } });
+    assert.equal(await retry.getPendingCompletion(meetingId), null);
+  });
+}

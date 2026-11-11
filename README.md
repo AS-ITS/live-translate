@@ -79,7 +79,7 @@ npm run start
 
 ## 已知限制與 RC1 驗收狀態
 
-截至 **2026-11-09**，`RC1_RELEASE_VERDICT=BLOCKED`。現有證據中，**40 分鐘錄製 PASS、Cloud Zero Write PASS、11/11 Evidence Checks PASS**；**RAM Gate FAIL**，但現有快照尚不能判定是否為產品自身的記憶體洩漏。**130 分鐘長測尚未執行完成**，一般使用者的 Host／跨裝置 Viewer 實機流程、斷線重連與 Chrome／Safari 裝置矩陣仍未完成驗收。這些未完成項目不可視為 PASS。
+截至 **2026-11-09**，`RC1_RELEASE_VERDICT=BLOCKED`。測試文件已記錄 **130 分鐘錄製功能測試 PASS**（含 8/8 rollover、9 個 Segment、PCM／Journal／Cue／Checkpoint 與 End／Reload 回讀），以及 **Cloud Zero Write PASS、11/11 Evidence Checks PASS**。但 **RAM Gate FAIL**：最後 30 分鐘 RSS slope 為 **1.999 MiB/min**，高於暫定的 0.5 MiB/min 門檻；現有證據尚不能判定是否為產品自身的記憶體洩漏。該次長測的原始報告在目前工作目錄不可取得，因此尚無法獨立重驗。一般使用者的 Host／跨裝置 Viewer、斷線重連及 Chrome／Safari 裝置矩陣等 **RC1 實機手動驗收仍未完成**；上述功能測試 PASS 不代表 RAM Gate 或 RC1 實機驗收通過。
 
 目前本機啟動與登入仍依賴已配置的 Google OAuth、Supabase migration 和 Redis。跨裝置 Viewer 的網路與 WebRTC 行為須以實機驗證；瀏覽器本機資料遺失後無雲端錄製內容可還原。最新驗收細節與未完成項目見[測試文件的 RC1 狀態](docs/TESTING.md#issue-41-rc1-acceptance-status-2026-11-09)。
 
@@ -94,8 +94,9 @@ npm run start
 
 ## 作者與授權條款
 
-- 作者：Po-Chun Ruan
-- 所屬機構：Academia Sinica（中央研究院）
-- 授權：本專案有權授權的內容採用 [MIT License](LICENSE)。
+- Project Author / Lead Developer：Po-Chun Ruan
+- Organization：Academia Sinica（中央研究院）
+- Intended License：[MIT License](LICENSE)
+- Copyright：2026 Academia Sinica
 
-所屬機構僅為作者的 affiliation，不代表該機構共同持有著作權或為本專案背書。第三方套件與服務各有其授權或使用條款；本專案的 MIT License 不涵蓋 Gemini API 或其他第三方服務，也不表示這些服務免費或可任意使用。
+機構授權尚待確認；上述預定授權及著作權署名不表示已正式取得中央研究院的 MIT 開源授權。第三方套件與服務各有其授權或使用條款；本專案的 MIT License 不涵蓋 Gemini API 或其他第三方服務，也不表示這些服務免費或可任意使用。

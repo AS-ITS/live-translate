@@ -1982,14 +1982,33 @@ async function fileHandle(rootDirectory, path, create) {
 }
 
 async function parentDirectory(rootDirectory, path, create) {
-  const resolvedRoot = rootDirectory || await globalThis.navigator?.storage?.getDirectory?.();
+  let resolvedRoot = rootDirectory;
+  if (!resolvedRoot) {
+    try {
+      resolvedRoot = await globalThis.navigator?.storage?.getDirectory?.();
+    } catch (error) {
+      tagOpfsApi(error, 'GET_DIRECTORY');
+      throw error;
+    }
+  }
   if (!resolvedRoot || typeof resolvedRoot.getDirectoryHandle !== 'function') throw new Error('OPFS is unavailable.');
   const parts = String(path || '').split('/').filter(Boolean);
   const name = parts.pop();
   if (!name || parts.some((part) => part === '.' || part === '..')) throw invalid('Invalid OPFS path.');
   let directory = resolvedRoot;
-  for (const part of parts) directory = await directory.getDirectoryHandle(part, { create });
+  for (const part of parts) {
+    try {
+      directory = await directory.getDirectoryHandle(part, { create });
+    } catch (error) {
+      tagOpfsApi(error, 'GET_DIRECTORY_HANDLE');
+      throw error;
+    }
+  }
   return { directory, name };
+}
+
+function tagOpfsApi(error, api) {
+  try { if (error && typeof error === 'object') error.opfsApi = api; } catch { /* Preserve the original error. */ }
 }
 
 const transactionFailureStates = new WeakMap();

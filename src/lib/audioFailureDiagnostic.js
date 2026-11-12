@@ -69,6 +69,7 @@ export function recordAudioFailure({ audioPath, stage, operation, error, writerS
     stage,
     operation: safeWord(operation),
     storageOperation: OPFS_WRITE_OPERATIONS.has(error?.opfsOperation) ? error.opfsOperation : null,
+    storageApi: ['GET_DIRECTORY', 'GET_DIRECTORY_HANDLE'].includes(error?.opfsApi) ? error.opfsApi : null,
     errorOrigin: typeof globalThis.DOMException === 'function' && error instanceof globalThis.DOMException
       ? 'DOM_EXCEPTION' : 'OTHER',
     errorName: ERROR_CODES.has(error?.code) || ERROR_NAMES.has(error?.code) ? error.code
@@ -84,6 +85,7 @@ export function recordAudioFailure({ audioPath, stage, operation, error, writerS
     stage: detail.stage,
     code: detail.errorName,
     storageOperation: detail.storageOperation,
+    storageApi: detail.storageApi,
     errorOrigin: detail.errorOrigin,
     at: new Date().toISOString()
   }].slice(-10) });

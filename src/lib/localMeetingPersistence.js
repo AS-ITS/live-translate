@@ -490,6 +490,7 @@ export function createLocalMeetingPersistence({
       await translatedAudioQueue;
       if (translatedAudioError) throw translatedAudioError;
       const chunks = await retention.withRead(meetingId, () => manifestStore.listTranslatedAudioChunks(meetingId));
+    if (chunks.length > 0 && !translatedAudioSequenceComplete(chunks)) throw localIntegrityError('INTEGRITY_UNRESOLVED');
       return Object.freeze({ status: chunks.length > 0 ? 'sealed' : 'idle', kind: 'translation', blob: null });
     },
 
@@ -534,7 +535,8 @@ export function createLocalMeetingPersistence({
         return [
           ...(recording.state === 'stopped_local' && chunks.some((chunk) => chunk.state === 'sealed')
             ? [{ kind: 'input', status: 'sealed', meetingId, recordingId: recording.recordingId }] : []),
-          ...(translated.length > 0 ? [{ kind: 'translation', status: 'sealed', meetingId }] : [])
+        ...(translatedAudioSequenceComplete(translated)
+          ? [{ kind: 'translation', status: 'sealed', meetingId }] : [])
         ];
       });
     },
@@ -751,6 +753,7 @@ export function createLocalMeetingPersistence({
   async function readTranslatedAudioArtifact(meetingId) {
     const chunks = await manifestStore.listTranslatedAudioChunks(meetingId);
     if (chunks.length === 0) return null;
+    if (!translatedAudioSequenceComplete(chunks)) throw localIntegrityError('INTEGRITY_UNRESOLVED');
     const parts = [];
     for (const chunk of chunks.sort((left, right) => left.sequence - right.sequence)) {
       const bytes = new Uint8Array(await (await chunkStore.read(chunk.path)).arrayBuffer());
@@ -851,6 +854,11 @@ function normalizeAudioMimeType(value) {
 
 function defaultOperationId(type) {
   return `${type}:${globalThis.crypto?.randomUUID?.() || `${Date.now()}:${Math.random()}`}`;
+}
+
+function translatedAudioSequenceComplete(chunks) {
+  return chunks.length > 0 && chunks.map((chunk) => chunk.sequence).sort((a, b) => a - b)
+    .every((sequence, index) => sequence === index + 1);
 }
 
 function localIntegrityError(code) {

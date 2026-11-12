@@ -16,6 +16,7 @@ test('audio diagnostics show safe recent errors after reopening on desktop and i
     }
     const error = new DOMException('private storage path', 'UnknownError');
     error.opfsOperation = 'WRITABLE_CREATE';
+    error.opfsApi = 'GET_DIRECTORY_HANDLE';
     recordAudioFailure({ audioPath: 'TRANSLATED_AUDIO', stage: 'AUDIO_CHUNK_WRITE', error });
   });
 
@@ -33,6 +34,7 @@ test('audio diagnostics show safe recent errors after reopening on desktop and i
   await expect(panel.locator('.audio-diagnostic-events li')).toHaveCount(10);
   await expect(panel.getByText('WEBM_UNSUPPORTED').first()).toBeVisible();
   await expect(panel.getByText('WRITABLE_CREATE')).toBeVisible();
+  await expect(panel.getByText('GET_DIRECTORY_HANDLE')).toBeVisible();
   await expect(panel.getByText('DOM_EXCEPTION')).toBeVisible();
   const panelText = await panel.innerText();
   expect(panelText).not.toMatch(/secret|subtitle|token|private|owner@example.com|meeting-id|stack/iu);

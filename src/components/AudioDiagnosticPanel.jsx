@@ -22,7 +22,7 @@ function summary(snapshot, support) {
     `實際選用 MIME：${snapshot.recorderMimeType || '尚未錄製'}`,
     `實際錄製成功：${snapshot.recordedChunk ? '已收到非空音訊區塊' : '尚未確認'}`,
     `最近錯誤事件：${snapshot.events.length} 筆`,
-    ...snapshot.events.map((event) => `${event.at} ${event.audioPath || 'UNKNOWN'} ${event.stage} ${event.code}${event.storageOperation ? ` ${event.storageOperation}` : ''} ${event.errorOrigin || 'OTHER'}`)
+    ...snapshot.events.map((event) => `${event.at} ${event.audioPath || 'UNKNOWN'} ${event.stage} ${event.code}${event.storageOperation ? ` ${event.storageOperation}` : ''}${event.storageApi ? ` ${event.storageApi}` : ''} ${event.errorOrigin || 'OTHER'}`)
   ].join('\n');
 }
 
@@ -65,7 +65,8 @@ export function AudioDiagnosticPanel({ onClose }) {
       {snapshot.events.length ? <ol className="audio-diagnostic-events">
         {[...snapshot.events].reverse().map((event, index) => <li key={`${event.at}-${index}`}>
           <time>{event.at}</time><span>{event.audioPath || 'UNKNOWN'}</span><span>{event.stage}</span><strong>{event.code}</strong>
-          {event.storageOperation ? <span>{event.storageOperation}</span> : null}<span>{event.errorOrigin || 'OTHER'}</span>
+                  {event.storageOperation ? <span>{event.storageOperation}</span> : null}
+                  {event.storageApi ? <span>{event.storageApi}</span> : null}<span>{event.errorOrigin || 'OTHER'}</span>
         </li>)}
       </ol> : <p>目前沒有音訊錯誤事件。</p>}
       <button type="button" className="button secondary" onClick={copySummary}>複製診斷摘要</button>

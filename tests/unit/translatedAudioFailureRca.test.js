@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createLocalMeetingPersistence } from '../../src/lib/localMeetingPersistence.js';
 import { createInMemoryLocalMeetingManifestStore, createOpfsChunkStore } from '../../src/lib/localMeetingStorage.js';
-import { getAudioDiagnosticSnapshot } from '../../src/lib/audioFailureDiagnostic.js';
+import { getAudioDiagnosticSnapshot, recordAudioFailure } from '../../src/lib/audioFailureDiagnostic.js';
 
 test('OPFS write preserves UnknownError and identifies the failing browser operation', async () => {
   for (const [failingOperation, errorName] of [
@@ -36,6 +36,39 @@ test('OPFS write preserves UnknownError and identifies the failing browser opera
     await assert.rejects(store.write('meetings/m1/translated-audio/s1/00000001.pcm', new Uint8Array([1, 0])),
       (error) => error === failure && error.name === errorName && error.opfsOperation === failingOperation);
   }
+});
+
+test('PARENT_DIRECTORY distinguishes root lookup from child directory lookup', async () => {
+  const path = 'meetings/m1/translated-audio/s1/00000001.pcm';
+  const rootFailure = new DOMException('private root detail', 'UnknownError');
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { storage: { async getDirectory() { throw rootFailure; } } }
+  });
+  try {
+    await assert.rejects(createOpfsChunkStore().write(path, new Uint8Array([1, 0])),
+      (error) => error === rootFailure && error.opfsOperation === 'PARENT_DIRECTORY'
+        && error.opfsApi === 'GET_DIRECTORY');
+    recordAudioFailure({ audioPath: 'TRANSLATED_AUDIO', stage: 'AUDIO_CHUNK_WRITE', error: rootFailure });
+    assert.deepEqual(getAudioDiagnosticSnapshot().events.at(-1)?.storageOperation, 'PARENT_DIRECTORY');
+    assert.deepEqual(getAudioDiagnosticSnapshot().events.at(-1)?.storageApi, 'GET_DIRECTORY');
+    assert.deepEqual(getAudioDiagnosticSnapshot().events.at(-1)?.errorOrigin, 'DOM_EXCEPTION');
+  } finally {
+    if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+    else delete globalThis.navigator;
+  }
+  const childFailure = new DOMException('private child detail', 'UnknownError');
+  const root = { async getDirectoryHandle() { throw childFailure; } };
+  await assert.rejects(createOpfsChunkStore({ rootDirectory: root }).write(path, new Uint8Array([1, 0])),
+    (error) => error === childFailure && error.opfsOperation === 'PARENT_DIRECTORY'
+      && error.opfsApi === 'GET_DIRECTORY_HANDLE');
+  recordAudioFailure({ audioPath: 'TRANSLATED_AUDIO', stage: 'AUDIO_CHUNK_WRITE', error: childFailure });
+  const event = getAudioDiagnosticSnapshot().events.at(-1);
+  assert.equal(event.storageOperation, 'PARENT_DIRECTORY');
+  assert.equal(event.storageApi, 'GET_DIRECTORY_HANDLE');
+  assert.equal(event.errorOrigin, 'DOM_EXCEPTION');
+  assert.doesNotMatch(JSON.stringify(event), /private|stack|message/u);
 });
 
 test('OPFS write failure reaches Issue 41 log and audio panel snapshot', async () => {
@@ -112,9 +145,15 @@ test('failed translated chunk is not retried or marked saved; later chunks remai
   await assert.rejects(persistence.finalizeTranslatedAudio('m1'), (error) => error === failure);
 
   const reloaded = create();
-  const [artifact] = await reloaded.listFinalizedAudioArtifacts('m1', { kind: 'translation' });
-  assert.equal(artifact.status, 'ready');
-  assert.deepEqual([...new Uint8Array(await artifact.blob.arrayBuffer()).slice(44)], [2, 0, 3, 0]);
+    await assert.rejects(reloaded.finalizeTranslatedAudio('m1'),
+      (error) => error.code === 'INTEGRITY_UNRESOLVED');
+    assert.deepEqual(await reloaded.listFinalizedAudioArtifactMetadata('m1'), []);
+    await assert.rejects(reloaded.listFinalizedAudioArtifacts('m1', { kind: 'translation' }),
+      (error) => error.code === 'INTEGRITY_UNRESOLVED');
+  assert.deepEqual((await manifestStore.listTranslatedAudioChunks('m1')).map((chunk) => chunk.sequence), [2, 3]);
+  assert.deepEqual([...files.entries()]
+    .filter(([path]) => path.includes('/translated-audio/'))
+    .map(([, bytes]) => [...bytes]), [[2, 0], [3, 0]]);
 });
 
 test('manifest UnknownError is classified as segment commit, after the OPFS write', async () => {

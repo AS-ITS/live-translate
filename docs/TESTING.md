@@ -1,5 +1,9 @@
 # Testing
 
+Issue #41 未解決回歸驗證缺口：mobile WebKit E2E 因找不到「繼續」按鈕而失敗；該流程尚未通過，不能計為 PASS。
+
+Issue #41 iPhone OPFS 定向 RCA：`PARENT_DIRECTORY` 包含 `navigator.storage.getDirectory()` 與逐層 `getDirectoryHandle(..., { create: true })`；音訊診斷現在額外顯示 `GET_DIRECTORY` 或 `GET_DIRECTORY_HANDLE`，供 iPhone 實機截圖區分失敗 API。`tests/e2e/issue41TranslatedOpfsRca.spec.js` 在 Chromium 驗證建立、連續／並行寫入與 Reload 回讀；mobile WebKit 於首次 `getDirectory()` 回報 `UnknownError`，該測試明確標記 skip 與原因，不能視為 iPhone 實機重現或寫入流程通過。翻譯音訊若在 Reload 後留下不連續的 Chunk 序號，finalize 與讀取會回報 `INTEGRITY_UNRESOLVED`，不會產生可下載音檔。尾端 Chunk 失敗且沒有後續序號時，現有 manifest 尚無持久失敗標記，仍需實機驗收與另行設計；此診斷不代表已確認 Safari `UnknownError` 根因。
+
 Issue #41 Pause → Reload → Continue 定向驗證：`tests/e2e/liveTranslate.spec.js` 的
 `Local Pause Reload Continue commits both subtitle segments across second Pause and Reload`
 會核對兩段 Cue、Transcript 與各段 Checkpoint cursor。`tests/unit/cueB2PendingIndexedDb.test.js`

@@ -26,7 +26,7 @@ test('audio failure diagnostic emits only bounded metadata with nonidentifying s
   assert.equal(entries[0][0], 'ISSUE41_AUDIO_FAILURE');
   assert.deepEqual(entries[0][1], {
     audioPath: 'PCM_JOURNAL',
-    stage: 'AUDIO_CHUNK_WRITE', operation: 'OPFS_WRITE', storageOperation: null,
+    stage: 'AUDIO_CHUNK_WRITE', operation: 'OPFS_WRITE', storageOperation: null, storageApi: null,
     errorOrigin: 'OTHER', errorName: 'QuotaExceededError',
     writerState: 'recording', queueDepth: 2, chunkBytes: 4096,
     segmentId: entries[1][1].segmentId, elapsedMs: 123
@@ -56,7 +56,7 @@ test('audio diagnostic snapshot keeps ten allowlisted events in page memory and 
     const snapshot = getAudioDiagnosticSnapshot();
     assert.equal(snapshot.events.length, 10);
     assert.equal(snapshot.recordedChunk, true);
-    assert.deepEqual(Object.keys(snapshot.events[0]), ['audioPath', 'stage', 'code', 'storageOperation', 'errorOrigin', 'at']);
+    assert.deepEqual(Object.keys(snapshot.events[0]), ['audioPath', 'stage', 'code', 'storageOperation', 'storageApi', 'errorOrigin', 'at']);
     assert.match(snapshot.events[0].at, /^\d{4}-\d{2}-\d{2}T/u);
     assert.doesNotMatch(JSON.stringify(snapshot), /secret|token|subtitle|private|meetingId|segmentId|stack/u);
     recordAudioRecorderState({ mimeType: 'audio/mp4;secret=token' });
@@ -75,11 +75,13 @@ test('audio diagnostic rejects unrecognized storage operation text', () => {
   try {
     const error = new DOMException('private subtitle content', 'UnknownError');
     error.opfsOperation = 'privateSubtitleContent';
+    error.opfsApi = 'privateSubtitleContent';
     recordAudioFailure({ audioPath: 'TRANSLATED_AUDIO', stage: 'AUDIO_CHUNK_WRITE', error });
   } finally {
     console.info = originalInfo;
   }
   assert.equal(entries[0][1].storageOperation, null);
+  assert.equal(entries[0][1].storageApi, null);
   assert.equal(getAudioDiagnosticSnapshot().events.at(-1).storageOperation, null);
   assert.doesNotMatch(JSON.stringify(entries), /private|subtitle|content|stack/iu);
 });

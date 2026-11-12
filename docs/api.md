@@ -1,6 +1,6 @@
 # Live Translate API and Events
 
-## Issue #41 B2-L Local-only recording authority
+## 現行 Meeting API 契約
 
 `/api/meetings/:meetingId/recording/*` and `/api/meetings/:meetingId/heartbeat`
 return `410 meeting_content_local_only`. The Host owns recording Session, Segment,
@@ -22,11 +22,15 @@ DataChannel. Supabase Realtime, Meeting SSE, cloud Cue／Transcript／Checkpoint
 and cloud recovery are not current recording or Viewer subtitle transports.
 The historical request／response examples below do not override this contract.
 
+## Viewer metadata authorization
+
+`GET /api/shared-meetings/:token/metadata` and `GET /api/shared-meetings/code/:shortCode/metadata` accept a valid, unrevoked, unexpired Viewer share without a login Bearer token. Other shares do not authorize metadata. Responses contain Meeting identity, setting labels, lifecycle status/version, recording state and connection metadata; they omit Cue, Transcript, Checkpoint, audio and event content. Viewer shares do not grant Host export permission. Expired Meeting content returns `410 meeting_content_expired`. Deployed Origin/CORS checks remain allowlist-only.
+
 ## Host Local-only Start/Stop token boundary
 
 The Host creates and persists recording Session and Segment identities in IndexedDB. `POST /api/live-token` accepts `x-host-local-recording: 1` with matching `x-meeting-session-id` and `x-meeting-segment-id` headers for this path. It validates the authenticated actor's Meeting `canRecord` permission and uses cloud Meeting language and glossary settings; it does not read or write a cloud recording Session, Segment, lease, or Checkpoint. The token endpoint retains its origin gate and rate limit. Host Start, Pause, Continue, Stop, and End persist recording state locally. Rollover and interrupted recovery use local durable records; Viewer metadata supplies only Meeting state.
 
-## Issue #41 Local-only Cutover contract
+### 已退役內容端點
 
 Meeting Cue, Checkpoint, transcript, translated output, audio upload, and Cloud Export content reads／writes return `410 meeting_content_local_only`; authorized deletion methods are separate from these content routes. Legacy shared Session content reads are closed. Meeting settings, glossary, sharing, Meeting completion metadata and Viewer WebRTC signaling remain available. Meeting detail and Segment list responses omit historical content; Host local IndexedDB/OPFS supplies transcript and audio exports after Reload. The isolated Cutover Migration also rejects direct table/RPC/Storage writes, while preserving existing historical rows for separate controlled cleanup. No Production Migration has run.
 
@@ -56,177 +60,6 @@ The server derives it from strict `LIVE_PIPELINE_TRACE_ENABLED=true` opt-in. No
 other environment variables, credentials, tokens, or authorization data are
 exposed.
 
-## Phase 0 delivery and permission contract, 2026-10-01
-
-The browser is the sole reader of page OPFS. It explicitly sends immutable
-audio chunks to the local service; the service cannot directly read page OPFS,
-IndexedDB, or other page storage. This path is distinct from the direct
-browser-to-Gemini connection.
-
-The browser has durable pending queues for `cue`, `checkpoint`, `operation`,
-and `audio`. Audio queue entries reference immutable OPFS chunks and retain
-sequence, byte range, checksum, and retry metadata. A successful ACK requires
-durable commit of the matching idempotency key and version. Missing ACKs are
-resent with the same key, duplicate delivery returns the original result, and
-stale fence/version/hash requests return a structured conflict without
-overwriting newer state.
-
-Recovery order is queue validation/checksum, lifecycle operations in sequence,
-dependent checkpoints and Cues in version order, then audio chunks in chunk
-order. Queues ACK independently. Local Supabase on the recording device is the
-only recording lifecycle owner. Cloud Supabase stores only accounts,
-permissions, meeting settings, dictionaries, and device/meeting entry data;
-it is not the recording-data owner. Browser queues never create their own
-Meeting/Session/Segment state.
-
-Viewer shares grant sanitized read-only access only. Host export permission is
-authenticated and checked separately, never inferred from a share token. Stop
-immediately revokes Viewer and Recorder shares; the host can export TXT/SRT/VTT
-and download completed audio for 30 minutes, after which content returns
-`410 meeting_content_expired`.
-
-Origin/CORS is allowlist-only for approved Preview and Production origins.
-There is no wildcard or arbitrary localhost approval in the deployed contract.
-
-Failed, skipped, or environment-blocked checks must be reported as such and
-cannot be labelled `baseline passed`. Phase 1 physical acceptance remains
-pending for Mac/Windows microphones, reload/crash recovery, OPFS quota/offline
-resend, audio loss/recovery, and Preview/Production Origin/CORS.
-
-## Meeting recording lifecycle v2 (Issue #37 Phase 1, historical cloud contract)
-
-New Meetings use a Supabase-owned lifecycle. Vercel Functions only validate the
-request and invoke a transactional RPC; they do not retain recorder state.
-
-```http
-POST /api/meetings/:meetingId/recording/start
-POST /api/meetings/:meetingId/recording/pause
-POST /api/meetings/:meetingId/recording/resume
-POST /api/meetings/:meetingId/recording/rollover
-POST /api/meetings/:meetingId/recording/recover
-POST /api/meetings/:meetingId/recording/stop
-POST /api/meetings/:meetingId/recording/takeover
-POST /api/meetings/:meetingId/recording/lease/heartbeat
-POST /api/meetings/:meetingId/heartbeat
-```
-
-Lifecycle mutations carry `operationId`, `expectedLifecycleVersion`, and—after
-`start`—`leaseId` plus `fenceToken`. Repeating the same operation returns its
-stored result. A stale lifecycle version or competing transition returns
-`409 meeting_lifecycle_conflict`. Other stable conflict codes are
-`recorder_already_active`, `recorder_lease_invalid`, and
-`recorder_takeover_confirmation_required`.
-
-The recorder renews its 10-second Meeting lease every 3 seconds. The same
-principal may take over an expired lease; a different principal requires an
-owner or super-admin force takeover with explicit confirmation. Provider
-reconnect does not create a Segment. Pause/resume, rollover, and browser-crash
-recovery do.
-
-Successful completion alone freezes the database-generated `ended_at` and
-`purge_at = ended_at + 30 minutes` for one Meeting recording, including all
-rollover Sessions/Segments. Pause, reconnect, interruption, and stale-heartbeat
-handling do not start retention. Old records without a reliable completion
-anchor are not bulk-deleted. Direct authenticated Supabase table/Storage reads
-and late writes are restricted by RLS and triggers; signed download URLs are
-clipped to the remaining retention window.
-
-At expiry, `GET /api/meetings/:meetingId` remains `200` with settings,
-`contentState: "expired"`, `expiresAt`, no recording content, and a separate
-`physicalCleanupState`. Viewer snapshot/replay/token, audio and export
-download/content routes return `410 meeting_content_expired`. The Meeting,
-settings, members, glossary, and audit history stay. Existing Meeting GETs
-trigger managed `waitUntil` cleanup: one Meeting per request, at most 20
-Storage objects or 50 DB rows, a persistent 15-second cross-instance throttle,
-and resumable claims. Cleanup errors do not alter Meeting completion or the
-HTTP read response. No Cron is configured. Without API traffic, cloud physical
-data may remain after 30 minutes until a later request.
-
-Completed or failed lifecycle v2 Meetings return `409 meeting_terminal` for
-new recording lifecycle commands and reject new Session, Segment, Viewer-share,
-or finalized Cue writes. For v2 Meetings, finalized transcript data is stored
-only in `subtitle_cues`; compatibility Session snapshots do not append
-`transcript_items`.
-
-`POST /api/meetings/:meetingId/segments/:segmentId/audio-uploads` requires the
-current `X-Meeting-Session-Id`, `X-Meeting-Segment-Id`,
-`X-Meeting-Lease-Id`, and `X-Meeting-Fence-Token` headers before it creates an
-artifact. An artifact created before terminal transition may still complete or
-fail before `purge_at`; completion and failure at or after that deadline return
-`409 meeting_terminal`.
-
-## Meeting Viewer snapshot pagination
-
-`GET /api/shared-meetings/:token/metadata` and
-`GET /api/shared-meetings/code/:shortCode/metadata` use the existing Viewer
-share authorization and expiry checks. A valid Viewer token or short code is
-the credential; these GET routes do not require a login Bearer token. Invalid,
-revoked, expired, or non-Viewer shares do not authorize metadata. They return
-Meeting identity,
-configuration labels, lifecycle status/version, recording state, ordered
-Segment and Session identity, and share capability. Completed Meetings whose
-version-2 retention has expired return `410 meeting_content_expired`.
-This route reads only Meeting and Segment metadata; its DTO has no Cue,
-transcript, translation, checkpoint, or event payload. Existing Viewer Cue
-snapshot and SSE routes remain in use until Host recovery cutover.
-In non-cloud development/file mode, the file repository parses its complete
-local JSON store before projecting metadata; the response still excludes
-Checkpoint content. Cloud mode uses narrow Supabase Meeting and Segment selects.
-
-For lifecycle v2 Meetings, `GET /api/shared-meetings/:token` and
-`GET /api/shared-meetings/code/:shortCode` return `410 meeting_content_local_only`;
-the Viewer uses `/metadata` and Host WebRTC DataChannel for live Cues.
-For legacy v1 Meetings, these detail routes return the newest 100 finalized Cues
-by default. The response includes `pagination.hasMore` and an opaque
-`pagination.nextCursor`; pass that value as `?before=<cursor>` to load the
-previous page. `limit` may be set from 1 through 100.
-
-The response also includes authoritative `recordingState`: `waiting`, `active`,
-`paused`, `recovering`, or `ended`. Viewer clients treat only `ended` (or a
-terminal share/API error) as Meeting termination. `paused` and `waiting` use
-bounded lifecycle polling and do not consume WebRTC recovery attempts.
-
-Viewer reads use one bounded joined Cue query in cloud mode. They do not load
-all Segments or expose Meeting glossary, private settings, audio metadata, or
-live session identifiers. Cursor pages are merged by `cueId` and ordered by
-Segment sequence plus Cue sequence, so Realtime delivery remains idempotent.
-
-## Meeting export lifecycle (P7, historical cloud content contract)
-
-For current Local-only Meetings, content export creation and download routes
-return `410 meeting_content_local_only`; Host export is generated from its own
-OPFS／IndexedDB data. The routes below describe the earlier cloud artifact flow.
-
-Assigned members can read the meeting data explicitly covered by RLS and can
-write recording data only while active with `can_record=true`. They cannot
-modify owner settings, membership/share state, glossary data, exports, or
-delete the meeting. Export and signed audio download URLs remain owner-scoped.
-
-Supabase cloud mode provides owner-only asynchronous Meeting export endpoints:
-
-```http
-POST /api/meetings/:meetingId/exports
-Content-Type: application/json
-
-{"format":"txt","stream":"translation"}
-```
-
-`format` is `txt`, `srt`, or `vtt`; `stream` is `source`, `translation`, or
-`both`. `srt` and `vtt` reject `both` with `400 export_invalid_stream`. A
-successful request returns `202` and an export artifact with `queued` status.
-
-```http
-GET  /api/meetings/:meetingId/exports
-GET  /api/meetings/:meetingId/exports/:exportId
-POST /api/meetings/:meetingId/exports/:exportId/download-url
-DELETE /api/meetings/:meetingId/exports/:exportId
-```
-
-Only `ready` artifacts produce a download URL. The URL expires after 60
-seconds. The API never returns Storage paths, signed URLs in logs, transcript
-text, JWTs, or Storage credentials. Local file-backed mode continues to use
-the existing browser export path.
-
 ## Gemini credential boundary
 
 The old profile credential API (`/api/profile/gemini-credential`) and its
@@ -241,13 +74,10 @@ Non-Live backend workers may use an isolated `GEMINI_API_KEY` when their own
 provider configuration requires it; that key is not part of the Live token
 flow.
 
-## Realtime subtitle pipeline contract
+## Host-local Cue read model
 
-In cloud mode, execution status changes are persisted in Supabase and clients
-subscribe through Supabase Realtime. REST execution snapshots remain the
-authoritative recovery path after disconnects. The Vercel Cron worker processes
-durable translation jobs in bounded batches and does not rely on process-local
-polling.
+The active Meeting recorder commits Final Cues and Checkpoint cursors in Host IndexedDB. The Viewer receives Host Cue snapshots and updates through WebRTC DataChannel. A separate source-only transcription and Flash refinement pipeline remains a planned contract, not a current Meeting API.
+
 
 The API treats a Cue with at least one finalized side as a stable publishable
 unit. Source and translation completion are independent.
@@ -281,34 +111,10 @@ unit. Source and translation completion are independent.
 Consumers compute the effective translation as
 `refinedTranslation → initialTranslation → legacy translatedText`.
 
-### Execution trigger and operations
+### Planned refinement operations
 
-After a finalized Cue is submitted for checkpoint persistence, the frontend
-creates an asynchronous initial translation execution using
-`gemini-3.5-flash`. A successful initial translation then schedules a separate
-refinement execution, also using Flash; both operations are non-blocking from
-the Live transcription request. Failures are stored with safe status
-information and are retryable without changing the Cue identity or source
-fields.
+The source-only transcription and asynchronous Flash refinement design is future work. It does not authorize cloud Cue writes, a Meeting Recording Worker, or Viewer SSE delivery in the current Meeting flow.
 
-Worker results must use structured output with the expected operation, exact
-`cueId`, source/input hash, target language, and bounded text fields. Unknown
-fields, missing required fields, mismatched Cue identity, invalid language, or
-oversized output fail validation before persistence. Refinement context is
-read-only; only the addressed Cue can be updated.
-
-Duplicate submissions are idempotent by `cueId` plus operation/input version
-and provider idempotency key. A same-Cue update is accepted only when its
-expected version and input hash still match. Older or late worker output is
-classified as stale and discarded without overwriting a newer translation or
-refinement.
-
-Legacy projections remain available for existing clients: `translatedText`
-maps to the effective translation, `rawTranslation` maps to the initial/raw
-translation where available, and `refinedTranslation` remains exposed as the
-newer optional field. Existing auth, rate limiting, origin checks, structured
-errors, backend-only `GEMINI_API_KEY`, and ephemeral-token secret isolation
-remain unchanged.
 
 ## Global glossary import
 
@@ -389,96 +195,6 @@ The Meeting-scoped Viewer API, private glossary fields, Storage upload, and
 Realtime contracts are documented in
 [Meeting Center and Live Viewer](features/meeting-center-live-viewer.md).
 
-### P3 Storage and Realtime override (historical cloud contract)
-
-The following P3 cloud Cue, audio Storage, Realtime, and Meeting SSE flow is
-retired for current Local-only Meetings. Meeting Cue／audio write routes and
-Meeting event GET routes return `410 meeting_content_local_only`; the
-share-scoped Realtime token route may remain for legacy compatibility but is
-not used by the current Viewer. Other execution-event streaming is separate.
-
-The following cloud contract supersedes the older process-local SSE contract
-below. `POST /api/meetings/:meetingId/segments/:segmentId/cues` persists a Final
-Cue before a database trigger broadcasts `cue.append`. A Viewer exchanges its
-share through `POST /api/shared-meetings/:token/realtime-token` (or the
-short-code variant), subscribes to private `meeting:<meetingId>`, then merges a
-REST snapshot. The share-scoped JWT expires in at most five minutes. Cloud SSE
-returns `410 realtime_required`; it remains available only as a local fallback.
-
-Original Segment audio uses metadata-only HTTP endpoints:
-
-- `POST /api/meetings/:meetingId/segments/:segmentId/audio-uploads` returns the
-  private Storage TUS endpoint/path for `{ mimeType, byteSize }`.
-- `POST /api/meetings/:meetingId/audio-artifacts/:artifactId/complete` verifies
-  the object; `/fail` records a failed upload.
-- `POST /api/meetings/:meetingId/audio-artifacts/:artifactId/download-url`
-  performs ownership validation and returns a 60-second signed URL with
-  `Cache-Control: no-store`.
-
-The Meeting-level Viewer capability is delivered incrementally. Existing
-Session share and Meeting checkpoint routes remain the current implementation
-contract for their respective resources.
-
-Milestone 4 Meeting Viewer sharing is available through
-`POST /api/meetings/:meetingId/shares` with
-`{ "role": "viewer", "expiresAt": null }`. Anonymous Viewer reads use
-`GET /api/shared-meetings/:token` or
-`GET /api/shared-meetings/code/:shortCode`; the response contains sanitized
-Meeting metadata and historical final Cues, but no glossary, audio artifact,
-Recorder lease, device, or credential data. Live Cue events and reconnect
-recovery are provided by the Milestone 5 SSE contract below.
-
-Milestone 5 adds `POST /api/meetings/:meetingId/segments/:segmentId/cues` for
-finalized Cue publication. Owner requests use the existing Access Token gate;
-Recorder requests use the existing Recorder grant, lease, fence, and session
-headers. The endpoint validates the Meeting／Segment／Session relationship,
-publishes without waiting for checkpoint persistence, and returns the Meeting
-event cursor. When both a Recorder Session header and body `sessionId` are
-present, they must match. A completed legacy v1 Segment accepts a delayed Cue
-only from its persistently bound Session.
-
-Viewer SSE uses `GET /api/shared-meetings/:token/events` or the short-code
-variant. The client may send `after=<eventId>` or rely on `Last-Event-ID`.
-Requests with `Accept: application/json` return a bounded replay payload
-`{ events, cursor, gap? }` instead of opening an SSE stream; the cloud Realtime
-Viewer uses this form after subscribing. Events are process-local and replayable
-only within the bounded in-memory history when the durable event repository is
-unavailable. When an SSE cursor is too old, the stream emits `meeting.gap` and
-the Viewer refetches the REST snapshot.
-
-## Session sharing (historical Session content contract)
-
-Current `/api/shared-sessions/*` content reads and SSE return
-`410 meeting_content_local_only`. Current Meeting shares use metadata for
-authorization and WebRTC DataChannel for subtitles.
-
-Share creation accepts `role: "viewer" | "recorder"` and defaults to Viewer.
-Recorder creation also returns a `recorderUrl`. Recorder lease claim,
-heartbeat, and release are exposed at
-`/api/shared-sessions/:token/recorder-lease` and its `/heartbeat` child route.
-Only one active lease is allowed per Session; a duplicate claim returns
-`409 recorder_already_active`.
-
-Recorder shares always have a finite expiry (30 minutes by default when the
-owner omits `expiresAt`). A successful claim returns `recorderGrant` and
-`grantExpiresAt`. Recorder live-token, Session snapshot, and audio upload
-requests use `X-Recorder-Token`, `X-Recorder-Grant`, `X-Recorder-Lease-Id`,
-and `X-Recorder-Fence-Token`; checkpoint writes additionally use
-`X-Recorder-Session-Id`. Invalid, expired, revoked, mismatched, or stale
-credentials are rejected. Recorder snapshots cannot change Session metadata,
-and Recorder clients cannot download Session audio.
-
-Authenticated owner routes are available at `GET`/`POST /api/sessions/:sessionId/shares`
-and `DELETE /api/sessions/:sessionId/shares/:shareId`. Creation returns a
-one-time plaintext token and short code, plus legacy SPA hash URLs
-(`#watch?token=...` and `#watch?code=...`); stored share metadata contains only
-hashes. The legacy `#watch` frontend route is no longer exposed and falls back
-to `#meetings`. Anonymous
-Viewer reads and SSE streams resolve through either `/api/shared-sessions/:token`
-or `/api/shared-sessions/code/:code` and their `/events` variants. Viewer detail
-and SSE snapshots share the same sanitized DTO and never include audio or input
-device metadata.
-
 ## Authenticated execution WebSocket
 
 `WS /api/sessions/:sessionId/execution-events` streams execution status for one
@@ -498,263 +214,32 @@ Events are not replayed after reconnect. Clients refetch the authenticated REST
 read model, then subscribe again. The frontend reconnects with backoff and
 falls back to the existing two-second polling interval after repeated failures.
 
-## Dead-letter queue administration
+## Retired execution-content routes
 
-When durable translation queue storage is enabled, the shared Access Token
-protects `GET /api/translation-dead-letter-queue` (full `{ items, size }`) and
-`POST /api/translation-dead-letter-queue/:executionId/replay` (new queued
-execution). The original failed execution and DLQ item are retained. Disabled
-storage returns `503 dead_letter_queue_unavailable`; an unknown item returns
-`404 dead_letter_item_not_found`.
+Current translation execution and dead-letter queue content reads／writes return `410 meeting_content_local_only`. `GET /api/translation-providers` remains a separate provider-options read and does not expose credentials.
 
-## Long Meeting Checkpoints (historical cloud content examples)
 
-The Meeting list/detail content examples and Segment／Checkpoint mutation
-examples below describe the earlier cloud recording model. Current Meeting
-list/detail APIs supply metadata and settings; Host-local OPFS／IndexedDB
-supplies recorded Cue and audio content. Meeting settings, glossary, shares,
-completion metadata, and authorized deletion remain server APIs.
+## Meeting metadata reads
 
-## `GET /api/meetings`
-
-Returns read-only Meeting history summaries. This endpoint does not create,
-stop, recover, or mutate Live sessions.
-
-```json
-[
-  {
-    "id": "meeting-1",
-    "status": "active",
-    "startedAt": 1720000000000,
-    "endedAt": null,
-    "durationMs": null,
-    "segmentSummary": {
-      "totalSegments": 3,
-      "countsByStatus": {
-        "completed": 2,
-        "active": 1
-      },
-      "hasInterruptedSegments": false,
-      "hasFailedSegments": false
-    },
-    "transcriptSummary": {
-      "totalItems": 12,
-      "sourceFinalCount": 6,
-      "translationFinalCount": 6,
-      "hasTranscript": true
-    },
-    "failureInfo": null,
-    "recordKind": "meeting"
-  }
-]
-```
-
-## `GET /api/meetings/:meetingId`
-
-Returns one composed Meeting detail read model with ordered Segments, a Segment
-timeline, final checkpoint transcript items, persisted Final Cues, and
-article-style reading content. Transcript items are ordered by Segment sequence
-and chunk time while retaining Segment identity and status metadata. `cues`
-contains final bilingual subtitle Cues aggregated from Segment checkpoints and
-is the preferred source for SRT/VTT export.
-
-Missing Meetings return `404`.
-
-```json
-{
-  "meeting": {
-    "id": "meeting-1",
-    "status": "active",
-    "startedAt": 1720000000000,
-    "endedAt": null,
-    "durationMs": null,
-    "segmentSummary": {
-      "totalSegments": 2,
-      "countsByStatus": {
-        "interrupted": 1,
-        "active": 1
-      },
-      "hasInterruptedSegments": true,
-      "hasFailedSegments": false
-    },
-    "transcriptSummary": {
-      "totalItems": 2,
-      "sourceFinalCount": 1,
-      "translationFinalCount": 1,
-      "hasTranscript": true
-    },
-    "failureInfo": null,
-    "recordKind": "meeting"
-  },
-  "segments": [
-    {
-      "id": "segment-1",
-      "meetingId": "meeting-1",
-      "sequence": 0,
-      "status": "interrupted",
-      "startedAt": 1720000000000,
-      "endedAt": 1720000600000,
-      "durationMs": 600000,
-      "liveSessionId": "live-session-1",
-      "errorInfo": {
-        "reason": "token_expired",
-        "category": "token"
-      },
-      "checkpointUpdatedAt": 1720000600000,
-      "transcriptSummary": {
-        "totalItems": 2,
-        "sourceFinalCount": 1,
-        "translationFinalCount": 1,
-        "hasTranscript": true
-      }
-    }
-  ],
-  "timeline": [
-    {
-      "id": "segment-1",
-      "sequence": 0,
-      "status": "interrupted",
-      "startedAt": 1720000000000,
-      "endedAt": 1720000600000,
-      "durationMs": 600000,
-      "liveSessionId": "live-session-1",
-      "errorInfo": {
-        "reason": "token_expired",
-        "category": "token"
-      }
-    }
-  ],
-  "transcriptItems": [
-    {
-      "id": "segment-1:source:1",
-      "meetingId": "meeting-1",
-      "segmentId": "segment-1",
-      "segmentSequence": 0,
-      "segmentStatus": "interrupted",
-      "liveSessionId": "live-session-1",
-      "stream": "source",
-      "status": "final",
-      "text": "confirmed source text",
-      "sequence": 1,
-      "startedAt": 1720000100000,
-      "finalizedAt": 1720000100000
-    }
-  ],
-  "cues": [
-    {
-      "cueId": "cue:session-1:segment-1:1",
-      "sessionId": "session-1",
-      "segmentId": "segment-1",
-      "sequence": 1,
-      "startTimeMs": 1000,
-      "endTimeMs": 2800,
-      "sourceLanguageCode": "zh-Hant",
-      "targetLanguageCode": "en",
-      "sourceText": "確認的原文。",
-      "translatedText": "confirmed source text.",
-      "status": "final",
-      "finalizedReason": "turnComplete"
-    }
-  ],
-  "readingContent": {
-    "sourceTranscript": {
-      "kind": "sourceTranscript",
-      "status": "available",
-      "text": "confirmed source text",
-      "paragraphs": ["confirmed source text"]
-    },
-    "translationArticle": {
-      "kind": "translationArticle",
-      "status": "available",
-      "text": "confirmed translation text",
-      "paragraphs": ["confirmed translation text"]
-    }
-  },
-  "recordKind": "meeting"
-}
-```
+`GET /api/meetings` and `GET /api/meetings/:meetingId` return authorized Meeting metadata, settings, status, sharing and lifecycle information. The detail response does not provide the current recording's Cue, Transcript, Checkpoint or audio content. Host Meeting Detail reads those records from its own IndexedDB／OPFS; another device cannot recover them from these APIs. An unknown Meeting returns `404`; expired content follows the expiry rule above.
 
 ## `POST /api/meetings`
 
-Creates a Meeting and its first Segment. Pass `draft: true` for the Meeting
-Management flow; the Meeting and Segment remain `created` until a Recorder
-explicitly starts. Existing internal checkpoint callers may omit `draft` and
-retain the active Meeting behavior. This endpoint does not start, stop,
-reconnect, or segment a Gemini Live session. The optional
-`liveSessionId` request field associates the first Segment with the frontend's
-first Gemini Live connection. `name`, `sourceLanguageCode`, and
-`targetLanguageCode` store Meeting settings. `echoTargetLanguage` defaults to
-`true` and `shouldRecordInputAudio` defaults to `false`. `glossaryEntries` stores the
-selected shared-glossary snapshot for compatibility; `privateGlossaryEntries`
-stores terms owned only by this Meeting.
-
-```json
-{
-  "draft": true,
-  "name": "產品會議",
-  "sourceLanguageCode": "zh-Hant",
-  "targetLanguageCode": "en",
-  "echoTargetLanguage": true,
-  "shouldRecordInputAudio": false,
-  "glossaryEntries": [
-    {
-      "source": "Acme",
-      "translations": { "en": "Acme", "ja": "アクメ" },
-      "replacementAliases": { "en": ["ACME"] }
-    }
-  ],
-  "privateGlossaryEntries": [
-    {
-      "source": "專案代號",
-      "translations": { "en": "Project Codename" },
-      "replacementAliases": { "en": ["代號"] }
-    }
-  ]
-}
-```
-
-Returns `201 Created`:
-
-```json
-{
-  "meeting": { "id": "meeting-1", "name": "產品會議", "status": "created" },
-  "segment": { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "created" }
-}
-```
+Creates a Meeting draft with its name, source/target languages, audio settings and selected glossary entries. Creating a Meeting does not start microphone capture or a Gemini Live session. The Host creates and persists recording Session／Segment identities locally when recording starts.
 
 ## `PATCH /api/meetings/:meetingId`
-`privateGlossaryEntries[].replacementAliases` uses the canonical language-to-aliases object format. Legacy empty-array values (`[]`) are normalized to `{}`; non-empty arrays remain invalid.
 
-Updates Meeting name, source/target languages, translated-audio playback,
-original-audio recording, shared glossary entries, and
-private glossary entries. A live Recorder applies changed language or glossary
-settings at the next Segment boundary; provider reconnect within the current
-Segment keeps its settings snapshot. Same-source private Meeting entries
-override selected shared entries. Existing subtitles and already-played
-provider audio are not rewritten. Completed Meetings are read-only and return
-`409 meeting_settings_locked`.
+更新經授權的 Meeting 設定與字典欄位；錄製開始後受鎖定的設定不能被覆寫，回傳 `409 meeting_settings_locked`。此端點不接受錄製 Cue、音訊、Transcript 或 Checkpoint。
 
 ## `DELETE /api/meetings/:meetingId`
 
-The owner or active super-admin may delete a non-expired created or completed
-Meeting. After the recording content expires, deletion is restricted to an
-active super-admin. An active or otherwise resumable Meeting keeps its existing
-`409` restriction. Deletion
-removes Meeting-specific children and Storage objects but retains shared
-glossary, accounts, credentials, audit history, and a protected minimal deletion
-tombstone. Bounded Storage deletion may return `202 {"status":"deleting"}`;
-retry the same DELETE until `204`. A repeat `204` is authorized using the
-tombstone's original owner (or active super-admin), never deleted membership
-rows. Another computer's OPFS is cleaned on its next successful sync or local
-expiry check, not immediately by this API.
+Authorized deletion removes Meeting metadata under the existing ownership and lifecycle checks. It cannot immediately erase another browser's OPFS／IndexedDB; local cleanup occurs when that Host next checks the Meeting's authorization or expiry.
+
 
 ## `POST /api/meetings/:meetingId/complete`
 
-Completes the Meeting only after the recording has successfully ended. The
-backend/database returns one immutable 30-minute expiration shared by all
-associated Sessions; repeated completion does not extend it. Cleanup is
-independent of this command and cannot make completion fail or reset the
-recorded deadline. Active recordings return `409 meeting_complete_not_allowed`.
+After the Host seals local recording data, this endpoint completes Meeting metadata. The first completion fixes `ended_at` and `purge_at` at 30 minutes later and advances `lifecycle_version`; a repeated completion preserves those values. Active recordings return `409 meeting_complete_not_allowed`. Completion does not upload recording content.
+
 
 ## `GET|POST /api/meetings/:meetingId/shares`
 
@@ -768,178 +253,6 @@ available for viewing, but `POST` returns `409 meeting_share_locked`.
 Revokes one Meeting share. Existing Viewer shares may be revoked after a Meeting
 is completed; completed Meetings still reject new share creation and settings
 changes.
-
-## `GET /api/meetings/:meetingId/segments`
-
-Returns the Meeting's ordered segments.
-
-```json
-{
-  "meetingId": "meeting-1",
-  "segments": [
-    { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "active" }
-  ]
-}
-```
-
-Missing Meetings return `404`.
-
-## `POST /api/meetings/:meetingId/segments/:segmentId/rollover`
-
-Completes the current active Segment with a final checkpoint and creates the
-next active Segment in the same Meeting.
-For persisted legacy v1 recordings, one database transaction commits the
-checked checkpoint and final Cues, binds the Recorder Session to both Segments,
-and activates the successor. Repeating the same idempotency key and request
-returns the committed successor; changing the request is rejected.
-
-```json
-{
-  "idempotencyKey": "rollover:segment-1:live-session-2",
-  "checkpoint": {
-    "idempotencyKey": "checkpoint:segment-1:rollover",
-    "durableChunks": [],
-    "pendingPartial": null
-  },
-  "nextLiveSessionId": "live-session-2"
-}
-```
-
-Returns `201 Created`:
-
-```json
-{
-  "completedSegment": { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "completed" },
-  "segment": { "id": "segment-2", "meetingId": "meeting-1", "sequence": 1, "status": "active", "liveSessionId": "live-session-2" }
-}
-```
-
-Duplicate rollover requests with the same idempotency key and next Live session
-association return the same next Segment. Conflicting duplicate rollover data
-returns `409`. Missing Meetings or Segments return `404`; non-active current
-Segments return `409`.
-
-## `POST /api/meetings/:meetingId/segments/:segmentId/recover`
-
-Marks the current active Segment as interrupted or failed with a final
-checkpoint. Interrupted recovery creates the next active Segment in the same
-Meeting for a fresh Live session association. Failed recovery terminalizes only
-the current Segment.
-
-```json
-{
-  "idempotencyKey": "recover:segment-1:live-session-2",
-  "checkpoint": {
-    "idempotencyKey": "checkpoint:segment-1:recover",
-    "durableChunks": [],
-    "pendingPartial": null
-  },
-  "nextLiveSessionId": "live-session-2",
-  "failureReason": "token_expired",
-  "failureCategory": "token",
-  "outcome": "interrupted"
-}
-```
-
-Interrupted recovery returns `201 Created`:
-
-```json
-{
-  "interruptedSegment": { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "interrupted" },
-  "segment": { "id": "segment-2", "meetingId": "meeting-1", "sequence": 1, "status": "active", "liveSessionId": "live-session-2" }
-}
-```
-
-Failed recovery returns `201 Created`:
-
-```json
-{
-  "failedSegment": { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "failed" }
-}
-```
-
-Duplicate recovery requests with the same idempotency key, outcome, failure
-metadata, and next Live session association return the same stored result.
-Conflicting duplicate recovery data returns `409`. Missing Meetings or Segments
-return `404`; non-active current Segments return `409`.
-
-## `PUT /api/meetings/:meetingId/segments/:segmentId/checkpoint`
-
-Persists confirmed transcript or translation chunks for one Segment.
-
-Current clients send `X-Checkpoint-Protocol: 2`. Reusing an `idempotencyKey`
-with different content returns `409`. The server accepts older chunk cursor
-keys from existing browser sessions and derives an internal operation key from
-the validated payload; identical retries remain idempotent. A successful
-response means the cumulative checkpoint and every referenced final Cue
-committed in one database transaction. Direct browser writes to checkpoint
-JSON and `subtitle_cues` are denied.
-
-```json
-{
-  "idempotencyKey": "checkpoint:segment-1:12",
-  "durableChunks": [
-    {
-      "idempotencyKey": "segment-1:source:4",
-      "meetingId": "meeting-1",
-      "segmentId": "segment-1",
-      "stream": "source",
-      "sequence": 4,
-      "text": "confirmed text",
-      "timestamp": 1720000000000
-    }
-  ],
-  "finalCues": [],
-  "refinedSubtitleCues": [],
-  "refinedSubtitleRevision": 0,
-  "refinedSubtitleInputHash": null,
-  "refinedSubtitleStatus": "pending",
-  "pendingPartial": null
-}
-```
-
-The backend stores only confirmed durable chunks. Duplicate chunk
-`idempotencyKey` values with the same payload are accepted as idempotent
-success. A duplicate chunk key or duplicate `stream + sequence` with different
-content returns `409`. Chunks may arrive out of order; stored chunks are read
-back sorted by stream and sequence. Completed or failed Segments reject
-checkpoint updates with `409`.
-
-`durableChunks` and `finalCues` in a PUT are deltas. A successful response and
-subsequent GET contain the cumulative Segment checkpoint. The checkpoint
-`idempotencyKey` identifies one canonical payload: an identical replay has no
-new effect, while reuse with changed content returns `checkpoint_conflict`
-(`409`). Concurrent or stale revisions also return `409`; callers must read
-back and retain any unproven pending content before retrying. Per-Cue saves
-have a separate durability acknowledgment.
-
-Recording lifecycle commands do not accept a `checkpoint` payload; clients
-flush pending Cues and checkpoint content before a terminal transition.
-
-## `GET /api/meetings/:meetingId/segments/:segmentId/checkpoint`
-
-Returns the Segment checkpoint:
-
-```json
-{
-  "meetingId": "meeting-1",
-  "segmentId": "segment-1",
-  "checkpoint": {
-    "idempotencyKey": "checkpoint:segment-1:12",
-    "durableChunks": [],
-    "finalCues": [],
-    "refinedSubtitleCues": [],
-    "refinedSubtitleRevision": 0,
-    "refinedSubtitleInputHash": null,
-    "refinedSubtitleStatus": "pending",
-    "pendingPartial": null,
-    "updatedAt": 1720000000000
-  }
-}
-```
-
-Missing Meetings or Segments return `404`. Pending partial text is intentionally
-not durable checkpoint content.
 
 ## Glossary
 
@@ -1067,26 +380,14 @@ provider credentials or internal client configuration.
 The `model` value is resolved from `SAVED_RETRANSLATION_GEMINI_MODEL`, falling
 back to the backend default when the environment variable is unset.
 
-### `POST /api/translation-executions/:executionId/cancel`
+### Retired execution mutations
 
-Cancels the identified execution only when its current status is `queued`.
-Success returns `200 OK` and the same execution with status `cancelled`.
-`cancelled` is terminal and produces no TranslationOutput. This endpoint does
-not accept a request body or client-controlled request, provider, status,
-attempt, or idempotency metadata.
+`POST /api/translation-executions/:executionId/cancel` and `/retry` return `410 meeting_content_local_only` in the current Local-only API.
 
-### `POST /api/translation-executions/:executionId/retry`
 
-Manually retries the identified execution only when it is `failed`. Success
-returns `202 Accepted` and a newly created `queued` execution. The source
-execution remains failed; the new execution has a different ID, keeps the same
-request identity and provider key, and receives a new provider idempotency
-identity. This endpoint accepts no request body or client-controlled execution
-metadata.
+## Historical Session content contracts
 
-For both endpoints, an invalid execution ID returns `400`; a missing execution
-or source request returns `404`; an ineligible status returns `409`; enqueue or
-unexpected failures return a safe `500` error without internal details.
+The Session read／update, audio, translation and retranslation examples below describe the earlier file-backed flow. Current Local-only content routes return `410 meeting_content_local_only`; authorized deletion routes remain separate. They do not provide Meeting recording content or Viewer subtitles.
 
 ## `POST /api/sessions/:sessionId/retranslations`
 
@@ -1290,15 +591,6 @@ artifacts are returned directly. Segmented artifacts are composed from their
 manifest into one WAV response, preserving the existing one-click download URL.
 Missing Sessions or missing artifacts return `404 session_not_found`.
 
-## `GET /api/meetings/:meetingId/audio/:kind`
-
-Downloads the whole-meeting audio artifact for a Long Meeting. The backend
-resolves all persisted SessionRecords associated with the Meeting, orders them by
-Meeting Segment sequence, and composes their `input` or `translation` WAV payloads
-into one download. Session-level segmented manifests are composed before the
-Meeting-level composition. Missing Meetings or missing artifacts return
-`404 session_not_found`.
-
 The detailed session-scoped history is also available from `GET
 /api/sessions/:sessionId/translations`, optionally filtered by an allowlisted
 `targetLanguageCode`. Source-language detection is exposed there as canonical
@@ -1395,42 +687,6 @@ private and requires the same access token and origin checks as other private
 The endpoint is read-only and does not wake or process the translation worker.
 It does not expose execution IDs, request IDs, provider keys, or provider error
 messages.
-
-## Session-first commands (historical Session recording contract)
-
-The Session audio, transcript, and shared-Session content routes described
-below are retired for current Local-only Meetings; the current Viewer does
-not open a shared-Session SSE stream. This does not describe the separate
-authenticated execution-events WebSocket.
-
-### `POST /api/sessions`
-
-Creates a persisted Session before a Gemini Live connection is opened. The
-initial status is `created`. The request may include `name`,
-`targetLanguageCode`, `sourceLanguageCode`, and input-device metadata.
-
-### `PATCH /api/sessions/:sessionId`
-
-Updates Session metadata, lifecycle status, or the current Meeting Segment
-binding. Supported fields include `name`, `targetLanguageCode`,
-`targetLanguageLabel`, `sourceLanguageCode`, and `segmentId`; supported statuses
-are `created`, `active`, `paused`, `stopped`, `failed`, and `expired`, and invalid
-transitions are rejected. During long-meeting rollover, the old Segment is
-checkpointed and its queued Cues are published before the same Session is
-rebound to the new `segmentId`; new Cues are accepted only after that binding
-update succeeds. Existing Meeting, Session, and Segment authorization checks
-remain in force.
-
-### Sharing
-
-- `POST /api/sessions/:sessionId/shares` creates an opaque share token.
-- `DELETE /api/sessions/:sessionId/shares/:shareId` revokes a share.
-- `GET /api/shared-sessions/:token` returns Viewer-safe Session detail.
-- `GET /api/shared-sessions/:token/events` opens a read-only SSE stream.
-
-Viewer detail excludes audio artifacts and browser input-device identifiers.
-SSE event IDs are monotonic per Session and each event contains the latest
-snapshot, allowing reconnect clients to render the latest known state.
 
 ## `POST /api/live-token`
 
@@ -1791,26 +1047,3 @@ may use an isolated environment key through their own provider composition; it
 is not shared with recorder requests. Logs, metrics, telemetry, and audit
 records must not contain API keys, ephemeral tokens, stored credentials,
 request keys, or secret-bearing payloads.
-
-### Lifecycle operation recovery (Issue #41)
-
-`GET /api/meetings/:meetingId/recording/operations/:operationId` requires the
-existing meeting recording authorization. It returns only operation status,
-command, resulting lifecycle version, authoritative pre-transition
-`targetSessionId`/`targetSegmentId`, and resulting Session/Segment IDs. New
-records set `targetIdentityRecorded: true`, including when a target is
-legitimately null; older records missing either target key set it to `false`
-and omit both target IDs. It never returns the stored request payload or
-Segment JSON. `unknown` is not proof that an
-in-flight write did not commit; the database lookup takes a Meeting share lock
-to order the read after concurrent lifecycle writes.
-
-`POST /api/meetings/:meetingId/recording/lease/recover` accepts the original
-operation ID, recovery operation ID, command, expected lifecycle version,
-Session/Segment IDs, and prior lease/fence metadata. In one database transaction
-it locks the Meeting, checks the original operation and its attempts, verifies
-current identity/version/ownership, and only then issues a new lease and a
-server-generated attempt operation ID. A committed operation returns its
-existing metadata result. Expired retention or revoked authorization blocks
-recovery. Lifecycle write payloads reject Cue, Checkpoint, Transcript, Audio,
-and unknown fields.

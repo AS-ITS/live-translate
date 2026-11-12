@@ -82,15 +82,6 @@ refinement values are the fields that may be updated.
   compatibility check is required before implementation; this documentation
   update does not upgrade the SDK.
 
-Historical Session scope (pre-Issue #41; not the current Meeting storage contract):
-
-- Each user translation run creates one Session.
-- The current session produces one selected target-language translation output.
-- The Session preserves source transcript items for review and export.
-- Historical Session file-backed flow used `DATA_DIR`／`SESSION_RECORDS_FILE` for Session records and `DATA_DIR/session-audio`／`SESSION_AUDIO_DIR` for audio. This is not the current Meeting persistence path.
-- The same saved SourceTranscript can produce additional TranslationOutput
-  records through re-translation without new audio input or re-recording.
-
 ## Goals
 
 - Start and stop a Session from the browser.

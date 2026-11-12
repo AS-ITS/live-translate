@@ -1,41 +1,16 @@
 # Contributing
 
-## Development Workflow
+## 開發流程
 
-1. Read AGENTS.md
-2. Read docs/ROADMAP.md
-3. Identify the current capability
-4. Check existing feature specs before creating new ones
-5. Make minimal scoped changes
-6. Update docs only when behavior changes
-7. Run the smallest relevant tests
-8. Report changed files and tests run
+1. 閱讀 [AGENTS.md](AGENTS.md)、[產品規格](docs/spec.md)與[架構總覽](docs/architecture/architecture-overview.md)。
+2. 查閱 [ROADMAP](docs/ROADMAP.md)和現有的 `docs/features/` 規格，確認任務範圍。
+3. 以最小變更實作；行為改變時更新相關文件，能力或里程碑完成時更新 [CHANGELOG](CHANGELOG.md)。
+4. 依[測試指南](docs/TESTING.md)執行最小相關測試並回報結果。
 
-## Documentation Rules
+## 現行契約
 
-- Do not create a new feature spec if an existing capability spec can be extended.
-- Keep documentation minimal and scoped.
-- Update ROADMAP.md when capability status changes.
-- Update docs/TESTING.md when test commands change.
-- Update CHANGELOG.md when a milestone or capability is completed.
+Meeting 錄製內容由 Host 的 OPFS／IndexedDB 保存；Supabase 僅保存 metadata、設定、授權與必要協調資料；Viewer 字幕由 WebRTC DataChannel 傳送。請勿將歷史雲端 Cue、錄音、SSE 或 Recording Worker 路徑重新接入正式 Meeting 流程。其他獨立的翻譯執行能力，以其現有文件與程式碼為準。
 
-## Testing Rules
+保護 `/api/live-token` 的授權、來源及速率限制。不得將 `GEMINI_API_KEY`、使用者提供的 Gemini key 或短效 token 寫入前端、日誌或 Git。真實 Gemini 測試僅在明確啟用 `ENABLE_REAL_GEMINI_TEST=true` 時執行。
 
-- Run only relevant unit tests for small utility changes.
-- Run E2E tests only for UI flow changes.
-- Do not call real Gemini API unless explicitly enabled.
-- Real Gemini tests require ENABLE_REAL_GEMINI_TEST=true.
-
-## Safety Rules
-
-- Do not expose GEMINI_API_KEY.
-- Do not log ephemeral tokens.
-- Do not commit secrets.
-- Do not remove auth/rate limit/origin checks from /api/live-token.
-- Do not change Gemini Live token flow unless explicitly requested.
-
-## Scope Control
-
-- Do not implement Phase 3 production features unless requested.
-- Do not implement Auto Reconnect before Connection Resilience is planned.
-- Do not add database, login, dashboard, or multi-user features without explicit approval.
+開發環境、測試與部署的具體流程分別見[開發指南](docs/development.md)、[測試指南](docs/TESTING.md)及[部署指南](docs/DEPLOYMENT.md)。

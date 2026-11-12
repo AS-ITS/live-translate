@@ -1,5 +1,7 @@
 # Session Records Architecture
 
+> 範圍註記：本文的 Session／翻譯歷史模型不變更現行 Meeting 錄製契約。Meeting 內容由 Host OPFS／IndexedDB 保存；Supabase 僅保存 metadata、設定、授權與必要協調資料；Viewer 字幕由 WebRTC DataChannel 傳送。
+
 ## Purpose
 
 This document describes the current Session Records architecture and its Phase

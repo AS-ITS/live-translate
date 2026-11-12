@@ -42,6 +42,11 @@ function assertHttpDenied(response, label) {
   assert.ok(response.status >= 400 && response.status < 500, `${label} unexpectedly returned HTTP ${response.status}`);
 }
 
+function assertLocalOnlyWriteDenied(response, label) {
+  assert.ok(response.status >= 400 && response.status < 600, `${label} unexpectedly returned HTTP ${response.status}`);
+  assert.equal(response.body?.code, 'P0043', `${label} must be rejected by the Local-only database guard`);
+}
+
 async function readResponse(response) {
   const text = await response.text();
   if (!text) return null;
@@ -119,7 +124,7 @@ function createHarness(config) {
   return Object.freeze({ request, rest, createUser, updateProfile, deleteUser });
 }
 
-rlsTest('Issue #35 local Supabase RLS allow/deny matrix', async (t) => {
+rlsTest('Issue #41 local Supabase metadata RLS and Cloud content deny matrix', async (t) => {
   const config = configuration();
   const harness = createHarness(config);
   const users = [];
@@ -143,10 +148,6 @@ rlsTest('Issue #35 local Supabase RLS allow/deny matrix', async (t) => {
       ['meeting_glossary_entries', `?owner_user_id=eq.${owner?.id || ''}`],
       ['glossary_entries', `?owner_user_id=eq.${owner?.id || ''}`],
       ['glossary_categories', `?owner_user_id=eq.${owner?.id || ''}`],
-      ['meeting_summaries', `?owner_user_id=eq.${owner?.id || ''}`],
-      ['audio_artifacts', `?owner_user_id=eq.${owner?.id || ''}`],
-      ['export_artifacts', `?owner_user_id=eq.${owner?.id || ''}`],
-      ['subtitle_cues', `?owner_user_id=eq.${owner?.id || ''}`],
       ['sessions', `?owner_user_id=eq.${owner?.id || ''}`],
       ['meeting_segments', `?owner_user_id=eq.${owner?.id || ''}`],
       ['meeting_members', `?owner_user_id=eq.${owner?.id || ''}`],
@@ -273,13 +274,9 @@ rlsTest('Issue #35 local Supabase RLS allow/deny matrix', async (t) => {
     ['meetings', meeting],
     ['meeting_segments', segment],
     ['sessions', session],
-    ['subtitle_cues', cue],
     ['glossary_categories', glossaryCategory],
     ['glossary_entries', glossaryEntry],
     ['meeting_glossary_entries', { owner_user_id: owner.id, meeting_id: ids.meeting, glossary_entry_id: ids.glossaryEntry }],
-    ['meeting_summaries', summary],
-    ['audio_artifacts', audioArtifact],
-    ['export_artifacts', exportArtifact],
     ['meeting_members', { owner_user_id: owner.id, meeting_id: ids.meeting, user_id: activeMember.id, can_record: false }],
     ['meeting_members', { owner_user_id: owner.id, meeting_id: ids.meeting, user_id: pendingMember.id, can_record: true }],
     ['meeting_members', { owner_user_id: owner.id, meeting_id: ids.meeting, user_id: disabledMember.id, can_record: true }]
@@ -293,11 +290,48 @@ rlsTest('Issue #35 local Supabase RLS allow/deny matrix', async (t) => {
     assertHttpSuccess(inserted, `seed ${table}`);
   }
 
-  async function select(table, token, query) {
-    return harness.rest(table, { token, query: `?${query}` });
+  for (const [table, row] of [
+    ['subtitle_cues', cue],
+    ['meeting_summaries', summary],
+    ['audio_artifacts', audioArtifact],
+    ['export_artifacts', exportArtifact]
+  ]) {
+    const denied = await harness.rest(table, {
+      method: 'POST',
+      token: config.serviceRoleKey,
+      key: config.serviceRoleKey,
+      body: [row]
+    });
+    assertLocalOnlyWriteDenied(denied, `Cloud content insert ${table}`);
   }
 
-  for (const table of ['meetings', 'meeting_segments', 'sessions', 'subtitle_cues', 'meeting_glossary_entries', 'meeting_summaries']) {
+  for (const [table, body] of [
+    ['meeting_segments', { checkpoint: { transcript: 'must stay local' } }],
+    ['sessions', { payload: { transcript: 'must stay local' } }]
+  ]) {
+    const denied = await harness.rest(table, {
+      method: 'PATCH',
+      token: config.serviceRoleKey,
+      key: config.serviceRoleKey,
+      query: `?id=eq.${table === 'sessions' ? ids.session : ids.segment}&select=id`,
+      body
+    });
+    assertLocalOnlyWriteDenied(denied, `Cloud checkpoint/recovery update ${table}`);
+  }
+
+  async function select(table, token, query) {
+    const metadataColumns = {
+      meetings: 'id,owner_user_id,name,status',
+      meeting_segments: 'id,owner_user_id,meeting_id,status',
+      sessions: 'id,owner_user_id,meeting_id,status'
+    };
+    const projection = metadataColumns[table] && !query.includes('select=')
+      ? `&select=${metadataColumns[table]}`
+      : '';
+    return harness.rest(table, { token, query: `?${query}${projection}` });
+  }
+
+  for (const table of ['meetings', 'meeting_segments', 'sessions', 'meeting_glossary_entries']) {
     const memberRows = await select(table, activeMember.accessToken, `owner_user_id=eq.${owner.id}`);
     assertHttpSuccess(memberRows, `active member select ${table}`);
     assert.ok(Array.isArray(memberRows.body) && memberRows.body.length > 0, `active member could not read ${table}`);
@@ -320,6 +354,7 @@ rlsTest('Issue #35 local Supabase RLS allow/deny matrix', async (t) => {
   const deniedSegment = await harness.rest('meeting_segments', {
     method: 'POST',
     token: activeMember.accessToken,
+    query: '?select=id',
     body: [{
       id: ids.deniedSegment,
       owner_user_id: owner.id,
@@ -333,20 +368,20 @@ rlsTest('Issue #35 local Supabase RLS allow/deny matrix', async (t) => {
   const ownerPatch = await harness.rest('meetings', {
     method: 'PATCH',
     token: activeMember.accessToken,
-    query: `?id=eq.${ids.meeting}`,
+    query: `?id=eq.${ids.meeting}&select=id`,
     body: { name: 'member must not rename' }
   });
-  assertHttpSuccess(ownerPatch, 'member owner-setting patch response');
+  assert.ok(
+    ownerPatch.status >= 200 && ownerPatch.status < 300 || ownerPatch.status >= 400 && ownerPatch.status < 500,
+    `member owner-setting patch returned HTTP ${ownerPatch.status}`
+  );
   const unchanged = await select('meetings', owner.accessToken, `id=eq.${ids.meeting}&select=name`);
   assert.equal(unchanged.body[0].name, meeting.name, 'member changed an owner-only meeting setting');
 
-  const memberAudioRows = await select('audio_artifacts', activeMember.accessToken, `owner_user_id=eq.${owner.id}`);
-  assertHttpSuccess(memberAudioRows, 'member audio metadata select');
-  assert.equal(memberAudioRows.body.length, 1, 'active member could not read allowed audio metadata');
-
-  const memberExportRows = await select('export_artifacts', activeMember.accessToken, `owner_user_id=eq.${owner.id}`);
-  assertHttpSuccess(memberExportRows, 'member owner-only export select');
-  assert.equal(memberExportRows.body.length, 0, 'member could read owner-only export metadata');
+  for (const table of ['subtitle_cues', 'meeting_summaries', 'audio_artifacts', 'export_artifacts']) {
+    const rows = await select(table, activeMember.accessToken, `owner_user_id=eq.${owner.id}`);
+    assertHttpDenied(rows, `member Cloud content select ${table}`);
+  }
 
   const deniedAudio = await harness.rest('audio_artifacts', {
     method: 'POST',
@@ -395,6 +430,7 @@ rlsTest('Issue #35 local Supabase RLS allow/deny matrix', async (t) => {
   const allowedSegment = await harness.rest('meeting_segments', {
     method: 'POST',
     token: activeMember.accessToken,
+    query: '?select=id',
     body: [{
       id: ids.allowedSegment,
       owner_user_id: owner.id,

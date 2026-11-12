@@ -7,12 +7,14 @@ on:
       - 'supabase/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'tests/integration/supabaseRls.integration.test.js'
       - '.github/workflows/supabase-migrations.yml'
   pull_request:
     paths:
       - 'supabase/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'tests/integration/supabaseRls.integration.test.js'
       - '.github/workflows/supabase-migrations.yml'
 
 concurrency:

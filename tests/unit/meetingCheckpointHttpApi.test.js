@@ -48,6 +48,42 @@ test('POST /api/meetings creates a v2 draft without a Segment', async () => {
   assert.equal(body.segment, null);
 });
 
+test('POST /api/meetings allows active members and super admins to create their own draft', async () => {
+  for (const role of ['member', 'super_admin']) {
+    const user = { id: `${role}-1`, role, status: 'active' };
+    const handler = createHandler({
+      accessControl: { validateRequest: async () => user },
+      profileService: { getProfile: async () => user }
+    });
+    const response = await request(handler, { method: 'POST', url: '/api/meetings' });
+    assert.equal(response.status, 201, role);
+    assert.equal(response.json().meeting.status, 'created', role);
+  }
+});
+
+test('POST /api/meetings rejects disabled and unauthenticated users', async () => {
+  const disabled = { id: 'disabled-1', role: 'super_admin', status: 'disabled' };
+  const disabledHandler = createHandler({
+    accessControl: { validateRequest: async () => disabled },
+    profileService: { getProfile: async () => disabled }
+  });
+  const disabledResponse = await request(disabledHandler, { method: 'POST', url: '/api/meetings' });
+  assert.equal(disabledResponse.status, 403);
+  assert.equal(disabledResponse.json().error.code, 'auth_forbidden');
+
+  const unauthenticatedHandler = createHandler({
+    accessControl: { validateRequest: async () => {
+      const error = new Error('Access token required.');
+      error.code = 'auth_required';
+      error.status = 401;
+      throw error;
+    } }
+  });
+  const unauthenticatedResponse = await request(unauthenticatedHandler, { method: 'POST', url: '/api/meetings' });
+  assert.equal(unauthenticatedResponse.status, 401);
+  assert.equal(unauthenticatedResponse.json().error.code, 'auth_required');
+});
+
 test('Meeting Management creates a v2 draft and updates settings before Start', async () => {
   const handler = createHandler();
   const createResponse = await request(handler, {

@@ -34,7 +34,9 @@ Supabase Auth → 前端 origin（填在 Supabase Auth URL Configuration）
 
 ## 4. Local：正式本機安裝
 
-1. 準備 Node.js、Docker、Supabase CLI 與 Redis，依[開發指南](development.md#正式本機安裝與啟動現行-local-only-路徑)安裝依賴。Google Cloud 的 Local Client 必須是 `supabase/config.toml` 現有的 Client ID；它的 JavaScript origin 與 callback 依上表設定。若 Google Project 使用 **External / Testing**，先依實際 scope 與 Google 的要求處理測試使用者。
+本機只使用可追蹤的 [`supabase/.env.local.example`](../supabase/.env.local.example) 作格式範例。若尚無 `supabase/.env.local`，可複製 Sample 後填入 Local Google OAuth Client Secret；若檔案已存在，只編輯現有檔案，勿用 Sample 覆蓋。執行 `chmod 600 supabase/.env.local`。根目錄 [`.env.example`](../.env.example) 是 Preview／Production 設定清單，本機 `npm run start` 不需先建立根目錄 `.env`，也不應讀取 Production Supabase URL 或 key。
+
+1. 準備 Node.js、Docker、Supabase CLI 與 Redis，依[開發指南](development.md)安裝依賴。Google Cloud 的 Local Client 必須是 `supabase/config.toml` 現有的 Client ID；它的 JavaScript origin 與 callback 依上表設定。若 Google Project 使用 **External / Testing**，先依實際 scope 與 Google 的要求處理測試使用者。
 2. 在 Git 忽略的 `supabase/.env.local` 放入**同一個 Local Client 的 Secret**，格式為 `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET=<你的 Local Client Secret>`。不要把實際值貼到 Markdown、Git、聊天室或任何 `VITE_` 前端變數。執行 `chmod 600 supabase/.env.local`；啟動器要求它是一般檔案且權限**恰為 `600`**，否則會拒絕啟動。`supabase/config.toml` 的 `secret = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET)"` 會讀取此值。
 3. 本機 `supabase/config.toml` 的 Site URL 與 Redirect URLs 已設定 `http://127.0.0.1:5173` 及其路徑。從專案根目錄依序執行：
 
@@ -48,6 +50,8 @@ Supabase Auth → 前端 origin（填在 Supabase Auth URL Configuration）
 4. 啟動器由 Local Supabase 取得 API URL、anon／service key，提供前端 `VITE_SUPABASE_URL`／`VITE_SUPABASE_PUBLISHABLE_KEY` 及後端 `SUPABASE_URL`／`SUPABASE_SECRET_KEY`／`SUPABASE_JWKS_URL`，並固定 `AUTH_ALLOWED_EMAIL_DOMAINS=as.edu.tw`。因此 Local Google 帳號還需要符合此網域限制；Google OAuth Client 的 Audience 或 Test users 不會放寬後端網域檢查。
 
 ## 5. Preview／Production：各環境分開配置
+
+逐環境參照根目錄 [`.env.example`](../.env.example) 設定 Vercel 變數；Sample 標明必要性、適用環境與 secret 邊界。Preview 與 Production 的 Google OAuth **Client Secret 填在各自 Supabase 專案的 Authentication → Providers → Google**，與該環境的 Client ID 成對；勿填在 Vercel `VITE_` 變數或提交到 Sample。本機 Secret 才放在 `supabase/.env.local`。
 
 每個環境先建立或選定**自己的 Supabase Project**，確認 Project URL 與 project ref。對該環境重複以下步驟；不要讓 Preview 指向 Production Project。若使用 Supabase Preview branch，也需以**實際分支的 Auth URL 與設定**逐項核對，不能假設與主 Project 相同。
 

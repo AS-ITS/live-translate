@@ -1,4 +1,6 @@
-# Architecture Overview
+# 架構總覽
+
+這是目前架構的主要入口。需要操作步驟請看[本機開發](../development.md)、[使用指南](../USER_GUIDE.md)與[部署指南](../DEPLOYMENT.md)；API 契約見 [API 文件](../api.md)。本文件後段保留元件設計與較早的規劃，遇到差異時以「現行正式產品架構」為準。
 
 ## 現行正式產品架構（Local-only）
 

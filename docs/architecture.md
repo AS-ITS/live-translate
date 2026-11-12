@@ -1,4 +1,6 @@
-# Live Translate Architecture
+# 舊版架構設計補充
+
+現行架構請從[架構總覽](architecture/architecture-overview.md)閱讀。本文件保留較早的元件設計與決策細節，不能作為目前 Meeting 錄製、Viewer 傳輸或資料儲存方式的操作指南。
 
 For Issue #41 Local-only Cues, refinement input hashing canonicalizes optional translation provenance before binding to a committed Initial snapshot. A same-batch empty pending refinement reset can be discarded only when the acknowledged Cue has matching raw input, Initial, side versions, and proven translation provenance. Completed refinement and mismatched authority remain subject to Cue Writer rejection. The Cue Writer verifies turn, epoch, sequence, version, and provenance for authority updates.
 

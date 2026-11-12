@@ -16,9 +16,13 @@ Preview 與 Production 的 Google Cloud Client、Supabase Auth URL、Vercel 環�
 
 ## 環境與設定
 
+根目錄 [`.env.example`](../.env.example) 是 Preview／Production 變數的唯一完整 Sample：分別在 Vercel Preview 與 Production 設定對應值，勿將 Sample 中的空白 secret 當成已配置，也勿在兩環境共用 Supabase key。`NODE_ENV`、`VERCEL_ENV`、`VERCEL_URL` 與適用時的 `VERCEL_BRANCH_URL` 由平台提供，不必手填。Local Google OAuth 僅參照 [`supabase/.env.local.example`](../supabase/.env.local.example)；Local Client Secret 放在 Git 忽略的 `supabase/.env.local`，執行 `chmod 600 supabase/.env.local`。雲端 Google Client Secret 則放在**各自 Supabase Auth Google provider**，不放在 Vercel 或前端 `VITE_` 變數。
+
+本機使用 `npm run start -- --check`、`npm run start`；啟動器從 Supabase CLI 產生本機 URL、publishable key 與 server-only key，無需根目錄 `.env`。請勿把 Production Supabase URL／key 放入 Local。本節下表僅列部署時需要特別核對的邊界，完整選填設定見 Sample。
+
 | 環境 | Supabase／Vercel | 邊界 |
 | --- | --- | --- |
-| Local | 本機 Docker、Supabase CLI、loopback Redis；`npm run start:local -- --check` 後 `npm run start:local`。 | `scripts/start-local.mjs` 覆蓋雲端 Supabase 值並清空後端 Gemini key；詳見[開發指南](development.md#正式本機安裝與啟動現行-local-only-路徑)。 |
+| Local | 本機 Docker、Supabase CLI、loopback Redis；`npm run start:local -- --check` 後 `npm run start:local`。 | `scripts/start-local.mjs` 覆蓋雲端 Supabase 值並清空後端 Gemini key；詳見[開發指南](development.md)。 |
 | Preview | 專用 Supabase 專案／分支、Vercel Preview 設定、測試帳號與資料。 | 核對 project ref、Auth redirect、Origin、授權網域及 WebRTC／TURN；不可使用 Production secret。 |
 | Production | 與 Preview 分離的 Supabase 專案與 Vercel Production 設定。 | 上線前仍需 RC1 Gate 與實機驗收；不得由 Local 或 Preview 連結誤指向 Production。 |
 

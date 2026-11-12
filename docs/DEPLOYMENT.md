@@ -34,7 +34,7 @@ Preview 與 Production 的 Google Cloud Client、Supabase Auth URL、Vercel 環�
 | 瀏覽器可見 | `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` | 只放對應環境的 URL 與 publishable key，絕不放 service key 或私鑰。 |
 | 身分與來源 | `AUTH_ALLOWED_EMAIL_DOMAINS`, `APP_ORIGIN` | 設為核准登入網域與站點來源；保留 `/api/live-token` 授權、速率限制與 Origin 檢查。 |
 | Viewer signaling | `WEBRTC_SIGNALING_REDIS_URL`, `WEBRTC_SIGNALING_REDIS_TOKEN`, `WEBRTC_ICE_SERVERS_JSON` | Vercel signaling 使用 Redis HTTPS REST；ICE／TURN credential 僅在 server 端。跨網路須實機驗證。詳見 [WebRTC runbook](verification/webrtc-browser-deployment.md)。 |
-| 背景能力 | `CRON_SECRET`, `GEMINI_API_KEY` | 只在相應 server-only 能力需要時設定。Live 錄製使用錄製者請求範圍的 Gemini key，不將長效 key 放入 `VITE_` 值。 |
+| 非 Live 後端能力 | `GEMINI_API_KEY` | 只在相應 server-only 能力需要時設定。Live 錄製使用錄製者請求範圍的 Gemini key，不將長效 key 放入 `VITE_` 值。 |
 
 `SUPABASE_REALTIME_SIGNING_PRIVATE_JWK` 等舊／其他能力設定不是現行 Viewer DataChannel 字幕來源。不要在文件、CLI 輸出、截圖或 log 公開 access token、share code、private key、TURN credential 或 API key。
 

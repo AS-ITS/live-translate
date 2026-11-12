@@ -2,7 +2,7 @@
 
 ## 現行正式產品架構（Local-only）
 
-本節是新建 Meeting 的正式錄製路徑。下方保留的 Phase、Cloud Recording 與相容設計紀錄用於理解歷史資料，不能用來推定目前錄製內容會上傳雲端。
+新建 Meeting 的正式錄製路徑如下。以下其他章節保留身分、獨立翻譯執行元件與歷史相容設計；其舊內容端點不構成現行 Meeting API，錄製內容以本節為準。
 
 ```text
 Host 麥克風 → Host 瀏覽器 → Gemini Live API（即時翻譯）
@@ -16,7 +16,7 @@ Host 的瀏覽器取得後端核發的短效 Gemini token 後，直接連接 Gem
 
 Stop 先封存本機錄製與必要的 Cue／Checkpoint 寫入，Meeting metadata 保持開啟，可再 Start；End 先完成本機耐久化，再提交雲端 `completed` metadata，固定本機內容的 30 分鐘期限。期限前 Host 僅能在同一瀏覽器及同一來源讀取與匯出本機內容；期限到達後普通使用者／Viewer 的內容存取失效，Host 的 OPFS／IndexedDB 清理可在重新開啟時補償重試。到期是存取期限，不代表雲端自動刪除 Meeting 設定與字典，也不保證瀏覽器關閉時立即完成實體清理。詳見[Session lifecycle](../features/session-lifecycle.md)與[RC1 測試狀態](../TESTING.md#issue-41-rc1-acceptance-status-2026-11-09)。
 
-## Issue #41 Host Local-only vertical slice
+### Host 本機錄製與恢復
 
 翻譯音訊 OPFS／manifest 保存失敗時，該 Meeting 的翻譯音訊單向降級為 unavailable；後續翻譯音訊寫入停止，字幕、原始音訊、PCM Journal 與本機生命週期仍各自完成。IndexedDB 保存 pending／sealed／unavailable 狀態；pending 或 unavailable 不提供翻譯音訊播放、下載或匯出，既有 Chunk 與 manifest 保留。Reload 後的 pending 採保守不可用判定，避免狀態寫入失敗時誤封存。核心 Flush、Checkpoint、本機封存或 metadata completion 失敗仍會阻擋 End。
 
@@ -26,7 +26,7 @@ For a new Host recording, the Meeting and glossary remain cloud settings, while 
 
 After the local End barrier succeeds, the Host completes cloud Meeting metadata and opens Meeting detail, which reloads the Host's local Cue and audio indexes. Cloud completion sets the 30-minute retention deadline; local content remains readable until that deadline.
 
-## Issue #41 implementation 1A: PCM failure boundary
+### PCM 與音訊失敗邊界
 
 Local-only Stop/End completes after MediaRecorder drain, sealed OPFS chunks and IndexedDB manifest, PCM Journal close, and the remaining local durability barriers. Audio decode and multi-Segment WAV composition run only when the Host requests a local download; export failure leaves the sealed recording available for retry until the existing retention deadline. Opening Meeting detail reads audio metadata without composing a Blob. Recording durability and export decodability are separate outcomes.
 
@@ -41,104 +41,6 @@ IndexedDB Gap Ledger (`live-translate-pcm-gaps-v1`). A gap is marked durable onl
 after its IndexedDB transaction completes; if that write fails, the live status
 reports the failure. A queued PCM range is never presented as an OPFS durable
 claim until the Journal worker confirms its commit.
-
-## Phase 0 contract delta, 2026-10-01（歷史設計）
-
-以下本機服務、待傳佇列與雲端 ACK 設計不是 Issue #41 正式 Meeting 錄製路徑；現行內容由 Host OPFS／IndexedDB 保存。
-
-The browser is the only owner of page storage. It writes immutable audio
-chunks to page OPFS, then explicitly sends each chunk to the local service;
-the local service must never read page OPFS directly or use browser storage
-APIs. The direct browser-to-Gemini path remains separate.
-
-The browser maintains four durable pending queues in IndexedDB: Cue,
-checkpoint, operation, and audio. Audio bytes remain in OPFS; its queue stores
-the object reference, immutable sequence, range, checksum, and retry state.
-Every queue record has an idempotency key, dependency, payload hash, and
-version. ACK is valid only after durable commit of the matching key/version.
-Lost ACKs are resent with the same key; duplicates return the original result.
-Stale fence, version, or hash is a structured conflict, never a silent
-overwrite.
-
-Recovery order is fixed: validate queues and checksums, replay lifecycle
-operations, replay dependent checkpoints and Cues in sequence/version order,
-then replay audio chunks in immutable chunk order. Queues ACK independently,
-so audio does not block Cue/checkpoint delivery and those failures do not
-discard captured audio. Local Supabase on the recording device is the only
-recording lifecycle owner. Cloud Supabase stores only accounts, permissions,
-meeting settings, dictionaries, and device/meeting entry data; it is not the
-recording-data owner. Browser queues provide delivery and recovery only.
-
-Viewer sharing is read-only and separate from host export permission. Stopping
-a Meeting immediately revokes Viewer and Recorder shares; the host retains
-completed audio download and TXT/SRT/VTT export for 30 minutes only. Origin
-and CORS approval is allowlist-only for approved Preview and Production
-origins, with no wildcard or arbitrary localhost approval.
-
-Phase 1 real-device acceptance remains pending: Mac and Windows microphones,
-reload/crash queue recovery, OPFS quota/offline resend, audio loss/recovery,
-and approved Preview/Production Origin/CORS checks.
-
-## Meeting lifecycle v2（歷史 Cloud Recording 契約）
-
-以下雲端 Session／Segment／lease／lifecycle RPC 僅說明切換前契約。現行 Meeting 只在 Supabase 維護 metadata、設定、字典、授權及必要協調 metadata；錄製生命週期與內容由 Host 本機管理。
-
-Current expiry policy: `purge_at` is an immutable visibility deadline, not an
-automatic deletion trigger. Ordinary users and Viewer shares lose access at the
-deadline; active `super_admin` users retain a derived pending-delete metadata
-view and may invoke the canonical manual deletion flow. No GET-triggered worker
-or Cron physically deletes expired Meeting content. This supersedes older
-automatic-cleanup wording retained later in this historical overview.
-
-Supabase is the lifecycle source of truth for new Meetings. A single database
-transaction owns each start, pause, resume, rollover, recover, takeover, and
-stop transition. Partial transitions cannot be observed by another Vercel
-Function invocation.
-
-- A Meeting has at most one open Session and one active Segment.
-- The Session ID is stable from start through stop; Segments belong to it.
-- A Meeting-scoped recorder lease expires after 10 seconds and uses a monotonic
-  fence token so a replaced recorder cannot mutate lifecycle state.
-- Lifecycle commands are idempotent by `(meeting_id, operation_id)` and use an
-  optimistic `lifecycle_version` for competing commands.
-- Recorder liveness is renewed every 3 seconds; Meeting liveness is persisted
-  at most once per 30 seconds and retains the 15-minute lost-recorder policy.
-- Lost-recorder handling may interrupt a stale active Meeting, but does not
-  start the 30-minute countdown. Only successful completion freezes one
-  database-generated `ended_at` and `purge_at` per recording. The stable
-  `meeting_recordings.id` groups every related Session/rollover Segment;
-  provider Session IDs are not recording IDs.
-- A protected deletion tombstone and restrictive table/Storage policies reject
-  late writes and direct reads after deletion or expiration. Meeting settings,
-membership, glossary, and audit history remain until manual deletion.
-Before expiry, manual deletion remains owner/super-admin-authorized; after
-expiry, only an active super-admin may delete. Cleanup may require several
-bounded Storage batches before the Meeting row is removed.
-- Expiry does not schedule a cleanup worker or Cron job. Legacy cleanup claim
-  RPCs are service-role-only no-ops retained for deployment compatibility.
-  Storage deletion uses the Storage API; DB cleanup remains phased and retryable.
-  Local OPFS/IndexedDB cleanup uses persisted deadlines and browser locks.
-- v2 repository writes leave legacy `sessions.segment_id`,
-  `meeting_segments.live_session_id`, and `sessions.transcript_items` empty or
-  null while retaining read compatibility for v1 rows.
-- Finalized v2 Meeting transcript data is written only to `subtitle_cues`.
-  The compatibility Session snapshot retains lifecycle metadata but does not
-  receive `transcript_items` appends.
-- An audio upload may begin only with the active recorder fence. An artifact
-  that already began may complete or fail after the Meeting stops, but not at or
-  after its `purge_at` deadline.
-- Provider reconnect stays inside the current Segment and retains its provider
-  glossary revision. User pause/resume, rollover, and browser-crash recovery
-  create Segment boundaries. Resume confirms the authoritative Segment before
-  token issuance. Token and Gemini instruction use the Segment-immutable
-  provider glossary snapshot. Local deterministic correction has an independent
-  SHA-256 revision that hot reloads after a successful glossary save and binds
-  each Turn/Cue on first accepted event; refresh failure preserves the last
-  confirmed snapshot and never blocks a legal recording resume.
-
-Meetings already active on lifecycle v1 remain on the legacy flow until they
-stop. Legacy relationship columns remain readable during that compatibility
-window; terminal Meetings are not destructively backfilled.
 
 ## 1. Purpose
 
@@ -235,19 +137,10 @@ exposed per-Session SSE sharing. Those SSE and Supabase Realtime paths do not
 carry current Meeting Viewer subtitles. Current Meeting Viewer shares authorize
 a WebRTC DataChannel connection to the Host.
 
-Meeting-first recorder sharing creates a configurable Meeting draft and its
-first empty Segment before recording. The creator saves the name, languages,
-meeting glossary, translated-audio playback, and original-audio recording
-settings in the independent Meeting Settings layout before issuing a Viewer
-share link and QR code; the
-shared recorder page does not activate the Meeting, create a Session, claim a
-lease, or request microphone access until the recipient explicitly starts
-recording. Editing settings during recording takes effect at the next Segment
-boundary.
-The first Session is then created and bound to the empty Segment, after which
-the existing recorder grant, lease, checkpoint, and direct Gemini flow apply.
+Meeting Settings creates a configurable draft and Viewer share before recording. Host Start creates and persists recording Session／Segment identities in IndexedDB, then requests a Meeting-authorized short-lived Gemini token. Pause, Continue, rollover and recovery use Host-local durable operations; cloud Meeting metadata does not own recorder leases or recording Checkpoints.
 
-Translation execution status is also available through the authenticated
+
+歷史 Session 翻譯執行狀態曾透過 authenticated
 `/api/sessions/:sessionId/execution-events` WebSocket. A process-local execution
 broadcaster publishes safe snapshots after persisted execution create/update
 operations, including worker transitions, manual retry, cancellation, and DLQ
@@ -260,66 +153,18 @@ TranslationOutput contracts, read-model contracts, and Compatibility Adapter
 mapping. Phase 2C adds saved transcript re-translation, multiple outputs,
 retry/cancel/delete, provider selection, and output version UI.
 
-The DLQ administration capability is backend-only: when durable queue storage is
-enabled, a protected application service lists the full file-backed DLQ and
-creates new queued executions for single-item replay while retaining original
-failure records.
+DLQ 管理元件屬獨立翻譯執行設計；現行 Local-only API 的 execution／DLQ 內容路由回傳 `410 meeting_content_local_only`，不得用它推定 Meeting 內容或背景 Worker 仍在雲端執行。
 
 The first Phase 2B-2 implementation slice adds `SessionApplicationService` as
 the boundary for Session commands and Session read models. Existing repository
 and read-model adapters remain responsible for legacy `SessionRecord`
 compatibility mapping.
 
-The Meeting Live recorder uses the direct translation path backed by
-`LiveTranslateSession` and `gemini-3.5-live-translate-preview`. Gemini returns
-source and translation events for the same live Cue. Either side may finalize
-and publish independently; a delayed counterpart updates the same `cueId`, while
-the existing Session/Meeting checkpoint, rollover, interrupted recovery, and
-Viewer ordering remain shared with the recording path. The source-only
-`LiveTranscriptionSession` remains available for a future asynchronous
-translation pipeline but is not the active Meeting runtime.
+Meeting Live uses `LiveTranslateSession` with `gemini-3.5-live-translate-preview`. Gemini returns source and translation events for the same Cue; either side may finalize first, and the later side updates the same `cueId`. Final Cues and Checkpoint cursors are committed in Host IndexedDB; audio and PCM are sealed in OPFS. Rollover changes the local Segment identity after its durability barrier. A replacement Gemini connection uses a fresh short-lived token and the available resumption handle. Reload reads Host-local committed Cues, Checkpoints and Segments; Viewer receives Host snapshot／replay through WebRTC DataChannel.
 
-Long Meeting support adds a separate Meeting aggregate with ordered
-MeetingSegment records. A MeetingSegment may reference an existing Live Session
-by `liveSessionId`; compatibility `SessionRecord` snapshots may optionally carry
-`meetingId` and `segmentId`. This does not change the browser-to-Gemini audio
-path or ephemeral token flow.
 
-Long Meeting proactive segmentation rolls over one active Segment into the next
-active Segment while retaining the same logical browser provider session. A
-provider WebSocket may be replaced for GoAway or connection loss; the browser
-uses the latest session-resumption handle and provisions a fresh single-use
-ephemeral token for every replacement Live session.
+長會議的 Segment rollover、Checkpoint 與 Reload 恢復以 Host IndexedDB／OPFS 的提交紀錄為權威。Viewer 從 Host WebRTC DataChannel 取得 Segment transition、Cue snapshot 與 replay；雲端 metadata 不承擔錄製內容恢復。
 
-Final subtitle Cues are stored in the existing file-backed Meeting/Segment
-checkpoint. Each finalized Cue keeps raw source/translation values plus
-optional versioned refined values and refinement status. Partial Cues, processed
-event IDs, and pending boundary state are stored only in the recovery Cue
-checkpoint. Session detail reads aggregate final Cues across Segments in
-sequence order while preserving legacy transcript fields
-for compatibility.
-
-The live UI renders `finalCues` as ordered bilingual rows and derives at most
-one trailing partial preview from `currentCue`/`pendingCues`. History and reload
-render only `sessionDetail.cues`; when that list is empty, the existing legacy
-transcript reading view remains available. The Cue list follows the latest row
-until the user scrolls upward, and Pause/Resume/Stop preserve readable Cue
-content while terminal sessions reject late partial UI updates.
-
-Long Meeting recovery API support can mark an active Segment as `interrupted`
-or `failed` with a final checkpoint. Interrupted recovery creates the next
-ordered active Segment for a fresh Live session association. The live UI uses
-this path for controlled reconnect after unexpected close or token expiration.
-When opened with `#live?meetingId=...`, the live UI reads ordered Segment
-checkpoints, restores confirmed transcript content, and lets the user manually
-continue recording in the next recovered Segment.
-
-Historical Issue #29 specified a Meeting-level Viewer broadcast path with
-checkpoint-backed Cues, a process-local broadcaster, and snapshot/cursor
-reconnect. Milestone 5 historically implemented Cue publish,
-in-memory replay, and SSE gap recovery. Current Meeting Viewer snapshots,
-updates, and replay come from the Host over WebRTC DataChannel; Supabase
-Realtime and cloud Final Cue rows are not a Meeting subtitle fallback.
 
 ## 3. Runtime Architecture
 
@@ -1124,41 +969,6 @@ JWT with the publishable Supabase key even when the actor is an assigned member;
 If a user-scoped client is unavailable, the API fails closed with
 `cloud_capability_unavailable` and does not fall back to file storage or a
 service-role request.
-
-## 15. 歷史 Cloud Recording 儲存模型（非現行正式錄製路徑）
-
-本節的雲端 Cue／音訊／事件、Realtime、SSE 與 file-backed Session 敘述僅記錄舊契約；現行 Meeting 的本機錄製與 Viewer 字幕以本文開頭的 Local-only 架構為準。其他仍使用的執行事件 WebSocket 等功能不受此切換說明影響。
-
-Historical cloud mode:
-
-- Supabase cloud mode stores owner-scoped Meetings, Segments, Sessions, Final
-  Cues, shares, audio metadata, glossary data, translation queue/DLQ records,
-  recorder leases, execution status, meeting events, and observability metrics
-  under RLS or service-role-only RPC boundaries as appropriate.
-- Original Segment audio is WebM/Opus uploaded by browser TUS directly to the
-  private `meeting-audio` bucket; Vercel handles metadata and signed URLs only.
-- Final Cue writes trigger private Supabase Realtime broadcasts, so production
-  does not require process-local Meeting event state.
-- Local Node development retains file-backed repositories, segmented WAV
-  artifacts, and SSE for compatibility.
-
-- Backend server runtime uses a JSON file-backed SessionRepository by default at
-  `session-records.json` under `DATA_DIR`.
-- `SESSION_RECORDS_FILE` overrides the default file path when configured.
-- File-backed session storage preserves saved sessions, transcript items, and
-  translation command state across page refresh and server restart.
-- No `localStorage`.
-- No `IndexedDB`.
-- Cloud persistence is database-backed; file-backed adapters are local fallback.
-
-The file-backed adapter is intended for the current single-node internal-tool
-scope. It is not a multi-process locking or production database substitute.
-
-If browser-local durable storage is introduced later:
-
-- Evaluate `IndexedDB` first.
-- Use epoch milliseconds for timestamps.
-- Define retention, delete, and migration policy up front.
 
 ## 16. Security and Privacy Boundaries
 

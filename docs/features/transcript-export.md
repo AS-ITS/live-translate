@@ -1,124 +1,15 @@
 # Transcript Export
 
-Issue #41 Cutover in the current development branch supersedes the older Cloud Export flow below: the Host reads final Cues and raw/translated audio from local IndexedDB/OPFS after Reload. TXT/SRT/VTT and audio download remain on the Host; new Cloud Export requests and historical cloud download routes return `410 meeting_content_local_only`. Historical cloud rows are retained for a separate controlled cleanup.
-Meeting Detail uses meeting metadata and Host local Cues for transcript and export; it does not poll retired Session Detail or Translations content endpoints.
+現行 Meeting 匯出以 Host IndexedDB 的 Final Cues 產生 TXT／SRT／VTT；音訊從 Host OPFS 讀取。Reload 後仍由同一瀏覽器的本機內容提供匯出。缺少本機內容時顯示不可用，不退回雲端 Cue 或 Cloud Export。已退役的 Meeting 內容端點回傳 `410 meeting_content_local_only`。
 
-Status: Cue-backed Session export implemented (WP5A); P7 cloud lifecycle and P8 cloud-only path completed
+## 現行功能與邊界
 
-P7 adds the Supabase cloud lifecycle for Meeting exports. Cloud TXT, SRT, and VTT
-exports are server-canonical and asynchronous. The API reads persisted Final
-Cues first, falls back to persisted transcript items when no Final Cues exist,
-stores the result in the private `meeting-exports` bucket, and exposes only a
-60-second signed download URL. When the recording browser has IndexedDB Final
-Cues for same Meeting, completed Meeting detail browser TXT/SRT/VTT export
-use those durable local Cues first. Cloud export remains the fallback when
-local Cues unavailable.
+Host 的 Meeting Detail 以本機 Final Cues 匯出 TXT、SRT、VTT。只匯出 Final Cue，依 `cueId` 去重並依序號排序；可選原始或潤飾後文字，但不得改變 Cue 編號與時間窗。字幕時間是瀏覽器觀察時間，並非媒體對齊時間。原始及翻譯音訊須有完整的本機 OPFS artifact 才顯示下載；缺段時保留封存資料並顯示不可用。
 
-The export artifact key is `(owner_user_id, meeting_id, source_hash, format,
-stream)`. Repeating a request for the same source is idempotent. `queued` and
-`processing` artifacts are polled by the cloud UI every two seconds for up to
-60 seconds; `failed` and `stale` artifacts can be retried without exposing
-storage paths or transcript text in logs.
+此能力不變更 Gemini Live 連線、token 流程或後端 Meeting 內容儲存模型。
 
-## 1. Feature Overview
+## 匯出格式
 
-Transcript Export is a Phase 2 planning feature that lets an internal user
-download transcript content from the current or previously selected translation
-session.
-
-The current minimal implementation builds on the existing frontend transcript
-item model from `src/lib/transcript.js`. It exports deterministic text files
-from available current-session transcript items without changing the Gemini Live
-session, token flow, backend API, storage model, or production authentication
-behavior.
-
-This feature does not add a backend endpoint, persistence, or real Gemini API
-validation.
-
-For persisted Sessions and Meetings with final `cues`, TXT, SRT, and VTT exports
-use the same normalized Cue list: final-only filtering, cueId de-duplication,
-sequence ordering, session-relative timeline validation, and export-time
-language-aware wrapping. Partial Cues are never exported. Refined source and
-translation values are the default when available; the UI can explicitly
-choose the raw values. Both variants preserve identical Cue numbers and time
-windows.
-
-Meeting detail exports use persisted `finalCues` as the canonical subtitle
-source. This keeps subtitle text and time windows stable after reload and avoids
-exporting each durable transcript chunk as a separate flashing subtitle. Older
-Meetings without persisted Cues retain a conservative transcript fallback that
-groups adjacent fragments until sentence punctuation or a clear pause.
-
-Meeting audio download controls are rendered only for successfully stored audio
-artifacts. If neither original nor translated audio is available, the detail
-page shows an explicit no-audio message instead of disabled download controls.
-
-When an older Session, Meeting, or re-translation has no persisted Cues,
-timed export derives one shared set of Cue windows from the source transcript
-and distributes translation text across those windows. If no source timing is
-available at all, the legacy item-timing fallback remains available because
-there is no reference timeline from which alignment can be derived.
-
-SRT/VTT timing is approximate frontend observation timing, not media-aligned
-timing. Subtitle cues are derived from when transcript items are observed and
-finalized in the browser.
-
-## 2. Goals
-
-- Export transcript content in TXT, SRT, and VTT formats.
-- Use the transcript item model produced by `src/lib/transcript.js`.
-- Preserve transcript ordering by `sequence`.
-- Support source and translated transcript streams.
-- Export only persisted Final Cues when available, with the persisted
-  transcript-item fallback for older records.
-- Prefer refined Cue values by default and support explicit raw export.
-- Handle missing timing data gracefully.
-- Keep export behavior deterministic and unit-testable.
-- Preserve the existing Start / Stop flow.
-- Use the P7 server-canonical export lifecycle for every supported transcript
-  download.
-- Add no real Gemini API dependency for validation.
-
-## 3. P7 Cloud API
-
-Owner-only endpoints are available in Supabase cloud mode:
-
-- `POST /api/meetings/:meetingId/exports` with `{ "format": "txt", "stream": "translation" }` returns `202` for a queued artifact.
-- `GET /api/meetings/:meetingId/exports` lists artifact metadata.
-- `GET /api/meetings/:meetingId/exports/:exportId` returns one artifact status.
-- `POST /api/meetings/:meetingId/exports/:exportId/download-url` returns a 60-second signed URL only when ready.
-- `DELETE /api/meetings/:meetingId/exports/:exportId` removes the Storage object before metadata.
-
-Timed formats do not accept `stream: "both"`. The shared `export_jobs` PGMQ
-worker uses the existing visibility timeout, retry, and dead-letter behavior.
-Meeting deletion stops if export Storage cleanup fails.
-
-## 4. P8 Cloud-only path (historical)
-
-P8 used the cloud export lifecycle for Meeting detail downloads. Issue #41
-replaces that panel's source with Host local Cues as described below. The
-server endpoints remain available for compatibility.
-
-## 5. Non-Goals
-
-- Translation history.
-- Session history persistence.
-- Database storage.
-- Migrating existing local JSON or audio data into Supabase.
-- User accounts or access-control changes.
-- Editing transcript text before export.
-- Exporting raw audio.
-- Speaker diarization.
-- AI summaries.
-- Changing Gemini Live API session behavior.
-
-- Calling the real Gemini API in tests.
-
-## Issue #41 local Meeting export
-
-The Meeting detail export panel now downloads TXT, SRT, and VTT from Cues read from this Host browser's IndexedDB. Original audio downloads require a local OPFS artifact. When local content is absent, the panel shows an unavailable state and does not fall back to the cloud export API. Legacy cloud export endpoints remain for historical compatibility; lifecycle v2 Meeting reads and queued Worker jobs are rejected before cloud Cue reads or artifact writes. Reload export of translated audio is not yet available.
-
-## 6. Export Formats
 
 ### TXT
 

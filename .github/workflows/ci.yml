@@ -49,12 +49,11 @@ jobs:
           tests/unit/profileService.test.js
           tests/unit/profileHttpApi.test.js
           tests/integration/accountPermissions.integration.test.js
-      - name: Run durable worker and Viewer tests
+      - name: Run durable worker and Viewer state tests
         run: >-
           node --test
           tests/unit/fileDurableTranslationExecutionQueueRepository.test.js
           tests/unit/translationExecutionWorkerRuntime.test.js
-          tests/unit/meetingViewerRealtime.test.js
           tests/unit/meetingViewerState.test.js
 
   local-only-contract:
@@ -84,3 +83,10 @@ jobs:
           tests/unit/localMeetingOwnerAccess.test.js
           tests/unit/issue41CloudZeroWriteContract.test.js
           tests/unit/issue41OwnershipEvidence.test.js
+          tests/unit/cueB2Writer.test.js
+          tests/unit/b2CheckpointCursorContract.test.js
+          tests/unit/durableLegacyContinue.test.js
+          tests/unit/lifecycleRecoveryController.test.js
+          tests/unit/providerRecoveryCoordinator.test.js
+          tests/unit/webrtcSubtitleDataChannel.test.js
+          tests/unit/webrtcSubtitleTransport.test.js

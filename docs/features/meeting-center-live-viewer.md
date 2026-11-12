@@ -1,34 +1,11 @@
 # Meeting Center and Live Viewer
 
-## Status
+## 現行能力
 
-Issue #31 P3 is implemented for cloud deployments: original Segment audio
-uploads directly from the browser to private Supabase Storage, and Meeting
-Viewer receives database-persisted Final Cues through private Supabase
-Realtime. Local development without Supabase keeps the WAV and SSE fallback.
+Meeting Management 是應用程式的會議入口，提供設定、Live、History Detail 與 Viewer 頁面。新建 Meeting 的 PCM、音訊、Cue、Transcript、Checkpoint 與 Recovery 由 Host OPFS／IndexedDB 保存；Supabase 保存會議 metadata、字典、分享與授權。Viewer 透過分享連結取得授權後，經 WebRTC DataChannel 接收 Host 的即時字幕、快照與重播。Redis／Node.js API 協調 signaling。舊的 Supabase Realtime 與 Meeting SSE 字幕路徑已退役。
 
-Milestone 4 is implemented: Meeting Viewer shares now support Meeting-scoped
-viewer links, short codes, QR entry, sanitized historical Cue snapshots, and a
-windowed bilingual Cue renderer.
+詳見[架構總覽](../architecture/architecture-overview.md)與[WebRTC 驗證契約](../verification/webrtc-browser-deployment.md)。
 
-Milestone 3 is implemented: Meeting Management remains the canonical
-application home and opens a status-aware Meeting Workspace with Live
-Subtitles, Meeting Glossary, Export, and completed-history tabs. Global glossary
-selections and Meeting-private glossary entries
-are isolated; private entries are stored in Meeting and Segment snapshots and
-are never included in Viewer payloads. Cue broadcast and reconnect recovery
-remain planned for later delivery phases.
-
-## Capability Overview
-
-Issue #29 consolidates the product around a Meeting as the only user-facing
-work unit. The Meeting Management list is the application home, with separate
-Setting, Live, History Detail, and public Viewer pages.
-
-The capability extends the existing Meeting, MeetingSegment, Final Cue,
-checkpoint, opaque share, QR code, short-code, and SSE foundations. It does not
-change the browser-to-Gemini Live connection, ephemeral token flow, Recorder
-lease model, or security model.
 
 ## Goals
 
@@ -179,17 +156,8 @@ Gemini translation correction also requires a safely identifiable term or alias 
 
 ### Permission separation and stop window
 
-A Viewer share is read-only. Its token or short code grants only the
-sanitized Viewer snapshot and live updates; it cannot record, submit
-Cue/checkpoint/operation/audio queue items, download audio, or create an
-export. Host export is an independent authenticated capability and is never
-inferred from a Viewer share or ordinary Viewer membership.
+Viewer share tokens and short codes authorize sanitized metadata and Host DataChannel subtitles only. They do not authorize recording, Cue／Checkpoint writes, or Host-local audio export. Host export requires separate authenticated permission. A completed Meeting retains its existing 30-minute Host-local retention deadline; expiry rejects Viewer content access and Host export.
 
-When the host stops a Meeting, or stale-recorder policy stops it, Viewer and
-Recorder share access is revoked immediately and existing Viewers stop
-receiving new Cues. The host retains a separate 30-minute window to export
-TXT/SRT/VTT and download completed audio; after expiry content returns
-`410 meeting_content_expired`.
 
 Viewer shares are Meeting-scoped while retaining the existing opaque token,
 short-code, expiry, revocation, and anonymous Viewer model.
@@ -202,70 +170,16 @@ Meeting access API contract:
   plaintext token and short-code URLs once.
 - `DELETE /api/meetings/:meetingId/shares/:shareId` remains restricted to the Meeting owner or `super_admin`.
 
-Anonymous Viewer API contract:
+Viewer 授權 API 僅提供 Meeting metadata 與分享資訊。短碼可解析分享；字幕與快照由 Host WebRTC DataChannel 傳送。Viewer 不取得 Host 音訊、API key、短效 token、錄製租約或本機 Checkpoint。
 
-- `GET /api/shared-meetings/:token` returns the sanitized Meeting snapshot.
-- `GET /api/shared-meetings/code/:shortCode` resolves a short code.
-- `POST /api/shared-meetings/:token/realtime-token` returns a five-minute
-  Viewer JWT and private `meeting:<meetingId>` channel.
-- `POST /api/shared-meetings/code/:shortCode/realtime-token` provides the same
-  exchange for a short code.
-
-Cloud audio uses metadata-only HTTP endpoints. The browser uploads WebM/Opus
-with TUS directly to
-`meeting-audio/<owner>/<meeting>/<segment>/recording.webm`. Completion verifies
-the stored object; download requests perform ownership validation and return a
-60-second signed URL. Audio bytes never cross the Vercel Function.
-
-Viewer detail contains the Meeting summary, ordered Segment metadata, and all
-final bilingual Cues. It excludes API keys, ephemeral tokens, audio artifacts,
-input-device metadata, Recorder grants, leases, and glossary contents.
 
 The Viewer is strictly read-only. It never requests a microphone, creates a
 Live Session, claims a Recorder lease, or writes a Session/checkpoint.
 
-## Cue Broadcast Contract
+## Cue 傳遞契約
 
-In cloud mode, persistence is the broadcast boundary:
+Host 在本機 Cue Writer 確認 Final Cue 後，經 DataChannel 向 Viewer 發送 append／update；Viewer 依 `cueId` 與版本合併。新連線取得 Host snapshot，重連時可依來源與序號 replay。Cue 發送不等待雲端 Cue、Checkpoint、音訊上傳或背景工作。
 
-```text
-stable Cue with source or translation finalized
-  -> validate Meeting/Segment/Session relationship
-  -> upsert subtitle_cues
-  -> database trigger broadcasts cue.append on a private Realtime channel
-  -> Viewer merges by cueId/version
-```
-
-The database trigger publishes an event shaped like:
-
-```js
-{
-  eventId: 39,
-  type: "cue.append",
-  meetingId: "meeting-1",
-  segmentId: "segment-2",
-  cue: {
-    cueId: "cue:session-1:segment-2:39",
-    sequence: 39,
-    status: "final",
-    sourceText: "確認的原文。",
-    sourceStatus: "finalized",
-    sourceVersion: 1,
-    translatedText: "",
-    translationStatus: "pending",
-    translationVersion: 0,
-    startTimeMs: 1000,
-    endTimeMs: 2800
-  }
-}
-```
-
-The event stream has a monotonically increasing Meeting-local event ID. The
-initial REST snapshot includes a cursor containing the latest event ID and Cue
-sequence.
-
-The broadcaster must not await checkpoint writes, transcript persistence, audio
-uploads, or unrelated background work before notifying Viewers.
 
 ## Viewer Ordering and Reconnect
 
@@ -288,46 +202,12 @@ when the source changed or retained replay history has a gap.
 The initial snapshot returns the latest 100 Cues and an opaque cursor for
 loading older pages. Each older page is merged by Cue ID without duplicates or
 omissions. The Viewer uses `cueId` as the idempotency key and orders Cues by
-Segment sequence followed by Cue sequence. A newer version may replace the same Cue;
-a stale version cannot overwrite a newer one. Device snapshots and cloud events
-carry validated Segment sequence. A live Cue without resolved Segment order stays
+Viewer 依 Segment 與 Cue 序號排序，對相同 `cueId` 獨立合併原文與翻譯版本；較舊版本不得覆蓋較新版本。
+
 after ordered historical Cues. Source and translation versions merge independently.
 
-Reconnect behavior:
+Reconnect behavior: Viewer 保留現有 Cue，經授權的 `/join` 更新 signaling participant。短暫斷線先嘗試 ICE restart，再建立新的 PeerConnection／DataChannel；新通道依來源與序號要求 replay，缺口或來源變更時取得 Host snapshot。Cue 依 `cueId` 與來源／翻譯／潤飾版本合併，較舊版本不得覆蓋新版本。重試耗盡時保留字幕、捲動位置、字幕顯示偏好與全螢幕狀態，顯示手動重新整理動作。
 
-1. Detect the SSE disconnect.
-2. Fetch the current Meeting snapshot.
-3. Merge the snapshot by Cue ID and ordered sequence.
-4. Reconnect to SSE with the latest cursor when supported.
-5. Apply new events through the same deduplication and ordering rules.
-6. Refetch the snapshot if a sequence gap is detected.
-
-The WebRTC fast path renews its signaling participant with an authorized `/join`.
-Viewer join requests a fresh negotiation, Device maintains a targeted peer per
-Viewer, and low-frequency discovery polling continues while channels are open.
-Supabase Realtime token refresh and channel-failure reconnect use independent
-timers. A `CHANNEL_ERROR`, `TIMED_OUT`, or `CLOSED` status cancels the current
-generation's refresh timer, tears down that channel, and starts bounded
-reconnect; late callbacks from an old generation cannot remove its replacement.
-The Viewer keeps current Cues during recovery. A transient `disconnected` state receives
-a five-second grace period; the Device then attempts ICE restart and rebuilds
-the peer if recovery does not complete within ten seconds. Full reconnect uses
-at most six attempts with jittered exponential delays capped at ten seconds.
-Snapshot, Realtime, and SSE recovery classify stopped, revoked, and unauthorized
-shares as terminal. Transient snapshot failures retry without clearing Cues.
-WebRTC recovery uses at most six attempts; exhausted WebRTC or fallback recovery
-enters `recovery_failed`, preserves Cues, scroll position, subtitle visibility,
-and fullscreen state, then shows an inline “重新整理頁面” action. The Viewer
-never reloads automatically. A later healthy PeerConnection, ICE state, and open
-DataChannel may return `recovery_failed` to `connected` before the user reloads.
-
-DataChannel snapshot and replay envelopes may include `sourceId`. A Viewer asks
-the same source to replay after its last received transport sequence. A changed
-source starts from a snapshot. Replay older than retained history also returns
-a snapshot. Cloud Cue publication continues while WebRTC is connected, allowing
-snapshot and Realtime replay after a later outage. Cue merge remains authoritative by `cueId` and
-source/translation/refinement versions, so a late snapshot cannot replace a
-newer Cue.
 
 The Viewer follows the latest Cue by default. Manual upward scrolling disables
 automatic scrolling and shows a “back to latest” action. A new Cue does not
@@ -370,43 +250,18 @@ historical data behavior before the next phase begins.
 
 ## Short-lived retention behavior
 
-Only successful Meeting completion starts one recording-wide 30-minute deadline;
-all Sessions and rollover Segments in that recording share it. The database
-sets and freezes `ended_at` and `purge_at`. Pauses, reconnects, rollovers,
-interruption, and failed sessions do not start or extend it. Legacy rows without
-a verified completion anchor are not bulk-deleted.
+Successful Meeting completion fixes `ended_at` and `purge_at` at 30 minutes later. Pause, reconnect and rollover do not extend the deadline. Ordinary Meeting／Viewer reads are denied after expiry; local OPFS／IndexedDB cleanup runs when the Host next opens or checks its content. Expiry is an authorization boundary, not a background deletion worker. Physical cloud metadata deletion uses the authorized Meeting deletion API.
 
-At expiry, recording content, Viewer snapshot/replay, new cues, checkpoint
-writes, background output, and direct authenticated Storage access are rejected.
-Meeting settings, members, glossary, and audit records remain. The UI separates
-"錄製資料已到期" from "實體資料已清除". Local OPFS and IndexedDB copies are
-checked on startup, foreground, every minute, and before reads/exports; a
-crashed/closed browser cleans on next opening. An export started before expiry
-may finish while its browser lock delays local deletion. Downloaded files are
-outside application control.
-
-There is no Supabase Cron, Vercel Cron, or external scheduler. Existing Meeting
-GET requests opportunistically trigger a managed background batch: at most one
-Meeting, 20 Storage objects or 50 database rows, with a persistent 15-second
-cross-instance throttle and a short retryable claim. With no website/API
-traffic, cloud physical data may remain past the 30-minute deadline until the
-next relevant request; access is still denied at expiry. Storage objects are
-removed through the official Storage API. A completed or expired Meeting can
-still be manually deleted; only its owner or an active super-admin can retry a
-completed deletion using the protected minimal tombstone.
 
 ## Security and Compatibility Constraints
 
 Viewer 在 Recorder 尚未出現時維持單一 negotiation，週期性重送 `viewer-ready` 作為 discovery，不重建 PeerConnection 或消耗 transport recovery 次數。Recorder 在成功續租 signaling participant 後重設 discovery recovery budget；單一 Viewer peer 中斷不得停止其他 Viewer 或 Recorder 的 discovery poll。DataChannel 建立後仍以 Snapshot／Replay 補齊，再接續可靠有序的 Live Cue。
 
-- Never expose `GEMINI_API_KEY` or ephemeral tokens to Viewers.
-- Preserve `/api/live-token` access gates, rate limits, and origin checks.
-- Preserve Recorder lease, grant, and fence-token validation.
-- Preserve share expiry and revocation.
-- Sanitize Viewer DTOs at the backend boundary.
-- Do not delete existing share, transcript, checkpoint, or re-translation data.
-- Keep the broadcaster process-local for this capability; multi-process delivery
-  is a future design.
+- Never expose `GEMINI_API_KEY`, user Gemini keys or ephemeral tokens to Viewers.
+- Preserve `/api/live-token` authorization, rate limit and origin checks.
+- Preserve share expiry, revocation and sanitized Viewer DTOs.
+- Keep Host recording durability independent of Viewer delivery ACKs.
+
 
 ## Acceptance Matrix
 

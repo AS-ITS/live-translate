@@ -304,7 +304,7 @@ Frontend testing scope for MVP:
 
 ## Runtime capability matrix
 
-現行正式 Meeting 的錄製內容一律為 Host Local-only。下表只列目前產品路徑；下方舊 worker／file-backed／Cloud Recording 說明屬歷史或其他能力，不可視為 Meeting 雲端錄製承諾。
+現行正式 Meeting 錄製內容由 Host 保存。以下為目前產品路徑。
 
 | Capability | Local | Preview／Production |
 | --- | --- | --- |
@@ -313,7 +313,7 @@ Frontend testing scope for MVP:
 | Viewer 字幕 | WebRTC DataChannel，Redis signaling | WebRTC DataChannel，Redis signaling；跨網路 TURN 需實機驗收 |
 | Readiness | `/readyz` 檢查本機設定 | `/readyz` 檢查 Supabase 等部署設定，不代表 RC1 實機驗收通過 |
 
-歷史 Cloud Recording、SSE／WebSocket Viewer adapter、Supabase Realtime 與 signed Storage URL 設計保留作遷移背景；它們不是現行正式 Meeting 的字幕或錄製內容交付能力。下文提及的雲端音訊、Cue、Transcript、Checkpoint 或 export worker 若未註明，均應依本段界定為歷史／其他能力，不可用來推定 Local-only Meeting 會上傳內容。
+Meeting 錄製內容不經雲端持久化；Viewer 字幕只由 Host WebRTC DataChannel 傳送。
 
 For the safe deployment preflight, set `SMOKE_BASE_URL` and run `npm run test:deployment-preflight`. It verifies `/healthz`, `/readyz`, unauthenticated private API rejection, metrics auth rejection, and worker auth rejection without calling Gemini or processing queue items. For the full staging smoke check, separately verify a valid owner-scoped API request and one authenticated worker request with `Authorization: Bearer $CRON_SECRET`. A successful `/healthz` response alone does not prove that Supabase migrations, RLS, or the worker are ready; legacy Storage／Realtime readiness checks, where still present, do not make those services the current Meeting content path.
 ## Production Gemini Smoke Test
@@ -336,33 +336,8 @@ available to the smoke runner. Do not place that key in browser-exposed
 Google OAuth can complete successfully while `GET /api/profile` rejects a personal-domain or disabled account with `403 auth_forbidden`. `AUTH_ALLOWED_EMAIL_DOMAINS` remains the backend authority; Google `hd` hints are optional UI guidance only and are not an authorization control. The access-denied screen keeps the session long enough to show the current email, and users must choose “切換 Google 帳號” to sign out and reopen the Google account picker with `prompt=select_account`.
 ## Supabase request boundaries
 
-本節以下的 P7／P8 Cloud Recording、signed Storage URL、雲端音訊清理及 legacy Session export 敘述是歷史／其他能力紀錄；不可作為 Issue #41 正式 Meeting 錄製內容或 Viewer 字幕來源的現行能力說明。現行資料邊界以[架構總覽](architecture/architecture-overview.md#現行正式產品架構local-only)與上方 capability matrix 為準。
+Meeting 內容的本機／雲端資料邊界見[架構總覽](architecture/architecture-overview.md#現行正式產品架構local-only)與上方 capability matrix。
 
 Private owner CRUD may use the authenticated Supabase access token through the user-scoped REST client. Worker, admin, Vault, readiness, and other explicitly privileged operations use the service-role client. The two clients must not be interchangeable.
 
 `/readyz` validates the server Supabase variables and confirms that `SUPABASE_URL`, `SUPABASE_JWKS_URL`, and `VITE_SUPABASE_URL` resolve to the same project without exposing configuration values. Missing or mismatched configuration remains fail-closed.
-P7 cloud Meeting exports use `export_artifacts` metadata, the private
-`meeting-exports` Storage bucket, and the existing PGMQ worker pattern through
-the `export_jobs` queue. Readiness checks the bucket; missing cloud export
-dependencies fail closed with `503`.
-
-P8 makes transcript export cloud-only. Supabase deployments use the P7
-asynchronous export panel and signed download URLs. Local file-backed mode
-keeps meeting and transcript reads available but shows an export-unavailable
-message; it does not generate browser transcript files and does not migrate
-local JSON or audio data.
-
-Issue #37 Phase 3 retention cleanup runs in the same bounded
-`/api/internal/worker` Cron invocation. It claims due v2 Meetings with
-`claim_due_meeting_purges`, deletes `meeting-audio` and `meeting-exports`
-objects through the service-role Storage boundary, then deletes the Meeting
-row. Storage deletion precedes the database cascade; failed claims are marked
-retryable and reclaimed by a later invocation. The response reports
-`purges.claimed`, `purges.purged`, and `purges.failed` without exposing paths
-or credentials.
-
-Phase 4 also exposes `purgeAt` in owner Meeting detail responses, returns
-`410 meeting_content_expired` after the deadline but before physical deletion,
-and records purge counts/latency under the `retention` metrics operation.
-Lifecycle v2 repository writes leave legacy linkage/transcript columns empty or
-null; v1 rows remain readable.

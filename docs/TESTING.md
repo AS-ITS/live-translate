@@ -1,15 +1,17 @@
 # Testing
 
-Issue #41 未解決回歸驗證缺口：mobile WebKit E2E 因找不到「繼續」按鈕而失敗；該流程尚未通過，不能計為 PASS。
+## 現行 Local-only 回歸契約
 
-Issue #41 音訊診斷面板與 OPFS 步驟標記已移除。iPhone Safari 私密瀏覽可能在本機音訊保存時回報 `UnknownError`，一般瀏覽模式已正常；請使用一般瀏覽模式保存會議音訊，並在匯出前確認音訊可用。翻譯音訊寫入失敗或缺段時不得提供不完整匯出；`tests/e2e/issue41TranslatedOpfsRca.spec.js` 保留正常 OPFS 寫入與 Reload 回讀回歸，WebKit 若無法取得 OPFS 根目錄會明確 skip，不能視為 iPhone 實機通過。
+未解決回歸驗證缺口：mobile WebKit E2E 因找不到「繼續」按鈕而失敗；該流程尚未通過，不能計為 PASS。
 
-Issue #41 Pause → Reload → Continue 定向驗證：`tests/e2e/liveTranslate.spec.js` 的
+iPhone Safari 私密瀏覽可能在本機音訊保存時回報 `UnknownError`，一般瀏覽模式已正常；請使用一般瀏覽模式保存會議音訊，並在匯出前確認音訊可用。翻譯音訊寫入失敗或缺段時不得提供不完整匯出；`tests/e2e/issue41TranslatedOpfsRca.spec.js` 保留正常 OPFS 寫入與 Reload 回讀回歸，WebKit 若無法取得 OPFS 根目錄會明確 skip，不能視為 iPhone 實機通過。
+
+Pause → Reload → Continue 定向驗證：`tests/e2e/liveTranslate.spec.js` 的
 `Local Pause Reload Continue commits both subtitle segments across second Pause and Reload`
 會核對兩段 Cue、Transcript 與各段 Checkpoint cursor。`tests/unit/cueB2PendingIndexedDb.test.js`
 另外驗證歷史 Pending Cue 在 Reload 後不能提交到新 Segment，原始歸屬與失敗診斷仍留在 IndexedDB。
 
-Issue #41 登記前 Cue queue 失敗定向驗證：`tests/unit/issue41PreCoordinatorCueQueue.test.js`
+登記前 Cue queue 失敗定向驗證：`tests/unit/issue41PreCoordinatorCueQueue.test.js`
 確認未登記的失敗會保留待重試、阻擋 Pause／End，恢復後只提交一次；
 `tests/e2e/liveTranslate.spec.js` 的 `pre-writer Cue setup failure retries before later Cue and Pause readback`
 在 Chromium／mobile WebKit 注入首次 IndexedDB Segment 讀取失敗，核對安全診斷、兩個 Cue 的保存順序、Pause 與 Reload 回讀。

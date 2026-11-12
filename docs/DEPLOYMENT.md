@@ -6,6 +6,8 @@
 
 ## 首次部署前置步驟
 
+Preview 與 Production 的 Google Cloud Client、Supabase Auth URL、Vercel 環境對應及登入驗證，依 [Google OAuth 安裝指南的雲端章節](GOOGLE_OAUTH_SETUP.md#5-previewproduction各環境分開配置)逐環境設定。
+
 1. 安裝專案依賴、Supabase CLI、Vercel CLI，確認擁有目標專案權限。建立**分離**的 Preview 與 Production Supabase 專案，分別取得 project ref、Project URL、publishable key、server-only secret key 與 Auth JWKS URL；不得將 secret 寫入版控或報告。依 [Supabase Google 登入設定](https://supabase.com/docs/guides/auth/social-sign-in/auth-google) 在 Google Cloud 建立 Web OAuth client，將各 Supabase 專案的 `/auth/v1/callback` 列為 Google authorized redirect URI，並在對應 Supabase Auth Google provider 設定 client ID／secret。Local 使用 `supabase/config.toml` 所列 client ID 與 `supabase/.env.local` 的 `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET`（檔案權限 `600`）。
 2. 在每個 Supabase 專案的 [Auth URL Configuration](https://supabase.com/docs/guides/auth/redirect-urls) 設定該環境 Site URL 與 Redirect URLs。Local 依 `supabase/config.toml` 使用 `http://127.0.0.1:5173`；Preview 使用實際 Preview URL；Production 使用正式網址。應用程式 OAuth 回跳網址須在允許清單內，Production 優先使用精確網址。Google OAuth callback（Supabase URL）與登入後 redirect（應用程式 URL）是不同設定。
 3. 在專案根目錄執行 `supabase login`、`supabase link --project-ref <target-project-ref>`。人工核對 `supabase/.temp/linked-project.json` 的 ref、名稱與環境，再執行 migration。 `npm run deploy:supabase` 只會對**目前連結**的專案執行 `supabase db push --linked`，不會切換目標。禁止對有資料的環境執行 `db:reset`。

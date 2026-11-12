@@ -14,7 +14,7 @@
 
 ## 本機啟動
 
-依[開發指南](docs/development.md)準備 Node.js、Supabase、Redis 和 Google Workspace OAuth。OAuth secret 存於 Git 忽略的 `supabase/.env.local`，檔案權限為 `600`；勿將 API key 或短效 token 寫入前端變數或提交至版本控制。
+依[開發指南](docs/development.md)準備 Node.js、Supabase、Redis；Google Cloud、Supabase Auth 與各環境 OAuth 的完整安裝步驟見 [Google OAuth 安裝指南](docs/GOOGLE_OAUTH_SETUP.md)。OAuth secret 存於 Git 忽略的 `supabase/.env.local`，檔案權限為 `600`；勿將 API key 或短效 token 寫入前端變數或提交至版本控制。
 
 ```bash
 npm ci

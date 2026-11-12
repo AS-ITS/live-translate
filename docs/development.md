@@ -2,6 +2,8 @@
 
 ## 正式本機安裝與啟動（現行 Local-only 路徑）
 
+Google Cloud Client、本機 callback、`supabase/.env.local` 與登入驗證的逐步設定，見 [Google OAuth 安裝指南的 Local 章節](GOOGLE_OAUTH_SETUP.md#4-local正式本機安裝)。
+
 本節供首次安裝者使用。下方既有 Phase 與雲端能力段落保留為開發／歷史脈絡；若描述 Supabase 保存錄音、Cue、Transcript 或 Viewer 從雲端重播，應以[現行架構](architecture/architecture-overview.md#現行正式產品架構local-only)為準。
 
 ### 系統需求

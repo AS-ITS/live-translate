@@ -649,7 +649,16 @@ test('legacy unscoped chunk IDs remain readable without rewriting IndexedDB or O
 });
 
 for (const continuedAfterFirstReload of [false, true]) {
-  test(`paused local End after reload seals once and survives metadata retry (continued: ${continuedAfterFirstReload})`, async () => {
+  test(`paused local End after reload seals once and survives metadata retry (continued: ${continuedAfterFirstReload})`, async (t) => {
+    const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { locks: { request: async (_name, _options, work) => work({}) } }
+    });
+    t.after(() => {
+      if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+      else delete globalThis.navigator;
+    });
     const retentions = new Map();
     const manifestStore = {
       ...createInMemoryLocalMeetingManifestStore(),

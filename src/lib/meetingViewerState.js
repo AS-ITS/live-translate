@@ -96,6 +96,8 @@ function positiveSequence(value) {
 }
 
 function mergeCue(existing, incoming) {
+  if (Number.isSafeInteger(existing.revision) && existing.revision > 0
+    && (!Number.isSafeInteger(incoming.revision) || incoming.revision <= existing.revision)) return existing;
   const merged = { ...existing, ...incoming };
   const order = positiveSequence(existing.segmentSequence) ?? positiveSequence(incoming.segmentSequence);
   if (order !== null) merged.segmentSequence = order;
@@ -105,7 +107,7 @@ function mergeCue(existing, incoming) {
 
   for (const [version, fields] of [
     ['sourceVersion', ['sourceText', 'sourceStatus', 'rawSource']],
-    ['translationVersion', ['translatedText', 'translationStatus', 'rawTranslation']],
+    ['translationVersion', ['translatedText', 'translationStatus', 'rawTranslation', 'initialTranslation', 'translationProvenance']],
   ]) {
     const previousVersion = Number(existing[version]) || 0;
     const incomingVersion = Number(incoming[version]) || 0;

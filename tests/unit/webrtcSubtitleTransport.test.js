@@ -101,6 +101,119 @@ test('Viewer requests a fresh negotiation when joining after an offer has expire
   await transport.stop();
 });
 
+test('Recorder and Viewer traces correlate one negotiation without retaining signaling payloads', async () => {
+  FakePeerConnection.instances = [];
+  configureLivePipelineTrace(true);
+  livePipelineTrace.clear();
+  const viewerTimers = [];
+  const recorderTimers = [];
+  let viewerReady = null;
+  const expiresAt = 1_760_000_030_000;
+  const viewer = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-paired', role: 'viewer', participantId: 'viewer-paired',
+    credential: { shareToken: 'secret-share-token' },
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.endsWith('/signal')) {
+        if (body?.type === 'viewer-ready') viewerReady = body;
+        return response(200, { accepted: true, sequence: 10, expiresAt });
+      }
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { messages: [], after: 10 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; viewerTimers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+  });
+  const recorder = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-paired', role: 'device', participantId: 'recorder-paired',
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.includes('/signal?')) return response(200, {
+        messages: [{
+          sequence: 10,
+          expiresAt,
+          participantId: 'viewer-paired',
+          type: 'viewer-ready',
+          negotiationId: viewerReady.negotiationId,
+          payload: {},
+        }],
+        after: 10,
+      });
+      if (url.endsWith('/signal')) {
+        assert.equal(body.type, 'offer');
+        return response(200, { accepted: true, sequence: 11, expiresAt: expiresAt + 1 });
+      }
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, {});
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; recorderTimers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+  });
+
+  viewer.start();
+  recorder.start();
+  await flush(); await flush();
+  const recorderPoll = recorderTimers.find((timer) => timer.ms === 2_000 && !timer.cleared);
+  recorderPoll.cleared = true;
+  await recorderPoll.fn();
+  await flush(); await flush();
+
+  const traces = livePipelineTrace.get({ stage: 'WEBRTC_SIGNALING' });
+  const sent = traces.find((entry) => entry.eventType === 'viewer-ready.sent');
+  const received = traces.find((entry) => entry.eventType === 'viewer-ready.received');
+  const poll = traces.find((entry) => entry.role === 'recorder' && entry.eventType === 'poll.success');
+  assert.equal(sent.negotiationId, received.negotiationId);
+  assert.equal(sent.signalSequence, 10);
+  assert.equal(received.signalSequence, 10);
+  assert.equal(received.viewerId, 'viewer-paired');
+  assert.equal(poll.signalingCursorBefore, 0);
+  assert.equal(poll.signalingCursorAfter, 10);
+  assert.equal(poll.signalMessageCount, 1);
+  assert.equal(traces.find((entry) => entry.role === 'viewer' && entry.eventType === 'join.success').participantTtlMs, 60_000);
+  assert.doesNotMatch(JSON.stringify(traces), /secret-share-token|offer-sdp|candidate:/u);
+
+  await viewer.stop();
+  await recorder.stop();
+  configureLivePipelineTrace(false);
+});
+
+test('signaling rejection records the first failed operation without credentials or SDP', async () => {
+  FakePeerConnection.instances = [];
+  configureLivePipelineTrace(true);
+  livePipelineTrace.clear();
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-signal-failure', role: 'viewer', participantId: 'viewer-signal-failure',
+    credential: { shareToken: 'secret-share-token' },
+    fetchImpl: async (url) => {
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.endsWith('/signal')) return response(503, {
+        error: { code: 'webrtc_signaling_unavailable', detail: 'v=0 secret-sdp' },
+      });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { messages: [], after: 0 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer: () => ({}),
+    clearTimer: () => {},
+  });
+
+  transport.start();
+  await flush(); await flush();
+  const failed = livePipelineTrace.get({ stage: 'WEBRTC_SIGNALING' })
+    .find((entry) => entry.eventType === 'viewer-ready.failed');
+  assert.equal(failed.errorCode, 'webrtc_signaling_unavailable');
+  assert.equal(failed.httpStatus, 503);
+  assert.equal(failed.transportResult, 'failed');
+  assert.doesNotMatch(JSON.stringify(livePipelineTrace.get()), /secret-share-token|secret-sdp|v=0/u);
+
+  await transport.stop();
+  configureLivePipelineTrace(false);
+});
+
 test('Viewer keeps advertising one negotiation while waiting for a Recorder', async () => {
   FakePeerConnection.instances = [];
   const requests = [];
@@ -180,6 +293,45 @@ test('Device creates targeted peers for Viewers joining at different times', asy
   assert.equal(FakePeerConnection.instances.length, 2);
   await transport.stop();
   function timerClear(timer) { timer.cleared = true; }
+});
+
+test('Device deduplicates repeated viewer-ready backlog for one in-flight negotiation', async () => {
+  FakePeerConnection.instances = [];
+  const requests = [];
+  const timers = [];
+  const repeatedReady = [1, 2, 3].map((sequence) => ({
+    sequence,
+    participantId: 'viewer-waiting',
+    type: 'viewer-ready',
+    negotiationId: 'negotiation-waiting',
+    payload: {},
+  }));
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'device', participantId: 'device-starting',
+    fetchImpl: async (url, init = {}) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      requests.push({ url, body });
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.includes('/signal?')) return response(200, { messages: repeatedReady, after: 3 });
+      if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 4 });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, {});
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+  });
+
+  transport.start(); await flush(); await flush();
+  const poll = timers.find((timer) => timer.ms === 2_000 && !timer.cleared);
+  assert.ok(poll, 'Recorder polls the signaling backlog after starting');
+  poll.cleared = true;
+  await poll.fn(); await flush(); await flush();
+
+  const offers = requests.filter(({ body }) => body?.type === 'offer');
+  assert.equal(offers.length, 1, 'one negotiation must create exactly one offer');
+  assert.equal(FakePeerConnection.instances.length, 1, 'duplicate ready messages must not replace the in-flight peer');
+  await transport.stop();
 });
 
 test('Viewer rebuilds its channel after a transient failure and drops late old packets', async () => {
@@ -402,11 +554,54 @@ test('stale reconnect timer cannot close an already connected replacement genera
   configureLivePipelineTrace(false);
 });
 
+test('Viewer replay cursor acknowledges only validated delivery', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  let accept = false;
+  const transport = createViewerTransport({ timers, onEnvelope: (packet) => (
+    accept ? { sourceId: packet.sourceId, sequence: packet.sequence } : null
+  ) });
+  const snapshot = { protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-1',
+    sourceId: 'source-1', sequence: 1, cues: [{ cueId: 'cue-1', sourceText: 'one' }] };
+  const open = async () => {
+    await flush(); await flush();
+    const peer = FakePeerConnection.instances.at(-1);
+    const channel = new FakeDataChannel(peer);
+    peer.ondatachannel({ channel });
+    channel.open();
+    return channel;
+  };
+  const reconnect = async (channel) => {
+    channel.remoteClose();
+    const timer = timers.find((item) => item.ms === 1_000 && !item.cleared);
+    assert.ok(timer);
+    timer.cleared = true;
+    await timer.fn();
+    return open();
+  };
+  transport.start();
+  try {
+    let channel = await open();
+    channel.receive(snapshot);
+    channel = await reconnect(channel);
+    assert.equal(channel.sent.at(-1).afterSequence, 0);
+    accept = true;
+    channel.receive(snapshot);
+    channel = await reconnect(channel);
+    assert.equal(channel.sent.at(-1).afterSequence, 1);
+  } finally {
+    await transport.stop();
+  }
+});
+
 test('Viewer recovery replays missing cues before continuing live delivery', async () => {
   FakePeerConnection.instances = [];
   const timers = [];
   const received = [];
-  const transport = createViewerTransport({ timers, onEnvelope: (packet) => received.push(packet) });
+  const transport = createViewerTransport({ timers, onEnvelope: (packet) => {
+    received.push(packet);
+    return { sourceId: packet.sourceId, sequence: packet.toSequence ?? packet.sequence };
+  } });
   transport.start(); await flush(); await flush();
   const firstPeer = FakePeerConnection.instances[0];
   const firstChannel = new FakeDataChannel(firstPeer);
@@ -493,7 +688,7 @@ test('Device transport starts independently, publishes snapshot/update, and clea
     RTCPeerConnectionImpl: FakePeerConnection,
     setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
     clearTimer(timer) { timer.cleared = true; },
-    initialCues: [{ cueId: 'cue-1', sequence: 1, sourceText: '初稿' }],
+    initialCues: [{ cueId: 'cue-1', sequence: 1, revision: 1, status: 'final', sourceText: '初稿' }],
     onStatus: (status) => statuses.push(status.value),
     onError: (error) => publicationErrors.push(error),
   });
@@ -510,19 +705,21 @@ test('Device transport starts independently, publishes snapshot/update, and clea
   const peer = FakePeerConnection.instances[0];
   peer.channel.open();
   assert.equal(peer.channel.sent[0].type, 'snapshot');
-  transport.publishCue({ cueId: 'cue-1', sequence: 1, sourceText: '修正版' });
+  transport.publishCue({ cueId: 'cue-1', sequence: 1, revision: 2, status: 'final', sourceText: '修正版' });
   assert.equal(peer.channel.sent.at(-1).type, 'cue.update');
+  assert.equal(peer.channel.sent.at(-1).cue.revision, 2);
+  assert.equal(transport.publishCue({ cueId: 'uncommitted', status: 'final', sourceText: 'not durable' }), false);
 
   configureLivePipelineTrace(true);
   livePipelineTrace.clear();
   assert.doesNotThrow(() => {
-    transport.publishCue({ cueId: 'normal-1', rawSource: '正常原文 1', translatedText: 'normal 1' });
-    transport.publishCue({ cueId: 'source-first', rawSource: '先到原文', sourceVersion: 8, sourceStatus: 'partial' });
-    transport.publishCue({ cueId: 'source-first', rawSource: '先到原文', sourceVersion: 8, sourceStatus: 'finalized', translatedText: 'late translation', translationVersion: 1, translationStatus: 'finalized' });
-    transport.publishCue({ cueId: 'translation-first', translatedText: 'translation first', translationVersion: 4, translationStatus: 'pending' });
-    transport.publishCue({ cueId: 'translation-first', rawSource: '後到原文', sourceVersion: 1, sourceStatus: 'finalized', translatedText: 'translation first', translationVersion: 4, translationStatus: 'finalized' });
-    transport.publishCue({ cueId: 'late-without-turn-id', rawSource: '無 turn id 後到原文', sourceVersion: 1 });
-    transport.publishCue({ cueId: 'normal-2', rawSource: '正常原文 2', translatedText: 'normal 2' });
+    transport.publishCue({ cueId: 'normal-1', revision: 1, rawSource: '正常原文 1', translatedText: 'normal 1' });
+    transport.publishCue({ cueId: 'source-first', revision: 1, rawSource: '先到原文', sourceVersion: 8, sourceStatus: 'partial' });
+    transport.publishCue({ cueId: 'source-first', revision: 2, rawSource: '先到原文', sourceVersion: 8, sourceStatus: 'finalized', translatedText: 'late translation', translationVersion: 1, translationStatus: 'finalized' });
+    transport.publishCue({ cueId: 'translation-first', revision: 1, translatedText: 'translation first', translationVersion: 4, translationStatus: 'pending' });
+    transport.publishCue({ cueId: 'translation-first', revision: 2, rawSource: '後到原文', sourceVersion: 1, sourceStatus: 'finalized', translatedText: 'translation first', translationVersion: 4, translationStatus: 'finalized' });
+    transport.publishCue({ cueId: 'late-without-turn-id', revision: 1, rawSource: '無 turn id 後到原文', sourceVersion: 1 });
+    transport.publishCue({ cueId: 'normal-2', revision: 1, rawSource: '正常原文 2', translatedText: 'normal 2' });
   });
   const published = peer.channel.sent.filter((packet) => packet.type === 'cue.append' || packet.type === 'cue.update');
   assert.deepEqual(published.slice(-7).map((packet) => packet.type), [
@@ -1022,15 +1219,18 @@ test('offline recovery pauses retry counting and resumes immediately on online',
     onStatus: (status) => statuses.push(status),
   });
   transport.start();
-  await flush();
-  assert.equal(statuses.at(-1).reason, 'network_offline');
-  assert.equal(statuses.at(-1).attempt, 0);
-  online = true;
-  listeners.get('online')();
-  await flush(); await flush();
-  assert.equal(joins, 2);
-  assert.equal(FakePeerConnection.instances.length, 1);
-  await transport.stop();
+  try {
+    await flush();
+    assert.equal(statuses.at(-1).reason, 'network_offline');
+    assert.equal(statuses.at(-1).attempt, 0);
+    online = true;
+    listeners.get('online')();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(joins, 2);
+    assert.equal(FakePeerConnection.instances.length, 1);
+  } finally {
+    await transport.stop();
+  }
 });
 
 test('failed Device signaling schedules reconnect without rejecting recording startup', async () => {
@@ -1121,6 +1321,12 @@ test('Viewer retry exhaustion enters recovery_failed and records RECOVERY_EXHAUS
   assert.equal(timers.filter((timer) => !timer.cleared && !timer.executed).length, 0);
   const exhausted = livePipelineTrace.get({ stage: 'WEBRTC_TRANSPORT_RECOVERY' })
     .find((entry) => entry.eventType === 'RECOVERY_EXHAUSTED');
+  const scheduled = livePipelineTrace.get({ stage: 'WEBRTC_TRANSPORT_RECOVERY' })
+    .filter((entry) => entry.eventType === 'RECOVERY_ATTEMPT_SCHEDULED');
+  assert.equal(scheduled.length, MAX_RECOVERY_ATTEMPTS);
+  assert.deepEqual(scheduled.map((entry) => entry.reconnectAttempt), [1, 2, 3, 4, 5, 6]);
+  assert.equal(scheduled.every((entry) => entry.recoveryAttemptState === 'scheduled'), true);
+  assert.equal(scheduled.every((entry) => entry.retryCounterSemantics === 'incremented_when_scheduled'), true);
   await transport.stop();
   configureLivePipelineTrace(false);
   assert.equal(Number.isInteger(exhausted.generation) && exhausted.generation > 0, true);
@@ -1143,6 +1349,8 @@ test('Viewer retry exhaustion enters recovery_failed and records RECOVERY_EXHAUS
     dataChannelState: null,
     timestamp: 123_456,
   });
+  assert.equal(exhausted.recoveryAttemptState, 'exhausted');
+  assert.equal(exhausted.retryCounterSemantics, 'incremented_when_scheduled');
 });
 
 test('transient Viewer signaling 503 does not fail a healthy DataChannel', async () => {

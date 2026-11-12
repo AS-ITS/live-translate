@@ -1,18 +1,40 @@
 # Live Translate Development Guide
 
-Local runtime persistence is Supabase-only. JSON files under `data/` are
-legacy test fixtures and are not read by the application.
+## 正式本機安裝與啟動（現行 Local-only 路徑）
 
-```bash
-supabase start
-supabase db reset
-supabase db lint
-```
+本節供首次安裝者使用。下方既有 Phase 與雲端能力段落保留為開發／歷史脈絡；若描述 Supabase 保存錄音、Cue、Transcript 或 Viewer 從雲端重播，應以[現行架構](architecture/architecture-overview.md#現行正式產品架構local-only)為準。
 
-Copy the local API URL and service-role key from `supabase status` into the
-server-only `SUPABASE_URL` and `SUPABASE_SECRET_KEY` values in `.env`. Never
-commit or log the service key. Use `/readyz` to distinguish an unavailable
-Supabase endpoint, missing migrations, and invalid credentials.
+### 系統需求
+
+CI 使用 Node.js 22；長會議測試也涵蓋 Node.js 24。`package.json` 未宣告最低版本，建議先用 Node.js 22 與 npm。另需 Docker、Supabase CLI、`redis-cli`、`redis-server`、本機 Google OAuth client，以及支援麥克風、Web Audio、OPFS／IndexedDB、WebRTC 的瀏覽器。正式瀏覽器版本矩陣尚未完成 RC1 實機驗收。
+
+### 安裝與環境變數
+
+在本專案根目錄執行 `npm ci` 安裝 lockfile 指定的依賴。這會修改本機 `node_modules`；不是檢查命令。`supabase/config.toml` 設定本機 Google OAuth client ID；將自己的 client secret 以 `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET` 放入 Git 忽略的 `supabase/.env.local`，檔案需為一般檔案且權限為 `600`。不要把 secret、Supabase service key、Gemini API key 或短效 token 寫入 Git、前端 `VITE_` 變數或日誌。
+
+正式本機啟動器 `scripts/start-local.mjs` 從 loopback Supabase 讀取 URL 與金鑰，為 API／Vite 設定 `SUPABASE_URL`、`SUPABASE_SECRET_KEY`、`SUPABASE_JWKS_URL`、`VITE_SUPABASE_URL`、`VITE_SUPABASE_PUBLISHABLE_KEY`、`AUTH_ALLOWED_EMAIL_DOMAINS=as.edu.tw`、`WEBRTC_SIGNALING_REDIS_URL` 與 `APP_ORIGIN`。它不把根目錄 `.env` 當成本機必填設定；[`.env.example`](../.env.example) 主要供其他手動／部署環境核對。真實 Live 翻譯的 API key 由錄製者在介面提供，僅供該次請求換取短效 token；啟動器將伺服器端 `GEMINI_API_KEY` 設為空值，後者只供另行設定的非 Live 後端工作使用。
+
+### 本機資料庫與啟動順序
+
+| 階段 | 指令 | 作用與副作用 |
+| --- | --- | --- |
+| 安裝 | `npm ci` | 安裝依賴，修改 `node_modules`。 |
+| 初次建立**可拋棄的空白本機**資料庫 | `npm run db:start`，必要時 `npm run db:reset` | 啟動 Local Supabase；`db:reset` 會重建本機資料，**不得對既有會議或長測資料執行**。 |
+| 前置檢查 | `npm run start -- --check` | 驗證 Docker、Local Supabase、Google OAuth、migration、Redis；必要時會啟動 Local Supabase／Redis，**不是純唯讀**。migration 不一致時會阻止啟動，不會自動 reset。 |
+| 正式本機啟動 | `npm run start` | 啟動 API（預設 `127.0.0.1:3000`）與 Vite（預設 `127.0.0.1:5173`）；`start:local` 是同一腳本。 |
+
+僅在確認目標為**新建、沒有需保留資料的本機 Supabase** 時才考慮 `db:reset`。不要把 Local 的 Supabase URL 或金鑰指向 Preview／Production。開啟終端印出的 Vite URL；實際連接埠若被占用，以啟動輸出為準。`npm run dev` 與 `npm run server` 是分開啟動的開發腳本，不會替代正式本機啟動器的前置檢查。
+
+### 常見問題
+
+- **顯示 `Local startup blocked`：**檢查 Docker、Supabase CLI、Google OAuth secret 的檔案權限，以及本專案 migration 是否已套用；先閱讀錯誤訊息，不要直接 reset 既有資料。
+- **Redis 無法連線：**本機腳本只接受 loopback `LOCAL_REDIS_URL`，需要 `redis-cli` 與 `redis-server`；若服務已在執行，先確認其實際連接埠。
+- **無法登入或開始翻譯：**本機登入限目前授權網域及帳號規則；真實 Gemini Live 需要錄製者提供可用 API key。測試模式與真實 API 用量分開，參見[測試政策](TESTING.md)。
+- **跨裝置 Viewer 無法連線：**WebRTC signaling 需要 Redis，跨網路可能需要可達 TURN；實機矩陣仍待驗收，參見[WebRTC 驗證文件](verification/webrtc-browser-deployment.md)。
+
+## 舊版手動開發流程（非上方正式本機啟動流程）
+
+下列章節保留舊版與其他能力的開發紀錄。舊文件中的「Supabase-only」僅可用於當時的伺服器資料路徑，不適用於現行 Host 錄製內容；`data/` JSON 檔為歷史測試資料。原有 `supabase start`、`supabase db reset`、`supabase db lint` 可用於隔離開發環境，但 `db reset` 會重建資料，不應當作一般啟動步驟。手動分開啟動時，後端需由環境提供 `SUPABASE_URL` 與 `SUPABASE_SECRET_KEY`；正式本機啟動器則自行從 Local Supabase 組出這些值。`/readyz` 可協助區分端點、migration 與憑證問題。不要提交或記錄 service key。
 
 ## Environment Variables
 
@@ -64,11 +86,18 @@ SESSION_SNAPSHOT_MAX_BYTES=26214400
 SESSION_AUDIO_MAX_BYTES=52428800
 ```
 
-## Mobile diagnostic export
+## Preview transport diagnostic export
 
-Set `LIVE_PIPELINE_TRACE_ENABLED=true` and restart or redeploy the Preview. Recorder and Viewer toolbars then show `匯出診斷紀錄`, including while connecting, paused, or recovery has failed. The button opens the system file share sheet when the browser supports sharing JSON files; otherwise it downloads a `.json` file. Exporting only snapshots the in-memory trace and never stops recording or rebuilds WebRTC.
+Set `LIVE_PIPELINE_TRACE_ENABLED=true` and restart or redeploy the Preview. No diagnostic UI button is shown. On both the Recorder and Viewer, open DevTools Console before reloading and run:
 
-The exported document uses `schemaVersion: "live-pipeline-trace/v1"` and a bounded 20,000-entry ring buffer. Every entry contains `timestamp`, `role`, `event`, `meetingId`, `generation`, and `negotiationId`; optional fields come from a fixed allowlist. It never includes transcript text, audio, credentials, SDP, ICE candidates, candidate IP addresses, share tokens/codes, or raw HTTP payloads. Reloading clears the browser-memory trace; no diagnostic data is uploaded or persisted to cloud storage.
+```js
+const json = window.__liveTranslateDebug.exportPipelineTrace()
+copy(json)
+```
+
+Save the copied values as separate Recorder and Viewer `.json` files from the same Meeting. Exporting only snapshots the in-memory trace and never stops recording or rebuilds WebRTC. The trace remains available after `recovery_failed` until the page reloads or `window.__liveTranslateDebug.clearPipelineTrace()` is called explicitly.
+
+The exported document uses `schemaVersion: "live-pipeline-trace/v1"` and a bounded 20,000-entry ring buffer. Transport entries include the safe correlation fields `participantId`, `viewerId`, `transportGeneration`, `negotiationId`, signaling sequence/cursor metadata, participant TTL, message expiry, PeerConnection/ICE/DataChannel state, and scheduled recovery attempt state. `retryCounterSemantics: "incremented_when_scheduled"` documents that the current `retryAttempt` counter advances when a retry is scheduled; it is not evidence that the attempt has already failed. The fixed allowlist never includes transcript text, audio, credentials, SDP, ICE candidate bodies or IP addresses, share tokens/codes, JWTs, API keys, or raw HTTP payloads. Reloading clears the browser-memory trace; no diagnostic data is uploaded or persisted to cloud storage.
 
 ## Vercel and Supabase cloud capabilities
 
@@ -82,7 +111,6 @@ Use the Supabase CLI migration workflow locally:
 
 ```bash
 npm run db:start
-npm run db:reset
 npm run db:lint
 ```
 
@@ -90,7 +118,6 @@ Use the local stack as the staging-equivalent validation environment:
 
 ```bash
 npm run db:start
-npm run db:reset
 npm run db:lint
 npm run test:integration
 npm run test:e2e
@@ -277,15 +304,18 @@ Frontend testing scope for MVP:
 
 ## Runtime capability matrix
 
-| Capability | Local Node runtime | Vercel/Supabase runtime |
-| --- | --- | --- |
-| Meeting, Segment, Session, Cue persistence | Supabase configuration required; JSON files are test-only fixtures | Owner-scoped Supabase repositories |
-| Checkpoint path IDs | UUIDs for newly created records; legacy test adapters may opt out of strict path validation | UUIDs required |
-| Translation execution | Local worker runtime | Bounded `/api/internal/worker` Cron batches |
-| Viewer delivery | Local SSE/WebSocket adapters | Supabase Realtime and signed Storage URLs |
-| Readiness | `/readyz` reports required runtime configuration | `/readyz` also requires Supabase auth configuration |
+現行正式 Meeting 的錄製內容一律為 Host Local-only。下表只列目前產品路徑；下方舊 worker／file-backed／Cloud Recording 說明屬歷史或其他能力，不可視為 Meeting 雲端錄製承諾。
 
-For the safe deployment preflight, set `SMOKE_BASE_URL` and run `npm run test:deployment-preflight`. It verifies `/healthz`, `/readyz`, unauthenticated private API rejection, metrics auth rejection, and worker auth rejection without calling Gemini or processing queue items. For the full staging smoke check, separately verify a valid owner-scoped API request and one authenticated worker request with `Authorization: Bearer $CRON_SECRET`. A successful `/healthz` response alone does not prove that Supabase migrations, RLS, Storage, Realtime, or the worker are ready.
+| Capability | Local | Preview／Production |
+| --- | --- | --- |
+| Meeting 錄製內容 | Host OPFS／IndexedDB 保存 PCM、音訊、Cue、Transcript、Checkpoint、Journal、Recovery | 同為 Host OPFS／IndexedDB；換裝置或清除網站資料無法依賴 Supabase 還原 |
+| Meeting metadata／設定／字典／授權 | 本機 Supabase，透過受權 API | 各環境獨立 Supabase，透過受權 API；僅保存必要協調 metadata |
+| Viewer 字幕 | WebRTC DataChannel，Redis signaling | WebRTC DataChannel，Redis signaling；跨網路 TURN 需實機驗收 |
+| Readiness | `/readyz` 檢查本機設定 | `/readyz` 檢查 Supabase 等部署設定，不代表 RC1 實機驗收通過 |
+
+歷史 Cloud Recording、SSE／WebSocket Viewer adapter、Supabase Realtime 與 signed Storage URL 設計保留作遷移背景；它們不是現行正式 Meeting 的字幕或錄製內容交付能力。下文提及的雲端音訊、Cue、Transcript、Checkpoint 或 export worker 若未註明，均應依本段界定為歷史／其他能力，不可用來推定 Local-only Meeting 會上傳內容。
+
+For the safe deployment preflight, set `SMOKE_BASE_URL` and run `npm run test:deployment-preflight`. It verifies `/healthz`, `/readyz`, unauthenticated private API rejection, metrics auth rejection, and worker auth rejection without calling Gemini or processing queue items. For the full staging smoke check, separately verify a valid owner-scoped API request and one authenticated worker request with `Authorization: Bearer $CRON_SECRET`. A successful `/healthz` response alone does not prove that Supabase migrations, RLS, or the worker are ready; legacy Storage／Realtime readiness checks, where still present, do not make those services the current Meeting content path.
 ## Production Gemini Smoke Test
 
 For the first Production Gemini smoke test, keep the request short and avoid
@@ -305,6 +335,8 @@ available to the smoke runner. Do not place that key in browser-exposed
 
 Google OAuth can complete successfully while `GET /api/profile` rejects a personal-domain or disabled account with `403 auth_forbidden`. `AUTH_ALLOWED_EMAIL_DOMAINS` remains the backend authority; Google `hd` hints are optional UI guidance only and are not an authorization control. The access-denied screen keeps the session long enough to show the current email, and users must choose “切換 Google 帳號” to sign out and reopen the Google account picker with `prompt=select_account`.
 ## Supabase request boundaries
+
+本節以下的 P7／P8 Cloud Recording、signed Storage URL、雲端音訊清理及 legacy Session export 敘述是歷史／其他能力紀錄；不可作為 Issue #41 正式 Meeting 錄製內容或 Viewer 字幕來源的現行能力說明。現行資料邊界以[架構總覽](architecture/architecture-overview.md#現行正式產品架構local-only)與上方 capability matrix 為準。
 
 Private owner CRUD may use the authenticated Supabase access token through the user-scoped REST client. Worker, admin, Vault, readiness, and other explicitly privileged operations use the service-role client. The two clients must not be interchangeable.
 

@@ -370,6 +370,7 @@ bounded browser-memory trace through:
 ```js
 window.__liveTranslateDebug.getPipelineTrace(filter)
 window.__liveTranslateDebug.getTurnTrace(audioTurnId)
+window.__liveTranslateDebug.exportPipelineTrace()
 window.__liveTranslateDebug.clearPipelineTrace()
 ```
 
@@ -384,7 +385,23 @@ Records are allow-listed, kept only in browser memory, capped at 500 entries, an
 The browser reads only `{ livePipelineTraceEnabled }` from
 `/api/runtime-config`; it never reads the server environment directly. The trace
 covers microphone input, PCM capture/send, provider events, normalized
-transcript events, Cue append/update/finalize/merge/drop, and React render.
-Every drop includes `dropReason`. With the flag disabled, the tracer retains and
-logs nothing and the full trace API is not exposed. Production must keep the
-flag disabled.
+transcript events, Cue append/update/finalize/merge/drop, React render, and
+paired Recorder/Viewer transport correlation. It remains in browser memory
+after `recovery_failed` until reload or explicit `clearPipelineTrace()`. With
+the flag disabled, the tracer retains and logs nothing and the full trace API
+is not exposed. Production must keep the flag disabled.
+
+## 13. Local Cue identity and revision (Issue #41 B2-A)
+
+A Cue keeps its `cueId` across accepted changes; verified `segmentId` is separate and may remain null. New unknown-owner IDs use the existing `cue:<sessionId>:<sequence>` form. Reload allocation uses a sequence floor from local assigned and unassigned records plus Cue checkpoints. Recovered Cues are excluded from live turn matching, because local turn keys and text cannot prove a Provider retransmission after reload.
+
+The synchronous Cue-state commit assigns revision 1 to a new Cue and increments it for changed Cue snapshots. Source, translation, and refinement versions retain their separate meanings. IndexedDB rejects stale or conflicting revisions for assigned and unassigned Cues; unversioned assigned records read as revision 0 until their first changed versioned write. Accepted partial and final unknown-owner Cues are saved in `unassignedCues`; reducer absorption updates the survivor and removes the loser in one transaction, retaining the allocation floor so reload cannot reuse the losing ID. Recovery restores partial Cues without pairing them to new Provider events. Refinement submissions and results must match the current Cue input hash before changing Cue state. B2-B promotion remains separate.
+
+An intentionally dismissed provisional Cue keeps a revisioned marker in `unassignedCues`. Reload excludes that Cue from the visible state and still reserves its identity. Completed polling output may mark a Cue only when its recorded input hash matches the current Cue input.
+
+
+For a same-turn late translation that changes `initialTranslation`, the pending refinement input reset is committed in the same translation mutation. The source version stays independent; stale side versions and cross-segment Cue identities remain rejected.
+
+## 14. Local unassigned Cue export (Issue #41 B2-B)
+
+Meeting detail reads assigned and unassigned Cues from local IndexedDB before enabling local TXT/SRT/VTT export. Only final, non-dismissed Cues enter the export source; unassigned Cues retain `segmentId: null`. Equivalent Cue identities export once. Conflicting revision, content, or ownership blocks export and shows a retryable error. A failed IndexedDB read also blocks export; meeting switches ignore late results from the previous Meeting.

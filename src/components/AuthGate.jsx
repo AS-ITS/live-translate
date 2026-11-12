@@ -2,6 +2,8 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from '
 import { AudioLines, Languages, LoaderCircle, Radio, ShieldCheck } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseAuth.js';
 import { clearLiveCredential } from '../lib/liveCredentialHolder.js';
+import { clearLocalMeetingObjectUrls } from '../lib/localMeetingObjectUrls.js';
+import { setVerifiedLocalMeetingUserId } from '../lib/localMeetingOwnerAccess.js';
 import { classifyAuthTransition } from '../lib/authState.js';
 import { recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
 
@@ -41,8 +43,10 @@ export function AuthGate({ children }) {
     const expireAuthentication = (code, status) => {
       invalidateProfileRequest();
       validatedUserId = null;
+      setVerifiedLocalMeetingUserId(null);
       currentSession = null;
       clearLiveCredential();
+      clearLocalMeetingObjectUrls();
       setSession(null);
       setProfile(null);
       setProfileState('idle');
@@ -91,6 +95,7 @@ export function AuthGate({ children }) {
         }
         const nextProfile = body?.profile || null;
         validatedUserId = nextSession.user.id;
+        setVerifiedLocalMeetingUserId(validatedUserId);
         setProfile(nextProfile);
         setProfileState('ready');
         setProfileErrorCode(null);
@@ -107,6 +112,7 @@ export function AuthGate({ children }) {
         }
         if (error.status === 403 && code === 'auth_forbidden') {
           validatedUserId = null;
+          setVerifiedLocalMeetingUserId(null);
           setProfile(null);
           setProfileErrorCode(code);
           setProfileState('forbidden');
@@ -126,6 +132,7 @@ export function AuthGate({ children }) {
         });
         if (!blocking && validatedUserId === nextSession.user.id) return;
         validatedUserId = null;
+        setVerifiedLocalMeetingUserId(null);
         setProfileErrorCode(code);
         setProfileState('error');
       }
@@ -143,6 +150,10 @@ export function AuthGate({ children }) {
         reason: transition.kind
       });
       currentSession = nextSession;
+      if (transition.kind === 'signed-out' || transition.blockingProfileCheck) {
+        setVerifiedLocalMeetingUserId(null);
+        clearLocalMeetingObjectUrls();
+      }
       setSession(nextSession);
       setAuthLoading(false);
 
@@ -184,13 +195,14 @@ export function AuthGate({ children }) {
     window.addEventListener('live-translate:e2e-auth-state', handleE2EAuthState);
     return () => {
       active = false;
+      setVerifiedLocalMeetingUserId(null);
       invalidateProfileRequest();
       subscription.subscription.unsubscribe();
       window.removeEventListener('live-translate:e2e-auth-state', handleE2EAuthState);
     };
   }, []);
-  const startGoogleSignIn = async ({ selectAccount = false } = {}) => { if (selectAccount) { clearLiveCredential(); try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* account switching can continue */ } } return supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin, ...(selectAccount ? { queryParams: { prompt: 'select_account' } } : {}) } }); };
-  const signOut = async () => { clearLiveCredential(); return supabase?.auth.signOut(); };
+  const startGoogleSignIn = async ({ selectAccount = false } = {}) => { if (selectAccount) { clearLiveCredential(); setVerifiedLocalMeetingUserId(null); clearLocalMeetingObjectUrls(); try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* account switching can continue */ } } return supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin, ...(selectAccount ? { queryParams: { prompt: 'select_account' } } : {}) } }); };
+  const signOut = async () => { clearLiveCredential(); setVerifiedLocalMeetingUserId(null); clearLocalMeetingObjectUrls(); return supabase?.auth.signOut(); };
   const value = useMemo(() => ({ session, profile, signOut, switchAccount: () => startGoogleSignIn({ selectAccount: true }) }), [session, profile]);
   if (!isSupabaseConfigured()) return <AuthShell><AuthBrand /><div className="auth-form-content"><p className="auth-eyebrow">WORKSPACE ACCESS</p><h1 id="auth-title">登入服務尚未設定</h1><p className="auth-description">請設定 Supabase 登入後重新載入頁面。</p></div></AuthShell>;
   if (authLoading || (session && profileState === 'loading')) return <AuthShell><AuthBrand /><div className="auth-loading" role="status" aria-live="polite"><LoaderCircle className="auth-loading-icon" size={22} aria-hidden="true" /><p>正在檢查登入狀態…</p></div></AuthShell>;

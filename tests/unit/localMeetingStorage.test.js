@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { chromium } from '@playwright/test';
+import { rolldown } from 'rolldown';
 import {
   buildLocalChunkPath,
   createIndexedDbLocalMeetingManifestStore,
@@ -11,6 +13,111 @@ import {
   reserveLocalChunk,
   sealLocalChunk
 } from '../../src/lib/localMeetingStorage.js';
+
+let storageBundle;
+function bundledLocalStorageSource() {
+  storageBundle ||= (async () => {
+    const bundle = await rolldown({ input: fileURLToPath(new URL('../../src/lib/localMeetingStorage.js', import.meta.url)) });
+    try {
+      const { output } = await bundle.generate({ format: 'es' });
+      return output[0].code;
+    } finally {
+      await bundle.close();
+    }
+  })();
+  return storageBundle;
+}
+
+test('browser IndexedDB initializes v14 and upgrades v12/v13 Cue Authority and audio availability stores', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://local-schema.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://local-schema.test/');
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalStorageSource()).toString('base64')}`;
+
+  for (const previousVersion of [0, 12, 13]) {
+    const result = await page.evaluate(async ({ moduleUrl, dbName, previousVersion }) => {
+      if (previousVersion > 0) {
+        const oldDatabase = await new Promise((resolve, reject) => {
+          const opening = indexedDB.open(dbName, previousVersion);
+          opening.onupgradeneeded = () => opening.result.createObjectStore('recordings', { keyPath: 'meetingId' });
+          opening.onsuccess = () => resolve(opening.result);
+          opening.onerror = () => reject(opening.error);
+        });
+        oldDatabase.close();
+      }
+      const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+      const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+      const before = await store.inspectCueAuthority('meeting-schema');
+      const pendingBefore = await store.listPendingCues('meeting-schema');
+      const committed = await store.commitCueMutation({
+        meetingId: 'meeting-schema', side: 'pending', eventKey: 'pending-1',
+        cue: { cueId: 'cue-1', sessionId: 'session-1', sequence: 1,
+          startTimeMs: 0, endTimeMs: 100, status: 'final', sourceText: 'hello' }
+      });
+      const reopenedStore = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+      const pendingAfter = await reopenedStore.listPendingCues('meeting-schema');
+      const authorityAfter = await reopenedStore.inspectCueAuthority('meeting-schema');
+      const database = await new Promise((resolve, reject) => {
+        const opening = indexedDB.open(dbName);
+        opening.onsuccess = () => resolve(opening.result);
+        opening.onerror = () => reject(opening.error);
+      });
+      const names = [...database.objectStoreNames];
+      const transaction = database.transaction(['pendingCues', 'cueAuthorities'], 'readonly');
+      const pendingKeyPath = transaction.objectStore('pendingCues').keyPath;
+      const pendingIndexes = [...transaction.objectStore('pendingCues').indexNames];
+      const authorityKeyPath = transaction.objectStore('cueAuthorities').keyPath;
+      const version = database.version;
+      database.close();
+      return { before, pendingBefore, committed: committed.status, pendingAfter: pendingAfter.length,
+        authorityAfter, version, names, pendingKeyPath, pendingIndexes, authorityKeyPath };
+    }, { moduleUrl, dbName: `local-schema-${previousVersion}-${Date.now()}`, previousVersion });
+    assert.equal(result.version, 14);
+    assert.equal(result.before, 'new');
+    assert.deepEqual(result.pendingBefore, []);
+    assert.equal(result.committed, 'pending');
+    assert.equal(result.pendingAfter, 1);
+    assert.equal(result.authorityAfter, 'b2');
+    assert.equal(result.pendingKeyPath, 'key');
+    assert.ok(result.pendingIndexes.includes('meetingId'));
+    assert.equal(result.authorityKeyPath, 'meetingId');
+    for (const name of ['recordings', 'segments', 'chunks', 'operations', 'cues', 'cueOperations',
+      'cueConflicts', 'legacyCueBackups', 'pendingCues', 'cueAuthorities', 'checkpoints',
+      'unassignedCues', 'transcripts', 'translatedAudioChunks', 'retentions']) {
+      assert.ok(result.names.includes(name), `${name} missing after v${previousVersion} open`);
+    }
+  }
+});
+
+let lifecycleRecoveryBundle;
+function bundledLifecycleRecoverySource() {
+  lifecycleRecoveryBundle ||= (async () => {
+    const bundle = await rolldown({ input: fileURLToPath(new URL('../../src/lib/lifecycleRecoveryController.js', import.meta.url)) });
+    try {
+      const { output } = await bundle.generate({ format: 'es' });
+      return output[0].code;
+    } finally {
+      await bundle.close();
+    }
+  })();
+  return lifecycleRecoveryBundle;
+}
+
+let localPersistenceBundle;
+function bundledLocalPersistenceSource() {
+  localPersistenceBundle ||= (async () => {
+    const bundle = await rolldown({ input: fileURLToPath(new URL('../../src/lib/localMeetingPersistence.js', import.meta.url)) });
+    try {
+      const { output } = await bundle.generate({ format: 'es' });
+      return output[0].code;
+    } finally {
+      await bundle.close();
+    }
+  })();
+  return localPersistenceBundle;
+}
 
 test('recording and operation persistence project secrets from writes and reads', async () => {
   const store = createInMemoryLocalMeetingManifestStore();
@@ -50,60 +157,37 @@ test('recording and operation persistence project secrets from writes and reads'
   assert.equal(persistedOperation.result.segmentId, 'segment-2');
 });
 
-test('local cues and checkpoints survive updates without persisting credentials', async () => {
+test('local Transcript updates retain sequence and original Segment through reload snapshots', async () => {
   const store = createInMemoryLocalMeetingManifestStore();
-  await store.saveCue({
-    meetingId: 'meeting-1',
-    sessionId: 'session-1',
-    segmentId: 'segment-1',
-    cue: {
-      cueId: 'cue-1', sequence: 1, sourceText: 'hello', translatedText: '哈囉',
-      refinement: { status: 'pending', accessToken: 'must-not-persist' },
-      apiKey: 'must-not-persist'
-    },
-    producedAt: 100
-  });
-  await store.saveCue({
-    meetingId: 'meeting-1',
-    sessionId: 'session-1',
-    segmentId: 'segment-1',
-    cue: {
-      cueId: 'cue-1', sequence: 1, sourceText: 'hello', translatedText: '您好',
-      refinement: { status: 'completed', jwt: 'must-not-persist' }
-    },
-    producedAt: 200
-  });
-  await store.saveCheckpoint({
-    meetingId: 'meeting-1',
-    segmentId: 'segment-1',
-    checkpoint: {
-      durableChunks: [{ idempotencyKey: 'chunk-1', text: 'hello' }],
-      cueCheckpoint: { nextSequence: 2, ephemeralToken: 'must-not-persist' },
-      authorization: 'must-not-persist'
-    }
-  });
-
-  const [cue] = await store.listCues('meeting-1', { segmentId: 'segment-1' });
-  const checkpoint = await store.getCheckpoint('meeting-1', 'segment-1');
-  assert.equal(cue.cue.translatedText, '您好');
-  assert.equal(cue.cue.apiKey, undefined);
-  assert.equal(cue.cue.refinement.jwt, undefined);
-  assert.equal(checkpoint.checkpoint.authorization, undefined);
-  assert.equal(checkpoint.checkpoint.cueCheckpoint.ephemeralToken, undefined);
-  assert.equal(checkpoint.checkpoint.durableChunks[0].text, 'hello');
+  const base = { meetingId: 'meeting-1', sessionId: 'session-1' };
+  const partial = { id: 'source-1', stream: 'source', sequence: 1,
+    text: 'hello', status: 'partial', segmentId: 'segment-1' };
+  await store.saveTranscriptItem({ ...base, item: partial });
+  await store.saveTranscriptItem({ ...base, item: { ...partial, text: 'hello world', status: 'final' } });
+  await store.saveTranscriptItem({ ...base, item: { id: 'translation-2', stream: 'translation',
+    sequence: 2, text: '你好世界', status: 'final', segmentId: 'segment-1' } });
+  assert.deepEqual((await store.listTranscriptItems('meeting-1')).map((row) =>
+    [row.sequence, row.segmentId, row.revision, row.item.text]),
+  [[1, 'segment-1', 2, 'hello world'], [2, 'segment-1', 1, '你好世界']]);
+  await assert.rejects(store.saveTranscriptItem({ ...base, item: { ...partial,
+    text: 'late old cue', segmentId: 'segment-2' } }), { code: 'local_transcript_identity_conflict' });
 });
 
-test('local cue identity cannot move between sessions or sequences', async () => {
+test('meeting deletion removes B2 Cue content and rejects late writes', async () => {
   const store = createInMemoryLocalMeetingManifestStore();
-  const input = {
-    meetingId: 'meeting-1', sessionId: 'session-1', segmentId: 'segment-1',
-    cue: { cueId: 'cue-1', sequence: 1, sourceText: 'hello' }
-  };
-  await store.saveCue(input);
-  await assert.rejects(
-    store.saveCue({ ...input, sessionId: 'session-2' }),
-    (error) => error.code === 'local_cue_identity_conflict'
-  );
+  const input = { meetingId: 'meeting-1', segmentId: 'segment-1', eventKey: 'cue-1',
+    side: 'initial', cue: { cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1',
+      sequence: 1, startTimeMs: 0, endTimeMs: 100, status: 'final',
+      sourceText: 'hello', translatedText: 'world', sourceLanguageCode: 'en',
+      targetLanguageCode: 'fr', sourceStatus: 'finalized', translationStatus: 'finalized' } };
+  assert.equal((await store.commitCueMutation(input)).status, 'committed');
+  await store.clearMeetingContent('meeting-1');
+  assert.deepEqual(await store.listCues('meeting-1'), []);
+  await assert.rejects(store.commitCueMutation({ ...input, eventKey: 'late' }),
+    { code: 'meeting_content_expired' });
+  await assert.rejects(store.saveCheckpointCursor({ meetingId: 'meeting-1', segmentId: 'segment-1',
+    checkpoint: { idempotencyKey: 'late', durableChunks: [], finalCues: [] } }),
+  { code: 'meeting_content_expired' });
 });
 
 test('chunk paths are deterministic and keep meeting identity in the path', () => {
@@ -186,7 +270,7 @@ test('browser IndexedDB hydration projects and cleans credential-shaped pollutio
   const page = await browser.newPage();
   await page.route('https://local-recording.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
   await page.goto('https://local-recording.test/');
-  const source = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const source = await bundledLocalStorageSource();
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const result = await page.evaluate(async ({ moduleUrl, dbName }) => {
     const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
@@ -206,43 +290,77 @@ test('browser IndexedDB hydration projects and cleans credential-shaped pollutio
   assert.equal(result.raw.ephemeralToken, undefined);
 });
 
-test('browser IndexedDB restores local cues and checkpoints after reload', async (t) => {
+test('browser IndexedDB retains translated audio manifest across reload and removes it at retention cleanup', async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage();
-  await page.route('https://local-state-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
-  await page.goto('https://local-state-reload.test/');
-  const source = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
-  const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-  const dbName = `local-state-${Date.now()}`;
-
+  await page.route('https://local-audio-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://local-audio-reload.test/');
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalStorageSource()).toString('base64')}`;
+  const dbName = `local-audio-${Date.now()}`;
   await page.evaluate(async ({ moduleUrl, dbName }) => {
     const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
     const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
-    await store.saveCue({
-      meetingId: 'meeting-browser', sessionId: 'session-1', segmentId: 'segment-1',
-      cue: { cueId: 'cue-1', sequence: 1, sourceText: 'hello', secret: 'drop-me' }
-    });
-    await store.saveCheckpoint({
-      meetingId: 'meeting-browser', segmentId: 'segment-1',
-      checkpoint: { cueCheckpoint: { nextSequence: 2 }, accessToken: 'drop-me' }
-    });
+    await store.saveTranslatedAudioChunk({ meetingId: 'meeting-a', sessionId: 'session-a', sequence: 1,
+      byteSize: 4, checksum: 'sha256:test' });
   }, { moduleUrl, dbName });
-
+  const otherProfile = await browser.newContext();
+  t.after(() => otherProfile.close());
+  const otherPage = await otherProfile.newPage();
+  await otherPage.route('https://local-audio-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await otherPage.goto('https://local-audio-reload.test/');
+  const otherProfileChunks = await otherPage.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    return createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName })
+      .listTranslatedAudioChunks('meeting-a');
+  }, { moduleUrl, dbName });
+  assert.deepEqual(otherProfileChunks, []);
   await page.reload();
-  const restored = await page.evaluate(async ({ moduleUrl, dbName }) => {
+  const result = await page.evaluate(async ({ moduleUrl, dbName }) => {
     const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
     const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
-    return {
-      cues: await store.listCues('meeting-browser', { segmentId: 'segment-1' }),
-      checkpoint: await store.getCheckpoint('meeting-browser', 'segment-1')
-    };
+    const before = await store.listTranslatedAudioChunks('meeting-a');
+    const otherMeeting = await store.listTranslatedAudioChunks('meeting-b');
+    await store.clearMeetingContent('meeting-a');
+    return { before, otherMeeting, after: await store.listTranslatedAudioChunks('meeting-a') };
   }, { moduleUrl, dbName });
+  assert.equal(result.before.length, 1);
+  assert.equal(result.before[0].sessionId, 'session-a');
+  assert.deepEqual(result.otherMeeting, []);
+  assert.deepEqual(result.after, []);
+});
 
-  assert.equal(restored.cues[0].cue.sourceText, 'hello');
-  assert.equal(restored.cues[0].cue.secret, undefined);
-  assert.equal(restored.checkpoint.checkpoint.cueCheckpoint.nextSequence, 2);
-  assert.equal(restored.checkpoint.checkpoint.accessToken, undefined);
+test('browser OPFS translated PCM reloads as Host-only WAV and expires with retention', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://local-translated-audio.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://local-translated-audio.test/');
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalPersistenceSource()).toString('base64')}`;
+  const storageUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalStorageSource()).toString('base64')}`;
+  const dbName = `local-translation-${Date.now()}`;
+  await page.evaluate(async ({ moduleUrl, storageUrl, dbName }) => {
+    const { createLocalMeetingPersistence } = await import(moduleUrl);
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const manifestStore = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const persistence = createLocalMeetingPersistence({ manifestStore, recordAudio: false });
+    await persistence.start({ meetingId: 'meeting-local', recordingId: 'session-local', segmentId: 'segment-local' });
+    await persistence.appendTranslatedAudioChunk({ meetingId: 'meeting-local', sessionId: 'session-local', bytes: new Uint8Array([1, 0, 2, 0]) });
+    await persistence.finalizeTranslatedAudio('meeting-local');
+  }, { moduleUrl, storageUrl, dbName });
+  await page.reload();
+  const restored = await page.evaluate(async ({ moduleUrl, storageUrl, dbName }) => {
+    const { createLocalMeetingPersistence } = await import(moduleUrl);
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const manifestStore = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const persistence = createLocalMeetingPersistence({ manifestStore, recordAudio: false });
+    const audio = await persistence.listFinalizedAudioArtifacts('meeting-local');
+    await manifestStore.saveRetention({ meetingId: 'meeting-local', expiresAt: '2000-01-01T00:00:00.000Z' });
+    let expiredCode = null;
+    try { await persistence.listFinalizedAudioArtifacts('meeting-local'); } catch (error) { expiredCode = error.code; }
+    return { kind: audio[0]?.kind, size: audio[0]?.blob.size, expiredCode };
+  }, { moduleUrl, storageUrl, dbName });
+  assert.deepEqual(restored, { kind: 'translation', size: 48, expiredCode: 'meeting_content_expired' });
 });
 
 test('browser IndexedDB reload replays lifecycle operations and OPFS refuses overwrite', async (t) => {
@@ -251,7 +369,7 @@ test('browser IndexedDB reload replays lifecycle operations and OPFS refuses ove
   const page = await browser.newPage();
   await page.route('https://local-recording-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
   await page.goto('https://local-recording-reload.test/');
-  const storageSource = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const storageSource = await bundledLocalStorageSource();
   const storageModuleUrl = `data:text/javascript;base64,${Buffer.from(storageSource).toString('base64')}`;
   const recorderSource = await readFile(new URL('../../src/lib/localMeetingRecorder.js', import.meta.url), 'utf8');
   const recorderModuleUrl = `data:text/javascript;base64,${Buffer.from(
@@ -351,7 +469,7 @@ test('existing IndexedDB operations store persists one pending legacy Continue a
   const page = await browser.newPage();
   await page.route('https://legacy-continue-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
   await page.goto('https://legacy-continue-reload.test/');
-  const source = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const source = await bundledLocalStorageSource();
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
   const dbName = `legacy-continue-${Date.now()}`;
   const operation = {
@@ -388,7 +506,7 @@ test('browser public append seals an existing OPFS write after reload and reject
   const page = await browser.newPage();
   await page.route('https://local-append-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
   await page.goto('https://local-append-reload.test/');
-  const storageSource = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const storageSource = await bundledLocalStorageSource();
   const storageModuleUrl = `data:text/javascript;base64,${Buffer.from(storageSource).toString('base64')}`;
   const recorderSource = await readFile(new URL('../../src/lib/localMeetingRecorder.js', import.meta.url), 'utf8');
   const recorderModuleUrl = `data:text/javascript;base64,${Buffer.from(
@@ -474,4 +592,233 @@ test('invalid state transitions do not silently rewrite sealed chunks', () => {
   assert.throws(() => markLocalChunk(sealed, 'writing'), (error) => error.code === 'local_chunk_state_conflict');
   assert.equal(sealLocalChunk(sealed, { byteSize: 1, checksum: 'sha256:one', endedAt: 1 }), sealed);
   assert.throws(() => sealLocalChunk(sealed, { byteSize: 2, checksum: 'sha256:other', endedAt: 1 }), (error) => error.code === 'local_chunk_seal_conflict');
+});
+test('browser IndexedDB restores metadata-only lifecycle intent after reload', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://lifecycle-intent-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://lifecycle-intent-reload.test/');
+  const source = await bundledLocalStorageSource();
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
+  const dbName = `lifecycle-intent-${Date.now()}`;
+  await page.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    await store.saveLifecycleIntent({
+      ownerUserId: 'owner-1', meetingId: 'meeting-1', sessionId: 'session-1',
+      segmentId: 'segment-1', originalOperationId: 'operation-1',
+      currentOperationId: 'operation-1', command: 'stop',
+      expectedLifecycleVersion: 3, leaseId: 'lease-1', fenceToken: 2,
+      leaseExpiresAt: '2030-01-01T00:00:00.000Z', payload: {},
+      status: 'unknown'
+    });
+  }, { moduleUrl, dbName });
+  await page.reload();
+  const result = await page.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const existing = (await store.listPendingLifecycleIntents('owner-1', 'meeting-1'))[0];
+    await store.saveLifecycleIntent(existing);
+    const identityErrors = [];
+    for (const change of [{ sessionId: 'session-2' }, { segmentId: 'segment-2' }]) {
+      try {
+        await store.saveLifecycleIntent({ ...existing, ...change });
+      } catch (error) {
+        identityErrors.push(error.code);
+      }
+    }
+    return {
+      pending: await store.listPendingLifecycleIntents('owner-1', 'meeting-1'),
+      otherOwner: await store.listPendingLifecycleIntents('owner-2', 'meeting-1'),
+      otherMeeting: await store.listPendingLifecycleIntents('owner-1', 'meeting-2'),
+      identityErrors
+    };
+  }, { moduleUrl, dbName });
+  assert.equal(result.pending.length, 1);
+  assert.equal(result.pending[0].originalOperationId, 'operation-1');
+  assert.equal(result.pending[0].status, 'unknown');
+  assert.deepEqual(result.pending[0].payload, {});
+  assert.deepEqual(result.otherOwner, []);
+  assert.deepEqual(result.otherMeeting, []);
+  assert.deepEqual(result.identityErrors, ['local_lifecycle_intent_conflict', 'local_lifecycle_intent_conflict']);
+});
+
+test('lifecycle intent identity is immutable across idempotent writes and absent IDs', () => {
+  const store = createInMemoryLocalMeetingManifestStore();
+  const intent = {
+    ownerUserId: 'owner-1', meetingId: 'meeting-1', sessionId: 'session-1',
+    segmentId: 'segment-1', originalOperationId: 'operation-1',
+    command: 'stop', expectedLifecycleVersion: 3, payload: {}, status: 'prepared'
+  };
+  store.saveLifecycleIntent(intent);
+  store.saveLifecycleIntent({ ...intent, status: 'submitted' });
+  for (const change of [
+    { sessionId: 'session-2' }, { segmentId: 'segment-2' },
+    { sessionId: null }, { segmentId: undefined }
+  ]) {
+    assert.throws(() => store.saveLifecycleIntent({ ...intent, ...change }),
+      (error) => error.code === 'local_lifecycle_intent_conflict');
+  }
+  const { key } = store.getLifecycleIntent('owner-1', 'meeting-1', 'operation-1');
+  for (const change of [
+    { ownerUserId: 'owner-2' }, { meetingId: 'meeting-2' },
+    { originalOperationId: 'operation-3' }
+  ]) {
+    assert.throws(() => store.saveLifecycleIntent({ ...intent, key, ...change }),
+      /key does not match its scope/u);
+  }
+  const pending = store.getLifecycleIntent('owner-1', 'meeting-1', 'operation-1');
+  assert.equal(pending.status, 'submitted');
+  assert.equal(pending.sessionId, 'session-1');
+  assert.equal(pending.segmentId, 'segment-1');
+
+  const unknown = { ...intent, originalOperationId: 'operation-2',
+    sessionId: null, segmentId: undefined };
+  store.saveLifecycleIntent(unknown);
+  assert.throws(() => store.saveLifecycleIntent({ ...unknown, sessionId: 'session-2' }),
+    (error) => error.code === 'local_lifecycle_intent_conflict');
+  assert.throws(() => store.saveLifecycleIntent({ ...unknown, segmentId: 'segment-2' }),
+    (error) => error.code === 'local_lifecycle_intent_conflict');
+  assert.equal(store.getLifecycleIntent('owner-1', 'meeting-1', 'operation-2').segmentId, null);
+});
+
+test('IndexedDB reload adopts committed Stop and Rollover without resubmitting', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://lifecycle-result-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://lifecycle-result-reload.test/');
+  const storageUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalStorageSource()).toString('base64')}`;
+  const recoveryUrl = `data:text/javascript;base64,${Buffer.from(await bundledLifecycleRecoverySource()).toString('base64')}`;
+  const dbName = `lifecycle-result-${Date.now()}`;
+  await page.evaluate(async ({ storageUrl, recoveryUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const { createLifecycleRecoveryController } = await import(recoveryUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const api = {
+      async executeRecordingCommand() { throw new Error('response lost'); },
+      async lookupRecordingOperation() { throw new Error('must not look up before reload'); },
+      async recoverRecordingLease() { throw new Error('must not recover lease'); }
+    };
+    const controller = createLifecycleRecoveryController({ store, api });
+    for (const command of ['stop', 'rollover']) {
+      try {
+        await controller.submit({ ownerUserId: 'owner-1', meetingId: `meeting-${command}`,
+          command, operationId: `operation-${command}`, expectedLifecycleVersion: 1,
+          sessionId: 'session-1', segmentId: 'segment-1', leaseId: 'lease-1',
+          fenceToken: 1, leaseExpiresAt: '2030-01-01T00:00:00.000Z',
+          payload: command === 'rollover' ? { nextLiveSessionId: 'live-next' } : {} });
+      } catch (error) {
+        if (error.message !== 'response lost') throw error;
+      }
+    }
+  }, { storageUrl, recoveryUrl, dbName });
+  await page.reload();
+  const result = await page.evaluate(async ({ storageUrl, recoveryUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const { createLifecycleRecoveryController } = await import(recoveryUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    let resubmissions = 0;
+    const api = {
+      async executeRecordingCommand() { resubmissions += 1; throw new Error('duplicate submit'); },
+      async lookupRecordingOperation({ operationId }) {
+        const stop = operationId === 'operation-stop';
+        return { status: 'committed', operationId, command: stop ? 'stop' : 'rollover',
+          resultingLifecycleVersion: 2, targetIdentityRecorded: true,
+          targetSessionId: 'session-1', targetSegmentId: 'segment-1',
+          sessionId: 'session-1', segmentId: stop ? null : 'segment-2' };
+      },
+      async recoverRecordingLease() { throw new Error('must not recover lease'); }
+    };
+    const controller = createLifecycleRecoveryController({ store, api });
+    const statuses = [];
+    for (const command of ['stop', 'rollover']) {
+      const meetingId = `meeting-${command}`;
+      statuses.push((await controller.recover({ ownerUserId: 'owner-1', meetingId })).status);
+      statuses.push((await store.getLifecycleIntent('owner-1', meetingId, `operation-${command}`)).status);
+    }
+    return { statuses, resubmissions };
+  }, { storageUrl, recoveryUrl, dbName });
+  assert.deepEqual(result.statuses, ['committed', 'committed', 'committed', 'committed']);
+  assert.equal(result.resubmissions, 0);
+});
+
+test('browser IndexedDB commits Segment predecessor, successor, pointer and operation atomically', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://local-segment-ledger.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://local-segment-ledger.test/');
+  const storageUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalStorageSource()).toString('base64')}`;
+  const dbName = `segment-ledger-${Date.now()}`;
+  const beforeReload = await page.evaluate(async ({ storageUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const recording = { meetingId: 'meeting-1', recordingId: 'recording-1', segmentId: 'segment-1',
+      segmentNumber: 1, captureEpoch: 1, providerEpoch: 0, state: 'capturing',
+      integrityVersion: 2, pcmEnabled: true };
+    await store.commitRecordingOperation({ recording, operation: {
+      meetingId: 'meeting-1', operationId: 'start-1', type: 'start', result: recording
+    } });
+    const transition = { meetingId: 'meeting-1', recordingId: 'recording-1', operationId: 'rollover-1',
+      predecessorId: 'segment-1', predecessorSequence: 1, successorId: 'segment-2', successorSequence: 2 };
+    await store.prepareSegmentTransition(transition);
+    let invalidCode = null;
+    try { await store.commitSegmentTransition({ ...transition, boundary: { recordingId: 'wrong' } }); }
+    catch (error) { invalidCode = error.code; }
+    const before = { recording: await store.getRecording('meeting-1'),
+      segments: await store.listSegments('meeting-1'),
+      operation: await store.getSegmentTransition('meeting-1', 'rollover-1') };
+    const boundary = { recordingId: 'recording-1', transitionOperationId: 'rollover-1',
+      captureEpoch: 2, endSample: 1600, offset: 42, sha256: 'a'.repeat(64) };
+    const originalPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value, ...args) {
+      if (this.name === 'recordings' && value.segmentId === 'segment-2') {
+        throw new Error('SIMULATED_IDB_WRITE_FAILURE');
+      }
+      return originalPut.call(this, value, ...args);
+    };
+    let writeFailure = null;
+    try { await store.commitSegmentTransition({ ...transition, boundary }); }
+    catch (error) { writeFailure = error.message; }
+    finally { IDBObjectStore.prototype.put = originalPut; }
+    const afterFailedWrite = { recording: await store.getRecording('meeting-1'),
+      segments: await store.listSegments('meeting-1'),
+      operation: await store.getSegmentTransition('meeting-1', 'rollover-1') };
+    await store.commitSegmentTransition({ ...transition, boundary });
+    await store.saveRetention({ meetingId: 'meeting-1', recordingId: 'recording-1',
+      expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() });
+    return { invalidCode, before, writeFailure, afterFailedWrite };
+  }, { storageUrl, dbName });
+  assert.equal(beforeReload.invalidCode, 'local_segment_boundary_invalid');
+  assert.equal(beforeReload.before.recording.segmentId, 'segment-1');
+  assert.deepEqual(beforeReload.before.segments.map((segment) => segment.status), ['ACTIVE']);
+  assert.equal(beforeReload.before.operation.phase, 'PREPARED');
+  assert.equal(beforeReload.writeFailure, 'SIMULATED_IDB_WRITE_FAILURE');
+  assert.equal(beforeReload.afterFailedWrite.recording.segmentId, 'segment-1');
+  assert.equal(beforeReload.afterFailedWrite.recording.captureEpoch, 1);
+  assert.deepEqual(beforeReload.afterFailedWrite.segments.map((segment) => segment.status), ['ACTIVE']);
+  assert.equal(beforeReload.afterFailedWrite.operation.phase, 'PREPARED');
+  await page.reload();
+  const restored = await page.evaluate(async ({ storageUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(storageUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const recording = await store.getRecording('meeting-1');
+    const segments = await store.listSegments('meeting-1');
+    const operation = await store.getSegmentTransition('meeting-1', 'rollover-1');
+    const retention = await store.getRetention('meeting-1');
+    await store.clearMeetingContent('meeting-1');
+    return { recording, segments, operation, retention,
+      afterClear: await store.listSegments('meeting-1') };
+  }, { storageUrl, dbName });
+  assert.equal(restored.recording.segmentId, 'segment-2');
+  assert.equal(restored.recording.captureEpoch, 3);
+  assert.equal(restored.operation.result.captureEpoch, 3);
+  assert.deepEqual(restored.segments.map((segment) => [segment.status, segment.firstJournalEpoch,
+    segment.lastJournalEpoch]), [['ENDED', 1, 2], ['ACTIVE', 3, null]]);
+  assert.equal(restored.operation.phase, 'COMMITTED');
+  assert.equal(restored.retention.deleted, false);
+  assert.ok(Date.parse(restored.retention.expiresAt) > Date.now());
+  assert.deepEqual(restored.afterClear, []);
 });

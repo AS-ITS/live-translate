@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runWithRequestUser, setRequestScope } from '../../server/requestIdentity.js';
 import {
+  commitLocalRolloverAfterDurableBarrier,
   finalizedTranscriptItemsForRecording,
   recordingLifecycleContractVersion,
   sessionSnapshotPayloadForRecording,
@@ -9,6 +10,39 @@ import {
 } from '../../src/features/live/useLiveRecordingController.js';
 import { createSupabaseSessionRepository } from '../../src/infrastructure/supabaseSessionRepository.js';
 import { applyTranscriptEvent, createTranscriptState } from '../../src/lib/transcript.js';
+
+test('local rollover commits only after every durable barrier step succeeds', async () => {
+  for (const failedStep of ['checkpoint', 'container', 'writes', 'journal']) {
+    const calls = [];
+    let currentSegmentId = 'segment-1';
+    const step = (name) => async () => {
+      calls.push(name);
+      if (name === failedStep) {
+        if (name === 'checkpoint') return false;
+        throw new Error(`${name} failed`);
+      }
+      return true;
+    };
+    await assert.rejects(commitLocalRolloverAfterDurableBarrier({
+      flushCheckpoint: step('checkpoint'),
+      sealAudioContainer: step('container'),
+      sealSegmentWrites: step('writes'),
+      sealPcmJournal: step('journal'),
+      commitSegment: async () => { calls.push('commit'); currentSegmentId = 'segment-2'; }
+    }));
+    assert.equal(currentSegmentId, 'segment-1', `${failedStep} advanced currentSegmentId`);
+    assert.equal(calls.includes('commit'), false, `${failedStep} committed the successor`);
+  }
+  const calls = [];
+  await commitLocalRolloverAfterDurableBarrier({
+    flushCheckpoint: async () => { calls.push('checkpoint'); return true; },
+    sealAudioContainer: async () => { calls.push('container'); },
+    sealSegmentWrites: async () => { calls.push('writes'); },
+    sealPcmJournal: async () => { calls.push('journal'); },
+    commitSegment: async () => { calls.push('commit'); }
+  });
+  assert.deepEqual(calls, ['checkpoint', 'container', 'writes', 'journal', 'commit']);
+});
 
 test('durable Session or Meeting identity keeps lifecycle v2 off the legacy resume path', () => {
   assert.equal(recordingLifecycleContractVersion({
@@ -192,12 +226,7 @@ test('lifecycle v2 unrecoverable failure stops instead of recovering', async () 
       command: 'stop',
       payload: {
         failureReason: 'provider_unavailable',
-        failureCategory: 'provider',
-        checkpoint: {
-          idempotencyKey: 'checkpoint:segment-v2:failed:provider_unavailable',
-          durableChunks: [],
-          pendingPartial: null
-        }
+        failureCategory: 'provider'
       }
     },
     'stop-heartbeats',
@@ -205,6 +234,16 @@ test('lifecycle v2 unrecoverable failure stops instead of recovering', async () 
     'prevent-further-writes'
   ]);
   assert.equal(calls.some((call) => call?.command === 'recover'), false);
+});
+
+test('lifecycle v2 cannot ACK stop after a failed checkpoint flush', async () => {
+  const calls = [];
+  await assert.rejects(stopLifecycleV2AfterFailure({
+    lifecycle: { meetingId: 'meeting-v2', segmentId: 'segment-v2' },
+    flushCheckpoint: async () => false,
+    executeRecordingCommand: async () => calls.push('stop')
+  }), /Checkpoint flush failed/);
+  assert.deepEqual(calls, []);
 });
 
 function response(body) {

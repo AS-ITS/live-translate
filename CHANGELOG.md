@@ -1,6 +1,70 @@
 # Changelog
 
+- Issue #41 音訊診斷清理：移除選單、面板、記憶體事件快照、固定 OPFS 步驟標記與專用測試；保留原始／翻譯音訊及 PCM Journal 錯誤處理、缺段匯出拒絕、Cue Retry、Pause／Continue／End 與 Local-only 資料邊界。Safari 私密瀏覽可能造成本機音訊保存失敗，建議使用一般瀏覽模式。
+
+- Issue #41 iPhone Safari 定向 RCA：翻譯 PCM 的 `AUDIO_CHUNK_WRITE` 確認包覆 OPFS Chunk write；音訊診斷新增固定 OPFS 步驟與 DOMException 分類，供實機定位 `UnknownError`。底層 Safari 失敗步驟尚待實機複測，保存流程未改。
+
+- Issue #41 iPhone 音訊診斷：在開發／明確啟用診斷的選單提供可截圖面板，顯示瀏覽器 MIME 宣告、實際錄製結果及頁面記憶體中最近 10 筆安全分類錯誤；不改錄音保存流程。
+
+- Issue #41 Audio Failure Diagnostic: original audio, PCM Journal, and translated audio failures now emit `ISSUE41_AUDIO_FAILURE` with an explicit path, failure stage, allowlisted error class, and pseudonymous Segment code. The WebM unsupported and MediaRecorder error branches are covered; real iPhone Safari verification remains pending.
+
+- Issue #41 Cue refinement binding: canonicalized optional Live translation provenance before hashing refinement input, so null and omitted fields bind to the same committed Initial snapshot. The mutation coordinator discards only empty pending refinement resets already covered by an acknowledged, proven Cue; completed or mismatched Refined updates still reject. Batch failures include safe index-0 ACK metadata.
+
+- Issue #41 RC-M1: Bumped the Host local Meeting IndexedDB version to 13 so existing v12 databases run the schema upgrade that creates `pendingCues` and `cueAuthorities`. New and upgraded database initialization, Cue Authority access, and repeat opens are covered by a targeted browser test.
+
 ## Unreleased
+
+- Issue #41 Preview Candidate 整合：Reload 後歷史 Pending Cue 保留原 Segment 歸屬，跨 Segment 提交遭拒；Pause／Continue／End 的本機保存與 Cue Writer 路徑維持，Checkpoint 失敗紀錄只保存固定結構欄位，不保存原始 Stack。
+
+- Issue #41 會議計時器改由每個分頁的 `sessionStorage` 保存 Meeting ID 與首次錄音起點；Pause、Continue 和 Reload 僅依此顯示經過時間，End 成功後清除，不參與錄音或資料生命週期。
+
+- Issue #41 RC1 Cue integrity: accepted Source and Translation mutations now allocate each side version from the latest committed Cue only after newer same-turn provider provenance is proven. Stale events cannot advance a side version; the Local Writer continues rejecting same-version authority text conflicts.
+
+- Issue #41: Adjacent Final Cues now retain separate authority and local persistence identities. Recorder, viewer, and TXT/SRT/VTT output derive adjacent sentence grouping from a deterministic read-only projection.
+
+- Issue #41 Local Viewer metadata authorization: Viewer metadata GET requests now reach the existing share credential, role, and expiry checks without a login Bearer token. Formal `npm run start` on isolated Supabase returned 200 for a valid Viewer code and 404 for invalid or expired codes; Host API authentication and cross-account isolation remained intact. Mock Viewer received Snapshot, Append, and Update; Final Cue matched Host. A forced Viewer peer close reconnected automatically with the Cue retained. Cue, WebRTC, and Local Storage core were unchanged.
+
+- Issue #41 Local RC startup acceptance (2026-11-07): RC baseline is branch `chore/issue41-consolidation-issue-41` at HEAD `7423e9cc9efa9c0573b5112655439e73674bcfbd` with pre-existing uncommitted changes (85 tracked entries, 31 untracked; 5 staged files). Historical Real Gemini Smoke `2026-11-07t09-51-53-840z-53969` and Local Mock/Cloud Zero Write `core-1794060838434-4cc4d7b8` passed; two original `/api/profile` failed fetches remain **UNRESOLVED**. `npm run start` now targets isolated Local Supabase, API, and Vite; local Mock Start, Pause, End, Reload, and Export passed. Formal Viewer sync remains blocked by 401 on shared-meeting metadata. Remaining acceptance: fix that authorization path, rerun Host/Viewer from `npm run start`, and independently verify preservation of pre-existing browser OPFS/IndexedDB data. Original evidence and existing Local user meetings were left intact.
+
+- Issue #41 P0 Meeting ownership: Loopback Supabase credentials now select the persistent repository even when the Gemini Key is empty. Member create immediately supports detail and Viewer Share; targeted member, cross-account, and Viewer Token authorization checks pass without Share retries.
+
+- Issue #41 B2 final Legacy cleanup: Removed retired Local Storage Cue and unassigned Cue write APIs, Checkpoint Cue snapshot merge, and the translation worker's cloud Cue repository branch. B2 Writer, metadata-only Checkpoint, and legacy local read paths remain. Legacy A/B export E2E still fails after fixture readback; manual Gemini acceptance remains on hold.
+
+- Issue #41 B2 integration: Routed new and B2 Checkpoint writes through cursor/metadata-only storage, made Local Cue the B2 Recovery authority, published Viewer Final Cues from Writer ACK with durable revisions, and retired the cloud Cue POST handler and service while preserving HTTP 410. Isolated Reload and Viewer tests passed; manual Gemini/Viewer acceptance remains on hold.
+
+- Issue #41 B2-L integration: Retired parallel cloud recording mutation routes and service wiring, added Local Supabase write guards, persisted retryable Host End completion, made Meeting completion versioned and idempotent, separated Viewer Stop/End notifications, and kept cloud Meeting metadata and glossary paths.
+- Issue #41 B2-L End version fix: Exposed the existing atomic completion RPC and settings-only PATCH from the Supabase Meeting repository; draft completion now fills `started_at` from `created_at` in the same transaction as status, deadline, and lifecycle version.
+
+- Issue #41 B2-2: Removed the unused browser Legacy Resume helper and its dedicated tests; retained the current Host recovery error contract test under lifecycle regression coverage.
+
+- Issue #41 B2-1: Removed the unused cloud Meeting export panel and its exclusive browser API client. The active Meeting detail export remains local IndexedDB/OPFS.
+
+- Issue #41 B1-2: Lifecycle v2 Viewer legacy detail reads return `410`; queued cloud Export Worker jobs stop before Cue reads or artifact writes. Isolated Local Supabase contract confirms direct table, RPC, and Storage writes are rejected while metadata lifecycle remains available. Production is unchanged.
+
+- Issue #41: Local-only Pause now releases the PCM Journal writer after its END receipt; Continue verifies ownership before opening the next epoch's writer.
+
+- Issue #41：Pause 以獨立 boundary ID 封存並持久保存 PCM Journal END receipt；Continue 驗證該 receipt 與 predecessor coverage 後，透過既有 IndexedDB Segment Integrity transaction 提交唯一 successor。Reload、重複 Continue 與失去 ACK 依 durable operation 對帳；證據缺失時保留錄音並回報 `INTEGRITY_UNRESOLVED`。
+
+- Issue #41 Deferred WAV（開發分支、短測驗證中）：Stop／End 改以本機音訊封存與 Journal Barrier 為完成條件；Host 在下載時才讀取 OPFS 並合成音訊。匯出失敗保留 sealed chunks 供保留期限內重試，詳細頁載入不再預先合成音訊。
+
+- Issue #41 Local-only Cutover（開發分支、隔離驗證中）：Stop／End 以 Host 本機內容持久化為前提；翻譯 PCM 以 OPFS chunk 與 IndexedDB manifest 保存並可 Reload 匯出。舊雲端 Cue／Checkpoint／音訊／匯出寫入由 Server、資料庫與 Storage 拒絕，歷史內容讀取收窄；未部署或執行正式 Migration。
+
+- Issue #41 lifecycle target identity: persist pre-transition Session/Segment
+  metadata in operation results and expose it through content-free lookup for
+  safe Stop/Rollover recovery; legacy rows remain evidence-insufficient.
+
+- Issue #41 lifecycle recovery: metadata-only operation lookup, atomic expired
+  lease recovery, durable IndexedDB intent, and isolated PostgreSQL/Chromium
+  regression coverage. No production migration or deployment performed.
+
+- Issue #41 B2-B: local Meeting export includes durable unassigned final Cues from IndexedDB, rejects conflicting Cue identities, and blocks incomplete export on local read failure. Meeting switches ignore stale detail loads.
+
+- Hardened Issue #41 checkpoint writes with a restricted SQL writer, service authorized Cue and checkpoint RPCs, an old browser cursor bridge, and a durability barrier before terminal recording transitions. Direct authenticated Cue mutation and checkpoint overwrite are denied.
+
+- 修正 Issue #41 checkpoint durability：Cue delta 以累積快照原子保存，重複 key 改變 payload 回傳 `409`，並防止舊版本、並行寫入與 recovery 覆蓋已確認的 Cue；Supabase 使用交易式 checkpoint RPC。
+
+- 修正 Viewer 先等待、Recorder 後開始時，相同 negotiation 的多筆 `viewer-ready` backlog 讓 Recorder 反覆關閉並重建尚在協商中的 PeerConnection、送出多個 offer 的問題；Recorder 現在保留第一個有效 in-flight negotiation，只有新 negotiation 或已 failed/closed 的 peer 才重建。未改動 recovery 次數、signaling cursor、Cue、Meeting 或 Gemini lifecycle。
+- 補齊 Recorder／Viewer WebRTC paired transport trace：Preview 診斷模式可由 DevTools Console 匯出 recovery 後仍保留的 JSON，加入 generation、negotiation、signaling sequence/cursor/TTL、DataChannel 與 scheduled retry 語意；不恢復診斷 UI、不記錄憑證、SDP、ICE 敏感內容，也不改動既有 recovery state machine。
 
 - 修正 Pause → Continue 時 Gemini Live provider 在 setup 階段關閉仍被標記為 `listening` 的 silent failure；Continue 現在必須確認新 session 完成啟動，否則停止該 session、顯示可診斷錯誤，且不啟用 Recorder callback 或 Cue 更新。
 

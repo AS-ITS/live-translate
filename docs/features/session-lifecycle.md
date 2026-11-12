@@ -1,5 +1,26 @@
 # Session Lifecycle Management
 
+## Issue #41 B2-L unified lifecycle
+
+The Host's IndexedDB/OPFS recording is the only active Session/Segment authority.
+Stop seals the current recording while Meeting metadata stays open. End seals
+locally, persists a pending completion intent and 30-minute content deadline,
+then commits Supabase `completed`, `ended_at`, and a new lifecycle version.
+Reload retries unfinished metadata completion without creating a Segment or
+restarting capture. Viewer Stop and End notifications use separate DataChannel
+messages. Supabase retains Meeting settings, glossary, permissions, sharing, and
+connection coordination. Historical cloud recording rows are retained.
+
+## Issue #41 Local-only Cutover (isolated branch)
+
+Stop and End wait for Host PCM Journal, input audio, enabled translated audio, Cue, transcript, and Checkpoint local writes before lifecycle metadata is submitted. A failed local write stops completion. Unknown metadata outcomes retain the IndexedDB lifecycle intent and use the owner/Meeting/principal-scoped operation lookup and fenced lease recovery after Reload. Local-only Rollover uses a stable operationId derived from the current local Segment. It drains Provider Cues, seals the audio container, waits for local Checkpoint and PCM Journal durable flush, and atomically commits the successor Segment plus operationId in IndexedDB before updating currentSegmentId. A failed barrier leaves the old Segment current; a committed successor remains recoverable after Reload even if Provider startup fails. The legacy cloud Recording lifecycle RPC and Segment reconciliation are not used. Cloud content writing is disabled by the Cutover Migration; existing historical rows are retained for controlled cleanup.
+
+### Issue #41 local Segment integrity
+
+New local recordings use IndexedDB integrity version 2. A `segments` lifecycle ledger records each Meeting Segment ID, sequence, status, and inclusive Journal epoch interval. The PCM file number and `recording.captureEpoch` are not Segment IDs. A rollover first persists a `PREPARED` transition with a stable operation ID, then seals the PCM Journal epoch with that ID. The Journal END receipt binds the recording ID, operation ID, capture epoch, end sample, ledger offset, and SHA-256. One IndexedDB transaction changes predecessor to `ENDED`, creates the unique `ACTIVE` successor, updates the recording pointer, and commits the transition. Multiple Journal epochs may belong to one Segment.
+
+OPFS and IndexedDB do not share a transaction. Reload recovery reads the existing Journal without creating a new one: a verified END receipt completes a pending transition, while absence of both END and unresolved PCM writes permits a durable `ABORTED` decision assigning the provisional epoch to the predecessor. Corrupt or unreadable Journal evidence stays unresolved and preserves content. A committed transition is replayed by operation ID without another END. Existing recordings without version 2 evidence remain readable and are reported `LEGACY_UNVERIFIED`; their PCM is never assigned to a new Segment by inference. Pause seals its PCM epoch with a stable boundary ID and stores the verified Journal END receipt in the recording manifest without creating a Segment. Continue verifies that receipt and predecessor coverage, then uses the IndexedDB Segment transition transaction to commit one successor. Reload reuses the boundary and committed operation outcome; missing, damaged, or incomplete evidence remains INTEGRITY_UNRESOLVED. Pause followed directly by End keeps one Segment. End retention still clears all local stores only after the existing 30-minute deadline.
+
 ## Feature Overview
 
 Session Lifecycle Management is a Phase 2 foundation feature that organizes the
@@ -183,9 +204,23 @@ Segment rollover uses one logical operation with a stable `operationId` and immu
 
 The recorder keeps capturing during provider transition. New PCM is held in a bounded memory queue while the old provider is drained using `turnComplete`/`generationComplete`, `audioTurnId`, provider epoch, a short event-quiet condition, and a hard upper bound. Accepted callbacks remain enabled and retain their original Segment/provider ownership. On a pre-commit failure, queued PCM resumes against the confirmed old provider. After a committed mutation, PCM is never replayed to the old Segment.
 
+Each provider callback binds the Segment and Live session identity from its connection lifecycle. A late callback keeps that binding after the active Segment changes. A Cue without trustworthy original Segment ownership stays unassigned in the current page and raises a visible persistence warning; it is not placed in the active Segment Checkpoint. Mixed Cue batches may save matching Segment Cues while rejected Cues are reported. Durable recovery of unassigned Cues is outside this slice.
+
 OPFS remains the durable source for original MediaRecorder audio. It is not used to replay historical PCM to Gemini: the current provider protocol has no client idempotency key or acknowledged PCM watermark, so replay could duplicate transcript text or reorder turns across provider epochs. If the bounded PCM queue overflows, original audio remains available but transcript completeness is explicitly marked degraded. Existing IndexedDB, OPFS, Session, Cue, and recording records are retained without migration or deletion.
 
+The captured PCM Journal stores committed PCM and claim records under `pcm-journals/v1/<meetingId>/<recordingId>`. A capture callback offers each chunk once before any upload buffer decision; provider resends do not create new claims. Provider-only changes retain the capture epoch, while Pause seals it and Resume begins the next epoch. Segment rollover keeps the recording's PCM sample range continuous. The Journal Worker holds the existing meeting recorder lock while open; Meeting retention removes its directory through the existing OPFS deletion path before marking local content cleared. Journal failures are visible and do not imply durable PCM coverage. This Journal does not replay PCM to Gemini or assign Cues to Segments.
+
 Rollover, checkpoint, Cue persistence, and provider transition do not own the WebRTC DataChannel lifecycle. A healthy Viewer channel must remain open through Supabase or lifecycle failures.
+
+Local-only Pause waits for the PCM END receipt and closes the writer before Continue verifies ownership. Continue opens a fresh writer for the next epoch after the verifier releases its handle. Continue reuses the in-memory Session record for the same Session ID, advances its Segment binding, and retains appended transcript items.
+
+Pause keeps the Host Viewer sidecar active through `stopping`. After local Cue mutations commit, the Host publishes the committed final Cues before transitioning to `paused`; a Viewer cursor alone does not establish Cue convergence.
+
+End, Pause, and Continue on one Host recording share a synchronous operation gate. End waits for an already started Pause to succeed; a failed Pause blocks End and navigation while local data remains available for reload recovery. A started End rejects later Pause, and successful End navigation synchronously marks the recording ended before changing routes.
+
+If Pause fails at the Checkpoint barrier, the Host remains on the live route and must reload before continuing. Reload uses the Local-only v2 manifest as the recording authority. Before capture restarts, recovery checks Cue ownership, rebuilds the Checkpoint barrier from durable transcript items, and verifies the PCM Journal Pause receipt. A verified receipt permits the pending Pause commit and the existing Continue transition; an incomplete barrier or unresolved ownership keeps recording blocked without claiming a successful Pause.
+
+The Host timer shows wall-clock time from the first successful Start in the current browser tab. Pause, Continue, and Reload retain the same UI start through `sessionStorage`; successful End clears it. The timer does not set recording timestamps, Meeting metadata, or cumulative recorded-audio duration. A separate tab does not inherit the timer.
 
 ## UI State Mapping
 
@@ -229,3 +264,29 @@ Tests should be deterministic and should not call the real Gemini API.
 - Cleanup policy documented.
 - Connection Resilience dependency documented.
 - No production code changed.
+
+## Issue #41 unknown outcome recovery
+
+The host writes a metadata-only intent to the existing IndexedDB operations
+store before submitting Start, Pause, Resume, Recover, Stop, or Rollover. Intent states distinguish
+prepared, submitted, committed, unknown, rejected, and expired. After reload,
+the host first looks up the original operation ID and known attempts. It adopts
+a committed result only when the persisted Session and target Segment identity
+can be verified; otherwise it keeps the pending intent and reports insufficient
+evidence without a second lifecycle write. New operation results record the
+pre-transition target Session and Segment under the Meeting lock, so committed
+Stop and Rollover can be adopted even when Stop clears the current Segment or
+Rollover creates a successor. Older records without both target fields remain
+evidence-insufficient. While the original lease
+is valid, it may resubmit the identical operation ID and payload. Once the
+lease expires, it requests atomic Meeting-locked recovery; only a matching
+Meeting, Session, Segment, lifecycle version, owner, and authorized principal
+may receive a new lease and attempt ID. Identity/version conflicts and missing
+authorization stop automatic retry. Retention expiry removes the local intent
+and does not restore meeting content.
+
+### Adjacent Final Cue presentation
+
+Each finalized Cue retains its own ID, sequence, turn, side versions, and event provenance in local authority and viewer transport. Adjacent sentence grouping is a deterministic read-only projection for recorder/viewer display and TXT/SRT/VTT export. A projection row identifies its contributing Cue IDs, uses the first start and last end time, and is rebuilt from authority after reload. Late-final updates revise only the matching authoritative Cue; projection never writes a merged Cue or deletes its contributors.
+
+Source and Translation pending transcripts retain their original callback connection epoch, provider epoch, and event sequence through terminal replay. A replay never invents missing event proof.

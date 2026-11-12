@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetected, meetingEventDuplicateDetected } from '../../lib/meetingViewerState.js';
-import { createMeetingViewerTelemetry } from '../../lib/meetingViewerTelemetry.js';
-import { viewerLatencySample } from '../../lib/meetingViewerLatency.js';
+import { mergeMeetingViewerSnapshot } from '../../lib/meetingViewerState.js';
+import { mergeHostViewerEnvelope } from '../../lib/hostViewerAuthority.js';
+import { newerViewerMetadata } from '../../lib/viewerMetadataVersion.js';
 import { effectiveTranslationForCue } from '../../lib/cueContent.js';
-import { createMeetingViewerRealtimeController, meetingViewerRealtimeEnabled } from '../../lib/meetingViewerRealtime.js';
+import { projectAdjacentFinalCues } from '../../lib/adjacentCueProjection.js';
 import { fetchMeetingViewerSnapshotWithRetry, isTerminalViewerError } from '../../lib/meetingViewerSnapshot.js';
 import { createWebRtcSubtitleTransport } from '../../webrtc/subtitleTransport.js';
 import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
@@ -25,7 +25,14 @@ import {
   restoreViewerScrollAnchor,
   scrollViewerToLatest
 } from '../../lib/viewerAutoFollow.js';
+import {
+  readViewerFontSizePreference,
+  VIEWER_FONT_SIZES,
+  writeViewerFontSizePreference
+} from '../../lib/viewerFontSizePreference.js';
 import { ViewerShareHeader } from './ViewerShareHeader.jsx';
+
+const VIEWER_FONT_SIZE_LABELS = Object.freeze({ small: '小', medium: '中', large: '大' });
 
 export function MeetingViewerPage({ token, code }) {
   const [detail, setDetail] = useState(null);
@@ -39,18 +46,13 @@ export function MeetingViewerPage({ token, code }) {
   const historyAnchorRef = useRef(null);
   const historySeenCueIdsRef = useRef(new Set());
   const detailRef = useRef(null);
-  const eventSourceRef = useRef(null);
-  const nextViewerCursorRef = useRef(null);
-  const loadingOlderRef = useRef(false);
-  const latencySamplesRef = useRef([]);
   const rowHeightsRef = useRef(new Map());
   const [rowLayoutVersion, setRowLayoutVersion] = useState(0);
   const [visibility, setVisibility] = useState(() => readSubtitleVisibilityPreference(VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY));
+  const [subtitleFontSize, setSubtitleFontSize] = useState(readViewerFontSizePreference);
   const { showSource, showTranslation } = visibility;
   const [isFollowingLatest, setIsFollowingLatest] = useState(true);
   const [unseenCueCount, setUnseenCueCount] = useState(0);
-  const [hasOlderCues, setHasOlderCues] = useState(false);
-  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [shareConnection, setShareConnection] = useState({ value: 'connecting' });
   const [retryVersion, setRetryVersion] = useState(0);
   const [isNativeFullscreen, setIsNativeFullscreen] = useState(false);
@@ -60,7 +62,7 @@ export function MeetingViewerPage({ token, code }) {
   const fullscreenErrorTimerRef = useRef(null);
   const fullscreenErrorGenerationRef = useRef(0);
   const isFullscreen = isNativeFullscreen || isCssFullscreen;
-  const estimatedRowHeight = 64;
+  const estimatedRowHeight = subtitleFontSize === 'large' ? 144 : (subtitleFontSize === 'small' ? 72 : 96);
   const shareUrl = useMemo(() => canonicalViewerShareUrl({ code, token }), [code, token]);
 
   useEffect(() => attachClientDiagnosticLifecycle({
@@ -90,9 +92,13 @@ export function MeetingViewerPage({ token, code }) {
   }, [visibility]);
 
   useEffect(() => {
+    writeViewerFontSizePreference(subtitleFontSize);
+  }, [subtitleFontSize]);
+
+  useEffect(() => {
     rowHeightsRef.current.clear();
     setRowLayoutVersion((version) => version + 1);
-  }, [showSource, showTranslation]);
+  }, [showSource, showTranslation, subtitleFontSize]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -116,24 +122,17 @@ export function MeetingViewerPage({ token, code }) {
     const basePath = token
       ? `/api/shared-meetings/${encodeURIComponent(token)}`
       : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
-    const telemetry = createMeetingViewerTelemetry({ basePath });
+    const metadataPath = `${basePath}/metadata`;
     let cancelled = false;
     let webRtcTransport = null;
     let webRtcStarted = false;
-    let realtimeController = null;
     let restoredTimer = null;
-    let sseReconnectTimer = null;
     let lifecycleRefreshTimer = null;
     let lifecycleRefreshInFlight = false;
-    let sseReconnectAttempts = 0;
-    let fallbackEpoch = 0;
-    let sseEpoch = 0;
     let terminal = false;
     let everConnected = false;
     let recordingState = 'waiting';
-    let fallbackStarted = false;
-    const useRealtime = meetingViewerRealtimeEnabled();
-    const channelStates = { webRtc: 'idle', fallback: 'connecting' };
+    const channelStates = { webRtc: 'idle', fallback: 'idle' };
     const snapshotController = new AbortController();
     setShareConnection({ value: 'connecting' });
 
@@ -141,13 +140,8 @@ export function MeetingViewerPage({ token, code }) {
       snapshotController.abort();
       if (restoredTimer) clearTimeout(restoredTimer);
       restoredTimer = null;
-      if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
-      sseReconnectTimer = null;
       if (lifecycleRefreshTimer) clearTimeout(lifecycleRefreshTimer);
       lifecycleRefreshTimer = null;
-      eventSourceRef.current?.close();
-      eventSourceRef.current = null;
-      void realtimeController?.stop();
       void webRtcTransport?.stop();
     }
 
@@ -204,11 +198,15 @@ export function MeetingViewerPage({ token, code }) {
         setShareConnection({ value: value.code === 'share_unauthorized' ? 'invalid' : 'stopped' });
         setError(value?.message || '分享已失效。');
         stopConnections();
-      } else setChannelState('fallback', { value: 'failed' }, value?.message || '無法連線。');
+    } else {
+      setShareConnection({ value: 'failed' });
+      setError(value?.message || '無法連線。');
+    }
     }
 
     function applyWebRtcEnvelope(envelope, transportMeta = {}) {
       if (cancelled || terminal) return;
+      if (envelope.meetingId !== detailRef.current?.meeting?.id) return;
       if (envelope.type === 'meeting.stopped') {
         terminal = true;
         setShareConnection({ value: 'stopped' });
@@ -216,40 +214,39 @@ export function MeetingViewerPage({ token, code }) {
         stopConnections();
         return;
       }
-      if (envelope.type === 'snapshot') {
-        const merged = mergeMeetingViewerSnapshot(detailRef.current, {
-          cues: envelope.cues || [],
-          cursor: { cueSequence: envelope.sequence || 0 },
-        });
+      if (envelope.type === 'recording.stopped') {
+        setShareConnection({ value: 'waiting' });
+        setError('錄音已停止，等待下一次錄製。');
+        return;
+      }
+      if (envelope.type === 'snapshot' || envelope.type === 'replay.response'
+        || envelope.type === 'cue.append' || envelope.type === 'cue.update'
+        || envelope.type === 'segment.transition') {
+        const merged = mergeHostViewerEnvelope(detailRef.current, envelope);
+        if (merged === detailRef.current) {
+          return detailRef.current?.hostCursor || null;
+        }
         detailRef.current = merged;
         setDetail(merged);
         recordLivePipelineTrace({
           stage: 'VIEWER_STORE_UPDATED', meetingId: merged?.meeting?.id || merged?.meetingId,
-          messageType: 'snapshot', sequence: envelope.sequence, sourceId: envelope.sourceId,
+          messageType: envelope.type, sequence: envelope.sequence, sourceId: envelope.sourceId,
           transportGeneration: transportMeta.transportGeneration,
-          cueDeliverySource: 'snapshot',
+          cueDeliverySource: transportMeta.cueDeliverySource,
           receivedAt: transportMeta.receivedAt,
-          decision: 'snapshot_merged', transportResult: 'updated',
+          decision: 'host_cue_merged', transportResult: 'updated',
         });
-        return;
-      }
-      if (envelope.type === 'replay.response') {
-        (envelope.events || []).forEach((event) => applyWebRtcEnvelope(event, {
-          ...transportMeta,
-          cueDeliverySource: 'replay'
-        }));
-        return;
-      }
-      if (envelope.type === 'cue.append' || envelope.type === 'cue.update') {
-        applyCuePayload(envelope, {
-          ...transportMeta,
-          cueDeliverySource: transportMeta.cueDeliverySource || 'live'
-        });
+        return merged.hostCursor;
       }
     }
 
     function startWebRtc(meetingId) {
-      if (webRtcStarted || !meetingId || typeof RTCPeerConnection !== 'function') return;
+      if (webRtcStarted || !meetingId) return;
+      if (typeof RTCPeerConnection !== 'function') {
+        setShareConnection({ value: 'failed' });
+        setError('瀏覽器無法建立字幕連線。');
+        return;
+      }
       webRtcStarted = true;
       try {
         webRtcTransport = createWebRtcSubtitleTransport({
@@ -306,16 +303,18 @@ export function MeetingViewerPage({ token, code }) {
     }
 
     function applyRecordingLifecycle(value) {
-      recordingState = value?.recordingState || (
+      const cloudRecordingState = value?.recordingState || (
         ['completed', 'failed'].includes(value?.meeting?.status) ? 'ended'
           : value?.meeting?.status === 'created' ? 'waiting' : 'active'
       );
+      recordingState = Number(value?.meeting?.lifecycleContractVersion) >= 2 && cloudRecordingState !== 'ended'
+        ? 'active' : cloudRecordingState;
       recordLivePipelineTrace({
         stage: 'VIEWER_MEETING_LIFECYCLE',
         event: 'viewer.meeting.lifecycle',
         role: 'viewer',
         meetingId: value?.meeting?.id || value?.meetingId,
-        generation: fallbackEpoch,
+      generation: null,
         recordingState,
         meetingStatus: value?.meeting?.status,
         lifecycleStatus: recordingState
@@ -337,13 +336,11 @@ export function MeetingViewerPage({ token, code }) {
       if (lifecycleRefreshTimer) clearTimeout(lifecycleRefreshTimer);
       lifecycleRefreshTimer = null;
       startWebRtc(value?.meeting?.id || value?.meetingId);
-      ensureFallbackStarted(value);
     }
 
-    async function fetchSnapshot(before = null, expectedEpoch = fallbackEpoch) {
-      const snapshotUrl = new URL(basePath, window.location.origin);
+    async function fetchSnapshot() {
+      const snapshotUrl = new URL(metadataPath, window.location.origin);
       let retried = false;
-      if (before) snapshotUrl.searchParams.set('before', before);
       const value = await fetchMeetingViewerSnapshotWithRetry({
         url: `${snapshotUrl.pathname}${snapshotUrl.search}`,
         signal: snapshotController.signal,
@@ -354,275 +351,52 @@ export function MeetingViewerPage({ token, code }) {
             event: 'viewer.snapshot.retry',
             role: 'viewer',
             meetingId: detailRef.current?.meeting?.id || detailRef.current?.meetingId,
-            generation: expectedEpoch,
+          generation: null,
             retryAttempt: attempt,
             transportResult: 'retrying'
           });
-          if (!cancelled && expectedEpoch === fallbackEpoch) setChannelState('fallback', { value: 'reconnecting', attempt });
+          if (!cancelled) setShareConnection({ value: 'reconnecting', attempt });
         },
       });
-      if (cancelled || terminal || expectedEpoch !== fallbackEpoch) return null;
+      if (cancelled || terminal) return null;
       recordLivePipelineTrace({
         stage: 'VIEWER_SNAPSHOT',
         event: 'viewer.snapshot.received',
         role: 'viewer',
         meetingId: value?.meeting?.id || value?.meetingId,
-        generation: expectedEpoch,
+        generation: null,
         snapshotRevision: value?.revision ?? value?.cursor?.eventId ?? null,
         cueCount: Array.isArray(value?.cues) ? value.cues.length : 0,
         recordingState: value?.recordingState,
         meetingStatus: value?.meeting?.status,
         transportResult: retried ? 'recovered' : 'received'
       });
-      nextViewerCursorRef.current = value.pagination?.nextCursor || null;
-      setHasOlderCues(Boolean(value.pagination?.hasMore));
+      const accepted = newerViewerMetadata(detailRef.current, value);
+      if (accepted !== value) {
+        if (recordingState === 'paused' || recordingState === 'waiting') scheduleLifecycleRefresh();
+        return detailRef.current;
+      }
       const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
       detailRef.current = merged;
       configureLivePipelineElapsedContext({ meetingStartedAt: merged?.meeting?.startedAt });
       setDetail(merged);
-      applyRecordingLifecycle(value);
-      if (retried && sseConnected) setChannelState('fallback', { value: 'restored' });
+      applyRecordingLifecycle(merged);
       return merged;
     }
-    function applyCuePayload(payload, transportMeta = {}) {
-      if (cancelled || terminal) return;
-      const receivedAt = transportMeta.receivedAt || Date.now();
-      const receivedCue = payload?.cue && typeof payload.cue === 'object' ? payload.cue : payload;
-      const duplicate = meetingEventDuplicateDetected(detailRef.current, payload);
-      recordLivePipelineTrace({
-        stage: 'VIEWER_RECEIVED',
-        meetingId: receivedCue?.meetingId || detailRef.current?.meeting?.id || detailRef.current?.meetingId,
-        recordingId: receivedCue?.sessionId || null,
-        segmentId: receivedCue?.segmentId || null,
-        audioTurnId: receivedCue?.audioTurnId || null,
-        turnKey: receivedCue?.turnKey || null,
-        cueId: receivedCue?.cueId || null,
-        messageType: payload.type || 'viewer_cue_received',
-        sequence: payload.sequence ?? receivedCue?.sequence,
-        revision: receivedCue?.revision,
-        sourceVersion: receivedCue?.sourceVersion,
-        translationVersion: receivedCue?.translationVersion,
-        transportGeneration: transportMeta.transportGeneration,
-        cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
-        receivedAt,
-        reason: payload.type || 'viewer_cue_received',
-        transportResult: duplicate ? 'deduped' : 'accepted',
-      });
-      if (duplicate) {
-        recordLivePipelineTrace({
-          stage: 'VIEWER_PACKET_DROPPED', cueAction: 'drop',
-          meetingId: receivedCue?.meetingId || detailRef.current?.meeting?.id || detailRef.current?.meetingId,
-          sessionId: receivedCue?.sessionId, segmentId: receivedCue?.segmentId,
-          cueId: receivedCue?.cueId, messageType: payload.type,
-          sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
-          sourceVersion: receivedCue?.sourceVersion, translationVersion: receivedCue?.translationVersion,
-          transportGeneration: transportMeta.transportGeneration,
-          cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
-          receivedAt, dropReason: 'stale_or_duplicate_revision', transportResult: 'dropped',
-        });
-      }
-      const next = applyMeetingCueEvent(detailRef.current, payload);
-      detailRef.current = next;
-      setDetail(next);
-      recordLivePipelineTrace({
-        stage: 'VIEWER_STORE_UPDATED',
-        meetingId: receivedCue?.meetingId || next?.meeting?.id || next?.meetingId,
-        sessionId: receivedCue?.sessionId, segmentId: receivedCue?.segmentId,
-        cueId: receivedCue?.cueId, messageType: payload.type,
-        sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
-        transportGeneration: transportMeta.transportGeneration,
-        cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
-        receivedAt, decision: duplicate ? 'unchanged' : 'merged',
-        transportResult: duplicate ? 'deduped' : 'updated',
-      });
-      requestAnimationFrame(() => {
-        const renderedAt = Date.now();
-        const sample = viewerLatencySample({
-          ...payload,
-          timing: { ...(payload.timing || {}), publishedAt: payload.committedAt || payload.timing?.publishedAt, receivedAt }
-        }, { renderedAt });
-        if (sample) latencySamplesRef.current.push(sample);
-        recordLivePipelineTrace({
-          stage: 'REACT_RENDER',
-          meetingId: receivedCue?.meetingId || detailRef.current?.meeting?.id || detailRef.current?.meetingId,
-          sessionId: receivedCue?.sessionId, segmentId: receivedCue?.segmentId,
-          cueId: receivedCue?.cueId, messageType: payload.type,
-          sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
-          transportGeneration: transportMeta.transportGeneration,
-          cueDeliverySource: transportMeta.cueDeliverySource || 'fallback',
-          receivedAt, timestamp: renderedAt, transportResult: 'rendered',
-        });
-      });
-    }
-    let sseConnected = false;
-    function scheduleSseReconnect() {
-      if (cancelled || terminal || sseReconnectTimer) return;
-      if (recordingState === 'paused' || recordingState === 'waiting') {
-        scheduleLifecycleRefresh();
-        return;
-      }
-      const delays = [1_000, 2_000, 4_000, 8_000, 10_000, 10_000];
-      if (sseReconnectAttempts >= delays.length) {
-        setChannelState('fallback', { value: 'failed' }, '多次重新連線後仍無法取得即時字幕。');
-        return;
-      }
-      const delay = Math.round(delays[sseReconnectAttempts++] * (0.75 + Math.random() * 0.5));
-      sseReconnectTimer = setTimeout(() => {
-        sseReconnectTimer = null;
-        void fetchSnapshot()
-          .catch(handleSnapshotError);
-      }, delay);
-    }
-
-    function connectEvents(afterEventId = detailRef.current?.cursor?.eventId || 0) {
-      if (cancelled || terminal || recordingState === 'paused' || recordingState === 'waiting') return;
-      eventSourceRef.current?.close();
-      const epoch = ++sseEpoch;
-      const events = new EventSource(`${basePath}/events?after=${encodeURIComponent(afterEventId)}`);
-      eventSourceRef.current = events;
-      events.onopen = () => {
-        if (cancelled || terminal || epoch !== sseEpoch) return;
-        if (sseConnected) void telemetry.report('reconnect');
-        setChannelState('fallback', { value: sseConnected ? 'restored' : 'connected' });
-        sseConnected = true;
-        sseReconnectAttempts = 0;
-      };
-      events.addEventListener('cue.append', (event) => {
-        if (cancelled || terminal || epoch !== sseEpoch) return;
-        try {
-          const payload = JSON.parse(event.data);
-          if (meetingEventGapDetected(detailRef.current?.cursor, payload.eventId)) {
-            void telemetry.report('event_gap');
-            void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
-              void telemetry.report('replay_failure');
-              handleSnapshotError(value);
-            });
-            return;
-          }
-          if (meetingEventDuplicateDetected(detailRef.current, payload)) void telemetry.report('event_duplicate');
-          applyCuePayload(payload);
-        } catch {
-          if (!cancelled) setError('無法讀取即時字幕。');
-        }
-      });
-      events.addEventListener('meeting.gap', () => {
-        if (cancelled || terminal || epoch !== sseEpoch) return;
-        void telemetry.report('event_gap');
-        void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
-          void telemetry.report('replay_failure');
-          handleSnapshotError(value);
-        });
-      });
-      events.onerror = () => {
-        if (!cancelled && !terminal && epoch === sseEpoch) {
-          events.close();
-          fallbackStarted = false;
-          setChannelState('fallback', { value: 'reconnecting' });
-          scheduleSseReconnect();
-        }
-      };
-    }
-
-    function ensureFallbackStarted(value) {
-      if (fallbackStarted || cancelled || terminal) return;
-      fallbackStarted = true;
-      if (useRealtime) void realtimeController?.start();
-      else connectEvents(value?.cursor?.eventId || 0);
-    }
-
-    if (useRealtime) {
-      let snapshotReady = false;
-      let bufferedEvents = [];
-      let realtimeSubscribed = false;
-      realtimeController = createMeetingViewerRealtimeController({
-        basePath,
-        onConnecting: () => {
-          fallbackEpoch += 1;
-          snapshotReady = false;
-          bufferedEvents = [];
-          setChannelState('fallback', { value: realtimeSubscribed ? 'reconnecting' : 'connecting' });
-        },
-        onTelemetry: (eventType) => { void telemetry.report(eventType); },
-        onEvent: (payload) => {
-          if (!snapshotReady) bufferedEvents.push(payload);
-          else applyCuePayload(payload);
-        },
-        onSubscribed: async ({ replay, isCurrent }) => {
-          const epoch = fallbackEpoch;
-          const beforeSnapshot = Number(detailRef.current?.cursor?.eventId) || 0;
-          await fetchSnapshot(null, epoch);
-          if (!isCurrent() || epoch !== fallbackEpoch || terminal) return;
-          const recovered = await replay(beforeSnapshot);
-          if (!isCurrent() || epoch !== fallbackEpoch || terminal) return;
-          recovered.events?.sort((left, right) => Number(left.eventId) - Number(right.eventId)).forEach(applyCuePayload);
-          snapshotReady = true;
-          const pending = bufferedEvents;
-          bufferedEvents = [];
-          pending.forEach(applyCuePayload);
-          setChannelState('fallback', { value: realtimeSubscribed ? 'restored' : 'connected' });
-          realtimeSubscribed = true;
-        },
-        onError: (value) => {
-          if (cancelled) return;
-          if (isTerminalViewerError(value)) handleSnapshotError(value);
-          else if (value?.code === 'viewer_retry_exhausted') setChannelState('fallback', { value: 'failed' }, value.message);
-          else setChannelState('fallback', { value: 'reconnecting' });
-        }
-      });
-      void fetchSnapshot().catch(handleSnapshotError);
-    } else {
-      void fetchSnapshot().catch(handleSnapshotError);
-    }
+    void fetchSnapshot().catch(handleSnapshotError);
     return () => {
       cancelled = true;
       snapshotController.abort();
-      nextViewerCursorRef.current = null;
-      loadingOlderRef.current = false;
       stopConnections();
       delete window.__liveTranslateWebRtcGetStats;
     };
   }, [token, code, retryVersion]);
 
-  async function loadOlderCues() {
-    const cursor = nextViewerCursorRef.current;
-    if (!cursor || loadingOlderRef.current) return;
-    loadingOlderRef.current = true;
-    setIsLoadingOlder(true);
-    const basePath = token
-      ? `/api/shared-meetings/${encodeURIComponent(token)}`
-      : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
-    try {
-      const response = await fetch(`${basePath}?before=${encodeURIComponent(cursor)}`);
-      if (!response.ok) throw new Error('無法載入較舊字幕。');
-      const value = await response.json();
-      nextViewerCursorRef.current = value.pagination?.nextCursor || null;
-      setHasOlderCues(Boolean(value.pagination?.hasMore));
-      // Loading history is an explicit review action; keep the return-to-latest control available.
-      enterHistoryMode(value.cues || []);
-      const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
-      detailRef.current = merged;
-      setDetail(merged);
-    } catch (value) {
-      setError(value.message || '無法載入較舊字幕。');
-    } finally {
-      loadingOlderRef.current = false;
-      setIsLoadingOlder(false);
-    }
-  }
-
   const cues = useMemo(() => {
-    if (Array.isArray(detail?.cues) && detail.cues.length > 0) {
-      return detail.cues.map((cue) => ({ ...cue, translatedText: effectiveTranslationForCue(cue) }));
-    }
-    return (detail?.transcriptItems || [])
-      .filter((item) => item.stream === 'source')
-      .map((item, index) => ({
-        cueId: item.id || `legacy-cue-${index}`,
-        sequence: item.sequence || index + 1,
-        sourceText: detail?.transcriptItems?.find((source) => source.stream === 'source' && source.sequence === item.sequence)?.text || '',
-        translatedText: '',
-        startTimeMs: item.startedAt || 0
-      }));
+    return projectAdjacentFinalCues((detail?.cues || []).map((cue) => ({
+      ...cue,
+      translatedText: effectiveTranslationForCue(cue)
+    })));
   }, [detail]);
   const rowLayout = useMemo(() => {
     const offsets = [];
@@ -708,13 +482,13 @@ export function MeetingViewerPage({ token, code }) {
     });
     viewport.querySelectorAll('.viewer-cue-row').forEach((row) => observer.observe(row));
     return () => observer.disconnect();
-  }, [cues, endIndex, showSource, showTranslation, startIndex]);
+  }, [cues, endIndex, showSource, showTranslation, startIndex, subtitleFontSize]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || isFollowingLatestRef.current || !historyAnchorRef.current) return;
     restoreViewerScrollAnchor(viewport, historyAnchorRef.current, cues, rowLayout.offsets);
-  }, [cues, rowLayout.offsets, showSource, showTranslation, viewportHeight]);
+  }, [cues, rowLayout.offsets, showSource, showTranslation, subtitleFontSize, viewportHeight]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -731,7 +505,13 @@ export function MeetingViewerPage({ token, code }) {
       if (autoFollowFrameRef.current === frame) autoFollowFrameRef.current = null;
     };
   }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.sourceText, cues.at(-1)?.translatedText,
-    isFollowingLatest, rowLayout.totalHeight, showSource, showTranslation, viewportHeight]);
+    isFollowingLatest, rowLayout.totalHeight, showSource, showTranslation, subtitleFontSize, viewportHeight]);
+
+  function changeSubtitleFontSize(nextSize) {
+    if (nextSize === subtitleFontSize) return;
+    if (!isFollowingLatestRef.current) captureHistoryPosition(viewportRef.current);
+    setSubtitleFontSize(nextSize);
+  }
 
   function scrollToLatest() {
     isFollowingLatestRef.current = true;
@@ -836,6 +616,7 @@ export function MeetingViewerPage({ token, code }) {
         ref={fullscreenShellRef}
         className={`viewer-fullscreen-shell${isCssFullscreen ? ' is-css-fullscreen' : ''}`}
         data-fullscreen-mode={isNativeFullscreen ? 'native' : (isCssFullscreen ? 'css' : 'inline')}
+        data-subtitle-font-size={subtitleFontSize}
         data-testid="viewer-fullscreen-shell"
       >
         <ViewerShareHeader meetingTitle={detail?.meeting?.name || '即時字幕'} shareUrl={shareUrl} />
@@ -852,6 +633,18 @@ export function MeetingViewerPage({ token, code }) {
                 <button className={`button detail-button viewer-visibility-toggle${showTranslation ? ' is-active' : ''}`} type="button" aria-pressed={showTranslation} data-testid="viewer-translation-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'translation'))}>{showTranslation ? '隱藏翻譯' : '顯示翻譯'}</button>
               </div>
             ) : null}
+            <div className="viewer-font-size-controls" role="group" aria-label="字幕字體大小">
+              {VIEWER_FONT_SIZES.map((size) => (
+                <button
+                  className={`button detail-button viewer-font-size-button${subtitleFontSize === size ? ' is-active' : ''}`}
+                  type="button"
+                  aria-pressed={subtitleFontSize === size}
+                  data-testid={`viewer-font-size-${size}`}
+                  key={size}
+                  onClick={() => changeSubtitleFontSize(size)}
+                >{VIEWER_FONT_SIZE_LABELS[size]}</button>
+              ))}
+            </div>
             {shareConnection.value === 'failed' ? (
               <button className="button detail-button viewer-retry-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重新連線</button>
             ) : null}
@@ -864,7 +657,7 @@ export function MeetingViewerPage({ token, code }) {
             <button className="viewer-fullscreen-error-dismiss" type="button" aria-label="關閉全螢幕提示" onClick={dismissFullscreenError}>關閉</button>
           </div>
         ) : null}
-        {shareConnection.value === 'reconnecting' ? <p className="viewer-reconnecting-detail">正在嘗試恢復即時字幕連線</p> : null}
+        {shareConnection.value === 'reconnecting' ? <p className="viewer-reconnecting-detail">{cues.length > 0 ? '等待 Host 重新連線' : '正在嘗試恢復即時字幕連線'}</p> : null}
         {shareConnection.value === 'recovery_failed' ? (
           <div className="viewer-recovery-failed" role="alert" data-testid="viewer-recovery-failed">
             <strong>🔴 即時字幕連線異常</strong>
@@ -877,7 +670,6 @@ export function MeetingViewerPage({ token, code }) {
         {detail ? (
           <section className={`viewer-cue-panel${showSource ? '' : ' viewer-source-hidden'}${showTranslation ? '' : ' viewer-translation-hidden'}`} aria-label="Meeting 完整字幕">
             {cues.length === 0 ? <div className="viewer-empty-state"><span className="viewer-empty-mark" aria-hidden="true" /><p>等待錄音端送出第一句字幕</p><span>連線期間會自動顯示，不需要重新整理。</span></div> : <>
-              {hasOlderCues ? <button className="button detail-button viewer-load-older" type="button" data-testid="viewer-load-older-button" onClick={() => void loadOlderCues()} disabled={isLoadingOlder}>{isLoadingOlder ? '載入中…' : '載入較舊字幕'}</button> : null}
               <div ref={viewportRef} className="viewer-cue-viewport"
                 onWheel={markUserScrollIntent}
                 onTouchMove={markUserScrollIntent}

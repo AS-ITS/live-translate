@@ -726,12 +726,18 @@ test('void provider send is recorded as invocation evidence, not server acknowle
   assert.equal(session.pcmSendAsyncRejectCount, 0);
 });
 
-test('provider sync send failure emits an audio transport failure after cleanup', async () => {
+test('provider sync send failure preserves capture and starts provider reconnect', async () => {
   const failures = [];
+  const states = [];
   const session = new LiveTranslateSession({
     targetLanguageCode: 'en',
-    onConnectionFailure: (failure) => failures.push(failure)
+    onConnectionFailure: (failure) => failures.push(failure),
+    onCaptureStateChange: (state) => states.push(state.state)
   });
+  let cleanupCalls = 0;
+  let reconnectCalls = 0;
+  session.cleanup = async () => { cleanupCalls += 1; };
+  session.reconnectProvider = async () => { reconnectCalls += 1; return false; };
   session.session = {
     sendRealtimeInput() { throw new Error('send failed'); },
     close() {}
@@ -743,17 +749,23 @@ test('provider sync send failure emits an audio transport failure after cleanup'
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(session.pcmSendSyncThrowCount, 1);
-  assert.equal(failures[0].source, 'pcm_send_failed');
-  assert.equal(failures[0].reasonHint, 'pcm_send_failed');
-  assert.equal(failures[0].afterCleanup, true);
+  assert.equal(cleanupCalls, 0);
+  assert.equal(reconnectCalls, 1);
+  assert.deepEqual(failures, []);
+  assert.deepEqual(states, ['provider-unavailable']);
+  assert.equal(session.providerReady, false);
 });
 
-test('provider async send rejection emits one audio transport failure', async () => {
+test('provider async send rejection preserves capture and starts one reconnect', async () => {
   const failures = [];
   const session = new LiveTranslateSession({
     targetLanguageCode: 'en',
     onConnectionFailure: (failure) => failures.push(failure)
   });
+  let cleanupCalls = 0;
+  let reconnectCalls = 0;
+  session.cleanup = async () => { cleanupCalls += 1; };
+  session.reconnectProvider = async () => { reconnectCalls += 1; return false; };
   session.session = {
     sendRealtimeInput() { return Promise.reject(new Error('async send failed')); },
     close() {}
@@ -765,8 +777,27 @@ test('provider async send rejection emits one audio transport failure', async ()
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(session.pcmSendAsyncRejectCount, 1);
-  assert.equal(failures.length, 1);
-  assert.equal(failures[0].reasonHint, 'pcm_send_failed');
+  assert.equal(cleanupCalls, 0);
+  assert.equal(reconnectCalls, 1);
+  assert.deepEqual(failures, []);
+  assert.equal(session.providerReady, false);
+});
+
+test('provider error after capture starts does not stop the microphone', async () => {
+  const states = [];
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en',
+    onCaptureStateChange: ({ state }) => states.push(state) });
+  let cleanupCalls = 0;
+  session.cleanup = async () => { cleanupCalls += 1; };
+  session.reconnectProvider = async () => false;
+  session.captureEnabled = true;
+  session.providerReady = true;
+  session.inputSendingEnabled = true;
+  await session.handleSessionError(new Error('provider offline'), session.providerEpoch);
+  assert.equal(cleanupCalls, 0);
+  assert.equal(session.captureEnabled, true);
+  assert.equal(session.providerReady, false);
+  assert.deepEqual(states, ['provider-unavailable']);
 });
 
 test('suspended audio context is resumed before capture continues', async () => {

@@ -81,7 +81,7 @@ test('staging authenticated API smoke and cleanup', async ({ request }) => {
     expect(share.role).toBe('viewer');
     expect(share.shortCode).toBeTruthy();
 
-    const sharedMeeting = await request.get(`/api/shared-meetings/code/${encodeURIComponent(share.shortCode)}`);
+    const sharedMeeting = await request.get(`/api/shared-meetings/code/${encodeURIComponent(share.shortCode)}/metadata`);
     expect(sharedMeeting.status()).toBe(200);
   } finally {
     const deleted = await request.delete(`/api/meetings/${encodeURIComponent(meetingId)}`);

@@ -54,15 +54,15 @@ export function createMicrophoneRecordingController(options = {}) {
     resetRecordingMetadata(input);
 
     if (!isRecordingSupported(MediaRecorderImpl, BlobImpl)) {
-      return fail('此瀏覽器不支援本機錄音。');
+      return fail('此瀏覽器不支援本機錄音。', { code: 'MEDIA_RECORDER_UNSUPPORTED' });
     }
 
     if (!input.stream) {
-      return fail('無法取得麥克風音訊進行錄音。');
+      return fail('無法取得麥克風音訊進行錄音。', { code: 'MICROPHONE_STREAM_MISSING' });
     }
 
     if (requireSupportedMimeType && !selectedMimeType) {
-      return fail('此瀏覽器不支援 WebM 語音錄音。');
+      return fail('此瀏覽器不支援 WebM 語音錄音。', { code: 'WEBM_UNSUPPORTED' });
     }
 
     chunks = [];
@@ -77,7 +77,7 @@ export function createMicrophoneRecordingController(options = {}) {
       return getState();
     }
 
-    await stopRecorder();
+    await stopAndDrainRecorder();
     if (state.status !== 'error') {
       setState({ status: 'paused' });
     }
@@ -90,11 +90,11 @@ export function createMicrophoneRecordingController(options = {}) {
     }
 
     if (!isRecordingSupported(MediaRecorderImpl, BlobImpl)) {
-      return fail('此瀏覽器不支援本機錄音。');
+      return fail('此瀏覽器不支援本機錄音。', { code: 'MEDIA_RECORDER_UNSUPPORTED' });
     }
 
     if (!input.stream) {
-      return fail('無法取得麥克風音訊進行錄音。');
+      return fail('無法取得麥克風音訊進行錄音。', { code: 'MICROPHONE_STREAM_MISSING' });
     }
 
     return startRecorder(input.stream);
@@ -108,7 +108,7 @@ export function createMicrophoneRecordingController(options = {}) {
 
     if (recorder) {
       setState({ status: 'finalizing' });
-      await stopRecorder();
+      await stopAndDrainRecorder();
     }
 
     await chunkWriteQueue;
@@ -141,7 +141,7 @@ export function createMicrophoneRecordingController(options = {}) {
 
   async function cleanup({ discard = false } = {}) {
     if (recorder) {
-      await stopRecorder();
+      await stopAndDrainRecorder();
     }
 
     recorder = null;
@@ -179,7 +179,7 @@ export function createMicrophoneRecordingController(options = {}) {
         : new MediaRecorderImpl(stream);
     } catch (error) {
       recorder = null;
-      return fail(error?.message || '無法啟動本機錄音。');
+      return fail(error?.message || '無法啟動本機錄音。', error);
     }
 
     const recorderMimeType = recorder.mimeType || selectedMimeType;
@@ -200,21 +200,22 @@ export function createMicrophoneRecordingController(options = {}) {
           };
         chunkWriteQueue = chunkWriteQueue.then(() => recorderEpoch === captureEpoch ? onChunk(payload) : undefined).catch((error) => {
             chunkWriteError = error;
-            fail(error?.message || '本機音訊分塊寫入失敗。');
+            fail(error?.message || '本機音訊分塊寫入失敗。', null);
           });
         }
       }
     };
     recorder.onerror = (event) => {
       if (recorderEpoch !== captureEpoch) return;
-      fail(event?.error?.message || event?.message || '本機錄音發生錯誤。');
+      fail(event?.error?.message || event?.message || '本機錄音發生錯誤。',
+        event?.error || { code: 'MEDIA_RECORDER_ERROR' });
     };
 
     try {
       recorder.start(timesliceMs);
     } catch (error) {
       recorder = null;
-      return fail(error?.message || '無法啟動本機錄音。');
+      return fail(error?.message || '無法啟動本機錄音。', error);
     }
 
     return setState({
@@ -252,7 +253,13 @@ export function createMicrophoneRecordingController(options = {}) {
     });
   }
 
-  function fail(message) {
+  async function stopAndDrainRecorder() {
+    await stopRecorder();
+    await chunkWriteQueue;
+    captureEpoch += 1;
+  }
+
+  function fail(message, error = null) {
     return setState({
       status: 'error',
       blob: null,

@@ -116,6 +116,8 @@ export function createWebRtcSubtitleTransport({
       signalingState: context?.pc?.signalingState,
       dataChannelState: context?.channel?.readyState,
       peerId: context?.peerId || context?.viewerId,
+      viewerId: context?.viewerId || (role === 'viewer' ? participantId : null),
+      reconnectAttempt: details.attempt ?? retryAttempt,
       lastDataChannelMessageAt: context?.lastDataChannelMessageAt,
       lastCueReceivedAt: context?.lastCueReceivedAt,
       lastPingAt: context?.lastPingAt,
@@ -300,12 +302,30 @@ export function createWebRtcSubtitleTransport({
     return ['meeting_stopped', 'meeting_revoked', 'share_unauthorized'].includes(error?.code);
   }
 
+  async function sendSignal(type, payload, options, context) {
+    try {
+      return await client.signal(type, payload, options);
+    } catch (error) {
+      trace('WEBRTC_SIGNALING', `${type}.failed`, context, {
+        reason: error?.code || 'webrtc_signaling_unavailable',
+        errorCode: error?.code,
+        httpStatus: error?.status,
+        transportResult: 'failed',
+      });
+      throw error;
+    }
+  }
+
   async function announceViewerReady(context, { repeated = false } = {}) {
-    await client.signal('viewer-ready', {}, { negotiationId: context.negotiationId });
+    const accepted = await sendSignal(
+      'viewer-ready', {}, { negotiationId: context.negotiationId }, context
+    );
     if (!isCurrent(context)) return;
     trace('WEBRTC_SIGNALING', repeated ? 'viewer-ready.resent' : 'viewer-ready.sent', context, {
       decision: repeated ? 'continue_discovery' : 'start_discovery',
       transportResult: 'accepted',
+      signalSequence: accepted.sequence,
+      messageExpiresAt: accepted.expiresAt,
     });
     status('waiting', {
       epoch: context.epoch,
@@ -347,7 +367,11 @@ export function createWebRtcSubtitleTransport({
       joined = true;
       signalingHealth = 'healthy';
       iceServers = joinResult.iceServers || [];
-      trace('WEBRTC_SIGNALING', 'join.success', null, { epoch, transportResult: 'joined' });
+      trace('WEBRTC_SIGNALING', 'join.success', null, {
+        epoch,
+        participantTtlMs: joinResult.ttlMs,
+        transportResult: 'joined',
+      });
       scheduleHeartbeat(joinResult.ttlMs, epoch);
       if (role === 'device') {
         retryAttempt = 0;
@@ -398,9 +422,15 @@ export function createWebRtcSubtitleTransport({
   function wirePeer(context) {
     context.pc.onicecandidate = ({ candidate }) => {
       if (!candidate || !isCurrent(context) || !context.peerId) return;
-      trace('WEBRTC_SIGNALING', 'ice-candidate.sent', context, { transportResult: 'candidate_metadata_omitted' });
-      void client.signal('ice-candidate', candidate, {
+      void sendSignal('ice-candidate', candidate, {
         targetParticipantId: context.peerId, negotiationId: context.negotiationId,
+      }, context).then((accepted) => {
+        if (!isCurrent(context)) return;
+        trace('WEBRTC_SIGNALING', 'ice-candidate.sent', context, {
+          signalSequence: accepted.sequence,
+          messageExpiresAt: accepted.expiresAt,
+          transportResult: 'candidate_metadata_omitted',
+        });
       }).catch((error) => { if (isCurrent(context)) handleAsyncError(error); });
     };
     context.pc.onconnectionstatechange = () => {
@@ -456,6 +486,7 @@ export function createWebRtcSubtitleTransport({
 
   function markConnected(context) {
     if (!isCurrent(context) || !isTransportHealthy(context)) return;
+    const completedAttempt = retryAttempt;
     context.connected = true;
     clearContextTimer(context, 'negotiationTimer');
     clearContextTimer(context, 'disconnectTimer');
@@ -463,13 +494,28 @@ export function createWebRtcSubtitleTransport({
     clearReconnect();
     retryAttempt = 0;
     status(hadOutage ? 'restored' : 'connected', { epoch: context.epoch, recovered: hadOutage });
-    recoveryTrace('RECOVERY_COMPLETED', context, { reason: hadOutage ? 'transport_restored' : 'transport_connected' });
+    recoveryTrace('RECOVERY_COMPLETED', context, {
+      reason: hadOutage ? 'transport_restored' : 'transport_connected',
+      attempt: completedAttempt,
+      recoveryAttemptState: hadOutage ? 'succeeded' : 'initial_connected',
+      retryCounterSemantics: 'incremented_when_scheduled',
+    });
     hadOutage = false;
   }
 
   function wireChannel(context, nextChannel) {
     if (!isCurrent(context)) return;
     context.channel = nextChannel;
+    let pendingViewerDelivery = null;
+    const deliverViewerEnvelope = (envelope, meta) => {
+      if (!isCurrent(context)) return;
+      const finish = (ack) => rememberViewerCursor(context, envelope, ack);
+      try {
+        const result = onEnvelope?.(envelope, meta);
+        if (result && typeof result.then === 'function') return result.then(finish);
+        finish(result);
+      } catch (error) { handleAsyncError(error); }
+    };
     context.adapter = createSubtitleDataChannelAdapter(nextChannel, {
       onEnvelope: (envelope) => {
         if (!isCurrent(context)) return;
@@ -507,19 +553,26 @@ export function createWebRtcSubtitleTransport({
           return;
         }
         if (role === 'viewer') {
-          rememberViewerCursor(context, envelope);
           if (envelope.type === SUBTITLE_ENVELOPE_TYPES.snapshot) {
             recoveryTrace('SNAPSHOT_RECEIVED', context, { reason: 'recovery_payload', sequence: envelope.sequence });
           } else if (envelope.type === SUBTITLE_ENVELOPE_TYPES.replayResponse) {
             recoveryTrace('REPLAY_COMPLETED', context, { reason: 'recovery_payload', sequence: envelope.toSequence });
           }
-          onEnvelope?.(envelope, Object.freeze({
+          const meta = Object.freeze({
             transportGeneration: context.epoch,
             receivedAt: Date.now(),
             cueDeliverySource: envelope.type === SUBTITLE_ENVELOPE_TYPES.snapshot
               ? 'snapshot'
               : (envelope.type === SUBTITLE_ENVELOPE_TYPES.replayResponse ? 'replay' : 'live'),
-          }));
+          });
+          const result = pendingViewerDelivery
+            ? pendingViewerDelivery.then(() => deliverViewerEnvelope(envelope, meta))
+            : deliverViewerEnvelope(envelope, meta);
+          if (result && typeof result.then === 'function') {
+            const pending = result.catch(handleAsyncError);
+            pendingViewerDelivery = pending;
+            void pending.finally(() => { if (pendingViewerDelivery === pending) pendingViewerDelivery = null; });
+          }
         }
       },
       onError: (error) => { if (isCurrent(context)) handleAsyncError(error); },
@@ -583,10 +636,19 @@ export function createWebRtcSubtitleTransport({
     }
   }
 
-  async function createDevicePeer(viewerId, negotiationId, epoch) {
+  async function createDevicePeer(viewerId, negotiationId, epoch, signalMeta = {}) {
     if (stopped || epoch !== connectionEpoch || !viewerId || !negotiationId) return;
     const previous = devicePeers.get(viewerId);
-    if (previous?.negotiationId === negotiationId && previous.connected) return;
+    if (previous?.negotiationId === negotiationId
+      && !['failed', 'closed'].includes(previous.pc?.connectionState)) {
+      trace('WEBRTC_SIGNALING', 'viewer-ready.duplicate_ignored', previous, {
+        signalSequence: signalMeta.sequence,
+        messageExpiresAt: signalMeta.expiresAt,
+        decision: 'preserve_in_flight_negotiation',
+        transportResult: previous.connected ? 'already_connected' : 'negotiating',
+      });
+      return;
+    }
     if (previous) cleanupPeer(previous);
     const context = {
       epoch, viewerId, peerId: viewerId, negotiationId,
@@ -597,7 +659,11 @@ export function createWebRtcSubtitleTransport({
       connected: false, pendingCandidates: [],
     };
     devicePeers.set(viewerId, context);
-    trace('WEBRTC_SIGNALING', 'viewer-ready.received', context, { transportResult: 'accepted' });
+    trace('WEBRTC_SIGNALING', 'viewer-ready.received', context, {
+      signalSequence: signalMeta.sequence,
+      messageExpiresAt: signalMeta.expiresAt,
+      transportResult: 'accepted',
+    });
     recoveryTrace('PEER_CREATED', context, { reason: 'viewer_ready' });
     wirePeer(context);
     wireChannel(context, context.pc.createDataChannel('subtitles'));
@@ -607,10 +673,14 @@ export function createWebRtcSubtitleTransport({
       if (!isCurrent(context)) return;
       await context.pc.setLocalDescription(offer);
       if (!isCurrent(context)) return;
-      await client.signal('offer', context.pc.localDescription, {
+      const accepted = await sendSignal('offer', context.pc.localDescription, {
         targetParticipantId: viewerId, negotiationId,
+      }, context);
+      trace('WEBRTC_SIGNALING', 'offer.sent', context, {
+        signalSequence: accepted.sequence,
+        messageExpiresAt: accepted.expiresAt,
+        transportResult: 'sent',
       });
-      trace('WEBRTC_SIGNALING', 'offer.sent', context, { transportResult: 'sent' });
       if (!isCurrent(context) || context.channel?.readyState === 'open') return;
       context.negotiationTimer = setTimer(() => {
         context.negotiationTimer = null;
@@ -673,21 +743,26 @@ export function createWebRtcSubtitleTransport({
     devicePollTimer = setTimer(async () => {
       devicePollTimer = null;
       if (stopped || epoch !== connectionEpoch) return;
-      trace('WEBRTC_SIGNALING', 'poll.request', null, { epoch, sequence: devicePollAfter });
+      const cursorBefore = devicePollAfter;
+      trace('WEBRTC_SIGNALING', 'poll.request', null, {
+        epoch, sequence: cursorBefore, signalingCursorBefore: cursorBefore,
+      });
       try {
         const result = await client.poll(devicePollAfter);
         if (stopped || epoch !== connectionEpoch) return;
         trace('WEBRTC_SIGNALING', 'poll.success', null, {
           epoch,
           sequence: result.after,
-          eventSequence: Array.isArray(result.messages) ? result.messages.length : 0,
+          signalingCursorBefore: cursorBefore,
+          signalingCursorAfter: Number(result.after) || cursorBefore,
+          signalMessageCount: Array.isArray(result.messages) ? result.messages.length : 0,
           transportResult: 'received'
         });
         devicePollFailures = 0;
         for (const message of result.messages || []) {
           devicePollAfter = Math.max(devicePollAfter, Number(message.sequence) || 0);
           if (message.type === 'viewer-ready') {
-            await createDevicePeer(message.participantId, message.negotiationId, epoch);
+            await createDevicePeer(message.participantId, message.negotiationId, epoch, message);
           } else {
             const context = devicePeers.get(message.participantId);
             if (context?.negotiationId === message.negotiationId) await handleSignal(context, message);
@@ -697,6 +772,14 @@ export function createWebRtcSubtitleTransport({
         devicePollAfter = Math.max(devicePollAfter, Number(result.after) || 0);
       } catch (error) {
         if (stopped || epoch !== connectionEpoch) return;
+        trace('WEBRTC_SIGNALING', 'poll.failed', null, {
+          epoch,
+          signalingCursorBefore: cursorBefore,
+          reason: error?.code || 'webrtc_signaling_unavailable',
+          errorCode: error?.code,
+          httpStatus: error?.status,
+          transportResult: 'failed',
+        });
         if (isTerminalError(error) || error?.code === 'participant_unauthorized') {
           handleConnectError(error, 'device_poll_failed');
           return;
@@ -716,13 +799,18 @@ export function createWebRtcSubtitleTransport({
     context.pollTimer = setTimer(async () => {
       context.pollTimer = null;
       if (!isCurrent(context)) return;
-      trace('WEBRTC_SIGNALING', 'poll.request', context, { sequence: context.pollAfter });
+      const cursorBefore = context.pollAfter;
+      trace('WEBRTC_SIGNALING', 'poll.request', context, {
+        sequence: cursorBefore, signalingCursorBefore: cursorBefore,
+      });
       try {
         const result = await client.poll(context.pollAfter);
         if (!isCurrent(context)) return;
         trace('WEBRTC_SIGNALING', 'poll.success', context, {
           sequence: result.after,
-          eventSequence: Array.isArray(result.messages) ? result.messages.length : 0,
+          signalingCursorBefore: cursorBefore,
+          signalingCursorAfter: Number(result.after) || cursorBefore,
+          signalMessageCount: Array.isArray(result.messages) ? result.messages.length : 0,
           transportResult: 'received'
         });
         context.pollFailures = 0;
@@ -734,6 +822,13 @@ export function createWebRtcSubtitleTransport({
         context.pollAfter = Math.max(context.pollAfter, Number(result.after) || 0);
       } catch (error) {
         if (!isCurrent(context)) return;
+        trace('WEBRTC_SIGNALING', 'poll.failed', context, {
+          signalingCursorBefore: cursorBefore,
+          reason: error?.code || 'webrtc_signaling_unavailable',
+          errorCode: error?.code,
+          httpStatus: error?.status,
+          transportResult: 'failed',
+        });
         if (isTerminalError(error) || error?.code === 'participant_unauthorized') {
           handleConnectError(error, 'poll_terminal');
           return;
@@ -755,7 +850,11 @@ export function createWebRtcSubtitleTransport({
       if (message.targetParticipantId !== participantId) return;
       clearContextTimer(context, 'negotiationTimer');
       context.peerId = message.participantId;
-      trace('WEBRTC_SIGNALING', 'offer.received', context, { transportResult: 'received' });
+      trace('WEBRTC_SIGNALING', 'offer.received', context, {
+        signalSequence: message.sequence,
+        messageExpiresAt: message.expiresAt,
+        transportResult: 'received',
+      });
       await peer.setRemoteDescription(message.payload);
       if (!isCurrent(context)) return;
       await flushCandidates(context);
@@ -764,10 +863,14 @@ export function createWebRtcSubtitleTransport({
       if (!isCurrent(context)) return;
       await peer.setLocalDescription(answer);
       if (!isCurrent(context)) return;
-      await client.signal('answer', peer.localDescription, {
+      const accepted = await sendSignal('answer', peer.localDescription, {
         targetParticipantId: context.peerId, negotiationId: context.negotiationId,
+      }, context);
+      trace('WEBRTC_SIGNALING', 'answer.sent', context, {
+        signalSequence: accepted.sequence,
+        messageExpiresAt: accepted.expiresAt,
+        transportResult: 'sent',
       });
-      trace('WEBRTC_SIGNALING', 'answer.sent', context, { transportResult: 'sent' });
       if (!isCurrent(context) || context.connected || context.channel?.readyState === 'open') return;
       context.negotiationTimer = setTimer(() => {
         context.negotiationTimer = null;
@@ -778,7 +881,11 @@ export function createWebRtcSubtitleTransport({
       return;
     }
     if (message.type === 'answer' && role === 'device') {
-      trace('WEBRTC_SIGNALING', 'answer.received', context, { transportResult: 'received' });
+      trace('WEBRTC_SIGNALING', 'answer.received', context, {
+        signalSequence: message.sequence,
+        messageExpiresAt: message.expiresAt,
+        transportResult: 'received',
+      });
       await peer.setRemoteDescription(message.payload);
       if (!isCurrent(context)) return;
       await flushCandidates(context);
@@ -786,7 +893,11 @@ export function createWebRtcSubtitleTransport({
     }
     if (message.type === 'ice-candidate') {
       if (context.peerId && message.participantId !== context.peerId) return;
-      trace('WEBRTC_SIGNALING', 'ice-candidate.received', context, { transportResult: 'candidate_metadata_omitted' });
+      trace('WEBRTC_SIGNALING', 'ice-candidate.received', context, {
+        signalSequence: message.sequence,
+        messageExpiresAt: message.expiresAt,
+        transportResult: 'candidate_metadata_omitted',
+      });
       if (peer.remoteDescription) await peer.addIceCandidate(message.payload);
       else context.pendingCandidates.push(message.payload);
     }
@@ -822,10 +933,15 @@ export function createWebRtcSubtitleTransport({
         if (!isCurrent(context)) return;
         await context.pc.setLocalDescription(offer);
         if (!isCurrent(context)) return;
-        await client.signal('offer', context.pc.localDescription, {
+        const accepted = await sendSignal('offer', context.pc.localDescription, {
           targetParticipantId: context.viewerId, negotiationId: context.negotiationId,
-        });
+        }, context);
         if (!isCurrent(context)) return;
+        trace('WEBRTC_SIGNALING', 'ice-restart-offer.sent', context, {
+          signalSequence: accepted.sequence,
+          messageExpiresAt: accepted.expiresAt,
+          transportResult: 'sent',
+        });
         status('reconnecting', { epoch: context.epoch, reason: 'ice_restart', attempt: retryAttempt });
         context.iceRestartTimer = setTimer(() => {
           context.iceRestartTimer = null;
@@ -897,6 +1013,8 @@ export function createWebRtcSubtitleTransport({
         generation: scheduledEpoch,
         viewerId: role === 'viewer' ? participantId : null,
         attemptCount: retryAttempt,
+        recoveryAttemptState: 'exhausted',
+        retryCounterSemantics: 'incremented_when_scheduled',
         reason: 'retry_exhausted',
         ...lastTransportState,
         timestamp: now(),
@@ -908,6 +1026,13 @@ export function createWebRtcSubtitleTransport({
     const attempt = retryAttempt + 1;
     const delay = immediate ? 0 : jitter(RETRY_DELAYS_MS[retryAttempt], random);
     retryAttempt = attempt;
+    recoveryTrace('RECOVERY_ATTEMPT_SCHEDULED', null, {
+      epoch: scheduledEpoch,
+      reason,
+      attempt,
+      recoveryAttemptState: 'scheduled',
+      retryCounterSemantics: 'incremented_when_scheduled',
+    });
     status('reconnecting', { reason, attempt, delay });
     reconnectTimer = setTimer(() => {
       reconnectTimer = null;
@@ -932,24 +1057,26 @@ export function createWebRtcSubtitleTransport({
     detachLifecycleListeners();
   }
 
-  function rememberViewerCursor(context, envelope) {
+  function rememberViewerCursor(context, envelope, ack) {
     if (!isCurrent(context)) return;
-    if (typeof envelope?.sourceId === 'string' && envelope.sourceId.length > 0) {
-      if (lastSourceId !== envelope.sourceId) lastSourceSequence = 0;
-      lastSourceId = envelope.sourceId;
+    // The Viewer returns the cursor it actually committed after identity and
+    // sequence validation. Merely receiving a packet does not acknowledge it.
+    if (ack?.sourceId !== envelope?.sourceId || !Number.isSafeInteger(ack?.sequence)
+      || ack.sequence < 0 || ack.sequence > (envelope.toSequence ?? envelope.sequence)) return;
+    if (lastSourceId !== ack.sourceId) {
+      lastSourceId = ack.sourceId;
+      lastSourceSequence = 0;
     }
-    if (lastSourceId && envelope?.sourceId === lastSourceId) {
-      lastSourceSequence = Math.max(lastSourceSequence, Number(envelope.sequence) || 0, Number(envelope.toSequence) || 0);
-    }
+    lastSourceSequence = Math.max(lastSourceSequence, ack.sequence);
   }
 
   function resumeFromLifecycle() {
     if (stopped || !isOnline() || documentRef?.visibilityState === 'hidden') return;
     if (!waitingForOnline && !hadOutage && (role === 'device' ? joined : active?.connected)) return;
     waitingForOnline = false;
-    clearReconnect();
-    hadOutage = true;
-    void connect({ reconnecting: true });
+    // Browser lifecycle events must use the same recovery budget as transport failures.
+    if (reconnectTimer || retryAttempt >= MAX_RECOVERY_ATTEMPTS) return;
+    scheduleReconnect('browser_resumed', { immediate: true });
   }
 
   function handleVisibilityChange() {
@@ -972,13 +1099,25 @@ export function createWebRtcSubtitleTransport({
     documentRef?.removeEventListener?.('visibilitychange', handleVisibilityChange);
   }
 
+  function publishSegmentTransition(segment) {
+    if (!source || !segment?.segmentId) return false;
+    const envelope = source.transition(segment);
+    if (!envelope) return false;
+    for (const context of devicePeers.values()) context.adapter?.send(envelope);
+    recordLivePipelineTrace({ stage: 'VIEWER_SEGMENT_TRANSITION', meetingId,
+      segmentId: segment.segmentId, segmentSequence: segment.segmentSequence,
+      reason: segment.status, sequence: envelope.sequence });
+    return true;
+  }
+
   function publishCue(cue) {
     if (!source || !cue?.cueId) return false;
+    if (cue.status === 'final' && (!Number.isSafeInteger(cue.revision) || cue.revision < 1)) return false;
     const previous = cueVersions.get(cue.cueId);
     const messageType = previous ? SUBTITLE_ENVELOPE_TYPES.cueUpdate : SUBTITLE_ENVELOPE_TYPES.cueAppend;
     try {
       const serialized = JSON.stringify(cue);
-      if (previous?.serialized === serialized) return false;
+      if (previous?.serialized === serialized || (previous && cue.revision <= previous.revision)) return false;
       recordLivePipelineTrace({
         stage: 'VIEWER_PUBLISH_STARTED',
         meetingId,
@@ -988,8 +1127,7 @@ export function createWebRtcSubtitleTransport({
         connectionEpoch,
         dataChannelState: [...devicePeers.values()].find((context) => context.channel?.readyState === 'open')?.channel?.readyState,
       });
-      const revision = (previous?.revision || 0) + 1;
-      const normalized = { ...cue, meetingId, revision: Math.max(Number(cue.revision) || 0, revision) };
+      const normalized = { ...cue, meetingId };
       const envelope = previous ? source.update(normalized) : source.append(normalized);
       if (!envelope) return false;
       cueVersions.set(cue.cueId, { serialized, revision: normalized.revision });
@@ -1082,6 +1220,7 @@ export function createWebRtcSubtitleTransport({
       void connect({ reconnecting: true });
     },
     publishCue,
+    publishSegmentTransition,
     async stop({ revoke = false } = {}) {
       stopped = true;
       connectionEpoch += 1;
@@ -1089,10 +1228,12 @@ export function createWebRtcSubtitleTransport({
       clearDevicePoll();
       clearReconnect();
       waitingForOnline = false;
-      if (revoke && role === 'device') {
+      if (role === 'device') {
         for (const context of devicePeers.values()) {
-          context.adapter?.send({ protocol: 'subtitle-webrtc/v1', type: SUBTITLE_ENVELOPE_TYPES.meetingStopped, meetingId });
+          context.adapter?.send({ protocol: 'subtitle-webrtc/v1',
+            type: revoke ? SUBTITLE_ENVELOPE_TYPES.meetingStopped : SUBTITLE_ENVELOPE_TYPES.recordingStopped, meetingId });
         }
+        if (devicePeers.size > 0) await new Promise((resolve) => setTimeout(resolve, 25));
       }
       cleanupAllPeers();
       joined = false;

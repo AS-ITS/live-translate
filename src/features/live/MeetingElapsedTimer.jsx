@@ -19,7 +19,7 @@ export function MeetingElapsedTimer({ startedAt }) {
 
   return (
     <span className="meeting-elapsed-timer" data-testid="meeting-elapsed-timer" aria-label={`會議已進行 ${elapsed}`}>
-      <span className="meeting-elapsed-label">錄製中 · </span>
+        <span className="meeting-elapsed-label">會議經過 · </span>
       <span className="meeting-elapsed-compact-marker" aria-hidden="true">● </span>
       <time dateTime={`PT${Math.floor(elapsedMs / 1000)}S`}>{elapsed}</time>
     </span>

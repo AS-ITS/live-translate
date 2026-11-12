@@ -47,7 +47,7 @@ test('normal user visibility changes exactly at the server-side expiration bound
   assert.equal((await service.listMeetingHistory({ now: Date.parse('2026-10-07T12:00:00.000Z') })).length, 0);
 });
 
-test('meeting detail exposes whole-meeting audio artifact download metadata from linked session', async () => {
+test('meeting detail hides historical cloud audio metadata from linked session', async () => {
   const service = createMeetingReadQueryService({
     meetingRepository: {
       async listMeetings() {
@@ -91,18 +91,10 @@ test('meeting detail exposes whole-meeting audio artifact download metadata from
 
   const detail = await service.getMeetingDetail('meeting-1');
 
-  assert.deepEqual(detail.audioArtifacts.translation, {
-    kind: 'translation',
-    storageMode: 'meeting-composed',
-    mimeType: 'audio/wav',
-    byteLength: 48,
-    fileName: 'live-translate-meeting-meeting-1-translation.wav',
-    createdAt: 1234,
-    downloadUrl: '/api/meetings/meeting-1/audio/translation'
-  });
+  assert.equal(detail.audioArtifacts.translation, undefined);
 });
 
-test('meeting detail exposes ready private Storage artifacts by segment without a permanent URL', async () => {
+test('meeting detail hides historical private Storage artifacts', async () => {
   const service = createMeetingReadQueryService({
     meetingRepository: {
       async listMeetings() { return []; },
@@ -131,19 +123,7 @@ test('meeting detail exposes ready private Storage artifacts by segment without 
 
   const detail = await service.getMeetingDetail('meeting-1');
 
-  assert.deepEqual(detail.cloudAudioArtifacts, [{
-    id: 'artifact-1',
-    meetingId: 'meeting-1',
-    segmentId: 'segment-1',
-    segmentSequence: 2,
-    kind: 'source_webm',
-    status: 'ready',
-    fileName: 'recording.webm',
-    byteSize: 321,
-    mimeType: 'audio/webm',
-    createdAt: '2026-09-09T00:00:00.000Z'
-  }]);
-  assert.equal('downloadUrl' in detail.cloudAudioArtifacts[0], false);
+  assert.deepEqual(detail.cloudAudioArtifacts, []);
 });
 
 test('meeting detail normalizes legacy glossary aliases in meeting and segment snapshots', async () => {
@@ -174,5 +154,5 @@ test('meeting detail normalizes legacy glossary aliases in meeting and segment s
   const detail = await service.getMeetingDetail('meeting-1');
 
   assert.deepEqual(detail.meeting.glossaryEntries[0].replacementAliases, ['mic']);
-  assert.deepEqual(detail.segments[0].settingsSnapshot.glossaryEntries[0].replacementAliases, ['mic']);
+  assert.equal(detail.segments[0].settingsSnapshot, null);
 });

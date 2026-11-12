@@ -19,6 +19,17 @@ test('one original-audio download prefers the complete local artifact over dupli
   assert.equal(state.processing, false);
 });
 
+test('sealed local recording remains the download source without a prebuilt Blob or cloud fallback', () => {
+  const state = resolveInputAudioDownloadState({
+    inputArtifact: { status: 'sealed', meetingId: 'meeting-1' },
+    cloudAudioArtifacts: [{ id: 'legacy-cloud', status: 'ready' }]
+  });
+  assert.equal(state.source, 'local');
+  assert.equal(state.available, true);
+  assert.equal(state.downloadUrl, '');
+  assert.equal(state.cloudArtifact, null);
+});
+
 test('cloud fallback exposes only the latest complete artifact and existing audio overrides disabled preference', () => {
   const state = resolveInputAudioDownloadState({
     inputArtifact: { status: 'disabled' },

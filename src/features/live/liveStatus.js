@@ -15,6 +15,7 @@ const MEETING_CHECKPOINT_STATUS_LABELS = {
 const RECORDING_STATUS_LABELS = {
   idle: '尚無可下載的原始語音。',
   skipped: '未錄製講者原音。',
+  sealed: '原始語音已保存在本機，下載時會製作音檔。',
   recording: '正在保留本機麥克風輸入。',
   paused: '錄音已暫停，已保留目前片段。',
   finalizing: '正在完成錄音檔。',
@@ -25,6 +26,7 @@ const RECORDING_STATUS_LABELS = {
 
 const TRANSLATED_AUDIO_STATUS_LABELS = {
   idle: '尚無可下載的翻譯語音。',
+  sealed: '翻譯語音已保存在本機，下載時會製作音檔。',
   recording: '正在保留即時字幕輸出。',
   ready: '翻譯語音已可下載。',
   saved: '音檔已保存，請到翻譯紀錄下載。',
@@ -32,9 +34,10 @@ const TRANSLATED_AUDIO_STATUS_LABELS = {
 };
 
 export function liveMeetingStatusLabel(meeting, recordingStatus = '') {
-  if (['requesting-permission', 'connecting', 'listening', 'reconnecting', 'switching-segment'].includes(recordingStatus)) {
+  if (['requesting-permission', 'connecting', 'listening', 'reconnecting', 'switching-segment', 'provider-recovery'].includes(recordingStatus)) {
     return '進行中';
   }
+  if (recordingStatus === 'provider-recovery-failed') return '翻譯已停止';
   if (recordingStatus === 'paused') return '已暫停';
 
   return meeting?.status === 'active'
@@ -86,8 +89,8 @@ export function composeCheckpointStatusMessage({
 }) {
   const messages = [meetingCheckpointStatusLabel(meetingCheckpointStatus)];
   if (checkpointErrorMessage) messages.push(checkpointErrorMessage);
-  const inputAudioIsActive = shouldRecordInputAudio && ['recording', 'paused', 'finalizing', 'ready', 'saved', 'error'].includes(recordingState?.status);
-  const translationAudioIsActive = ['recording', 'ready', 'saved', 'error'].includes(translatedAudioState?.status);
+  const inputAudioIsActive = shouldRecordInputAudio && ['recording', 'paused', 'finalizing', 'sealed', 'ready', 'saved', 'error'].includes(recordingState?.status);
+  const translationAudioIsActive = ['recording', 'sealed', 'ready', 'saved', 'error'].includes(translatedAudioState?.status);
 
   if (inputAudioIsActive) {
     messages.push(`原始語音：${recordingStatusLabel(recordingState.status)}`);

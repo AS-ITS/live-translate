@@ -1,3 +1,5 @@
+import { cueRefinementInputHash } from './cueContent.js';
+
 const ACTIVE_EXECUTION_STATUSES = new Set(['queued', 'processing', 'running']);
 const FAILED_EXECUTION_STATUSES = new Set(['failed', 'cancelled']);
 
@@ -11,6 +13,24 @@ const REFINEMENT_STATUS_PRIORITY = Object.freeze({
 
 export function refinementVersion(cue = {}) {
   return Number.isInteger(cue?.refinement?.version) ? cue.refinement.version : 0;
+}
+
+export function markCueRefinementSubmitted(cues = [], cueId, submission = {}) {
+  const target = cues.find((cue) => cue?.cueId === cueId);
+  if (!target || !submission.inputHash ||
+      submission.inputHash !== cueRefinementInputHash(target) ||
+      (Number.isInteger(submission.version) && refinementVersion(target) > submission.version) ||
+      (target.refinement?.status === 'completed' &&
+        target.refinement?.inputHash === submission.inputHash &&
+        refinementVersion(target) >= (submission.version ?? 0))) {
+    return { cues, accepted: false };
+  }
+  const next = { ...target, refinement: {
+    ...(target.refinement || {}), status: 'queued',
+    version: submission.version, inputHash: submission.inputHash,
+    executionId: submission.executionId, requestedAt: submission.requestedAt
+  } };
+  return { accepted: true, cues: cues.map((cue) => cue.cueId === cueId ? next : cue) };
 }
 
 export function shouldPreferRefinementCue(incoming, existing) {
@@ -68,6 +88,8 @@ export function applyRefinementResultToCues(cues = [], result = {}, {
     || (connectionEpoch !== undefined && result.connectionEpoch !== undefined && connectionEpoch !== result.connectionEpoch)
     || (refinementJobId && result.refinementJobId && refinementJobId !== result.refinementJobId)
     || (result.version !== undefined && target.refinement?.version !== undefined && result.version < target.refinement.version)
+    || !result.inputHash
+    || (result.inputHash && result.inputHash !== cueRefinementInputHash(target))
     || (result.version !== undefined && target.refinement?.version !== undefined && result.version === target.refinement.version
       && result.inputHash && target.refinement?.inputHash && result.inputHash !== target.refinement.inputHash)) {
     const event = diagnostic('stale_or_mismatched_identity');
@@ -180,23 +202,31 @@ export function markCuesCompletedByRefinedOutputs(cues = [], outputs = []) {
   const completedCueIds = new Map();
   for (const output of Array.isArray(outputs) ? outputs : []) {
     if (output?.operation !== 'transcript_polishing' || !Array.isArray(output.refinedCues)) continue;
+    const inputHashes = new Map((output.refinementTargets || [])
+      .filter((target) => target?.targetCueId && target?.inputHash)
+      .map((target) => [target.targetCueId, target.inputHash]));
     for (const refinedCue of output.refinedCues) {
       for (const sourceCueId of Array.isArray(refinedCue?.sourceCueIds) ? refinedCue.sourceCueIds : []) {
-        completedCueIds.set(sourceCueId, output.completedAt || output.createdAt || null);
+        completedCueIds.set(sourceCueId, {
+          completedAt: output.completedAt || output.createdAt || null,
+          inputHash: inputHashes.get(sourceCueId) || refinedCue.inputHash || null
+        });
       }
     }
   }
   if (completedCueIds.size === 0) return cues;
 
   return cues.map((cue) => {
-    const completedAt = completedCueIds.get(cue?.cueId);
-    if (!completedAt || cue?.refinement?.status === 'completed') return cue;
+    const completion = completedCueIds.get(cue?.cueId);
+    if (!completion?.completedAt || cue?.refinement?.status === 'completed' ||
+        (cue?.refinement?.inputHash && !completion.inputHash) ||
+        (completion.inputHash && completion.inputHash !== cueRefinementInputHash(cue))) return cue;
     return {
       ...cue,
       refinement: {
         ...(cue.refinement || {}),
         status: 'completed',
-        completedAt: cue.refinement?.completedAt || completedAt
+        completedAt: cue.refinement?.completedAt || completion.completedAt
       }
     };
   });

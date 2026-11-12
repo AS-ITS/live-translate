@@ -1,7 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
+import { rolldown } from 'rolldown';
+
+async function bundledModuleSource(path) {
+  const bundle = await rolldown({ input: fileURLToPath(new URL(path, import.meta.url)) });
+  try {
+    const { output } = await bundle.generate({ format: 'es' });
+    return output[0].code;
+  } finally {
+    await bundle.close();
+  }
+}
 
 test('real browser persists deadline over reload and coordinates OPFS/IDB cleanup across tabs', async (t) => {
   const browser = await chromium.launch();
@@ -9,12 +20,12 @@ test('real browser persists deadline over reload and coordinates OPFS/IDB cleanu
   const context = await browser.newContext();
   const origin = 'https://retention-browser.test/';
   await context.route(origin, (route) => route.fulfill({ body: '<!doctype html><title>Retention</title>' }));
-  const storageSource = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const [storageSource, retentionSource] = await Promise.all([
+    bundledModuleSource('../../src/lib/localMeetingStorage.js'),
+    bundledModuleSource('../../src/lib/localMeetingRetention.js')
+  ]);
   const storageUrl = `data:text/javascript;base64,${Buffer.from(storageSource).toString('base64')}`;
-  const retentionSource = await readFile(new URL('../../src/lib/localMeetingRetention.js', import.meta.url), 'utf8');
-  const retentionUrl = `data:text/javascript;base64,${Buffer.from(
-    retentionSource.replace("'./localMeetingStorage.js'", JSON.stringify(storageUrl))
-  ).toString('base64')}`;
+  const retentionUrl = `data:text/javascript;base64,${Buffer.from(retentionSource).toString('base64')}`;
   const dbName = `retention-${Date.now()}`;
   const pageA = await context.newPage();
   await pageA.goto(origin);

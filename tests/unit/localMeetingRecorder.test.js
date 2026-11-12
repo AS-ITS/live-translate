@@ -51,6 +51,41 @@ test('local recorder reserves, writes, and seals chunks before Stop', async () =
   assert.equal((await manifestStore.list('meeting-1')).every((chunk) => chunk.state === 'sealed'), true);
 });
 
+test('local recorder traces reserve, OPFS write, seal, and failure identities', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const chunkStore = fakeChunkStore();
+  const events = [];
+  const recorder = createLocalMeetingRecorder({
+    manifestStore,
+    chunkStore,
+    onTrace: (event) => events.push(event)
+  });
+  await recorder.start('meeting-1', {
+    recordingId: 'recording-1', segmentId: 'segment-1', operationId: 'start-1'
+  });
+  await recorder.appendChunk(chunkInput(1, {
+    meetingId: 'meeting-1', recordingId: 'recording-1', chunkId: 'recording-1:audio-00000001'
+  }), new Uint8Array([1]));
+  await assert.rejects(
+    recorder.appendChunk(chunkInput(1, {
+      meetingId: 'meeting-1', recordingId: 'recording-1', chunkId: 'recording-1:audio-00000001', checksum: 'different'
+    }), new Uint8Array([2])),
+    (error) => error.code === 'local_chunk_identity_conflict'
+  );
+
+  assert.deepEqual(events.slice(0, 4).map((event) => event.stage), [
+    'LOCAL_CHUNK_RESERVED',
+    'LOCAL_CHUNK_WRITE_STARTED',
+    'LOCAL_CHUNK_WRITE_SUCCEEDED',
+    'LOCAL_CHUNK_SEALED'
+  ]);
+  assert.equal(events[0].recordingId, 'recording-1');
+  assert.equal(events[0].segmentId, 'segment-1');
+  assert.equal(events[0].chunkId, 'recording-1:audio-00000001');
+  assert.equal(events.at(-1).stage, 'LOCAL_CHUNK_FAILED');
+  assert.equal(events.at(-1).errorCode, 'local_chunk_identity_conflict');
+});
+
 test('Stop refuses to publish a final sequence with a missing chunk', async () => {
   const manifestStore = createInMemoryLocalMeetingManifestStore();
   const recorder = createLocalMeetingRecorder({ manifestStore, chunkStore: fakeChunkStore() });
@@ -186,6 +221,59 @@ test('provider rollover changes only provider epoch and is idempotent', async ()
   assert.equal(rolled.captureEpoch, started.captureEpoch);
   assert.equal(rolled.providerEpoch, started.providerEpoch + 1);
   assert.deepEqual(replayed, rolled);
+});
+
+test('local segment rollover keeps recording and capture identity while replaying one operation', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const recorder = createLocalMeetingRecorder({ manifestStore, chunkStore: fakeChunkStore() });
+  const started = await recorder.start('meeting-1', {
+    operationId: 'start-1', recordingId: 'recording-1', segmentId: 'segment-1'
+  });
+
+  const rolled = await recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' });
+  const replayed = await recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' });
+  await assert.rejects(
+    recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-untrusted' }),
+    { code: 'local_segment_transition_conflict' }
+  );
+
+  assert.equal(rolled.recordingId, started.recordingId);
+  assert.equal(rolled.segmentId, 'segment-2');
+  assert.equal(rolled.captureEpoch, started.captureEpoch);
+  assert.equal(rolled.providerEpoch, started.providerEpoch + 1);
+  assert.deepEqual(replayed, rolled);
+  const reconnected = await recorder.providerReconnect({ operationId: 'reconnect-after-rollover' });
+  assert.equal(reconnected.segmentId, rolled.segmentId);
+  assert.equal((await manifestStore.getRecording('meeting-1')).segmentNumber, rolled.segmentNumber);
+});
+
+test('failed local segment transaction leaves the current Segment unchanged', async () => {
+  const baseStore = createInMemoryLocalMeetingManifestStore();
+  let failCommit = true;
+  const manifestStore = {
+    ...baseStore,
+    async commitSegmentTransition(input) {
+      if (failCommit) {
+        failCommit = false;
+        throw new Error('IndexedDB transaction failed');
+      }
+      return baseStore.commitSegmentTransition(input);
+    }
+  };
+  const recorder = createLocalMeetingRecorder({ manifestStore, chunkStore: fakeChunkStore() });
+  await recorder.start('meeting-1', { operationId: 'start-1', recordingId: 'recording-1', segmentId: 'segment-1' });
+  await assert.rejects(
+    recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' }),
+    /IndexedDB transaction failed/u
+  );
+  assert.equal(recorder.snapshot().segmentId, 'segment-1');
+  assert.equal((await baseStore.getRecording('meeting-1')).segmentId, 'segment-1');
+  const committed = await recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' });
+  assert.equal(committed.segmentId, 'segment-2');
+  assert.deepEqual(
+    await recorder.rolloverLocalSegment({ operationId: 'rollover-1', nextSegmentId: 'segment-2' }),
+    committed
+  );
 });
 
 test('successful Finalize clears stale stop error and replays the clean result', async () => {

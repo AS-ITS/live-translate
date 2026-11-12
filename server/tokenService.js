@@ -293,6 +293,9 @@ function glossaryInstruction(entries) {
     'Preserve intentional repetitions, repeated words, pauses, and distinct utterances. Do not summarize, collapse, or omit repeated speech.',
     'Apply the required glossary translation in the corresponding position in both translated speech audio and output transcription.',
     'Do not also output the ordinary translation, paraphrase, explanation, or source term for the matched source term.',
+    'Match longer glossary source terms before overlapping shorter terms. Keep a matched complete proper name intact; do not split it into shorter glossary terms.',
+    'Use the same required translation consistently when the same source term recurs. Apply replacements only once to the original source speech; never match a glossary source term against translated or already replaced output.',
+    'Keep all other sentence content faithful and in order. Do not delete, invent, or arbitrarily rearrange content to satisfy a glossary entry.',
     ...entries.map((entry) => `Source term: ${entry.source}\nRequired translation: ${entry.target}`)
   ].join('\n');
 }

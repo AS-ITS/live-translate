@@ -26,6 +26,7 @@ test('build session record input', () => {
       targetLanguageLabel: 'Traditional Chinese',
       sourceLanguageCode: 'zh-Hant',
       meetingId: null,
+      recordingId: null,
       segmentId: null,
       selectedInputDeviceId: 'device-1',
       inputDeviceLabelSnapshot: 'Studio Mic'
@@ -61,6 +62,29 @@ test('create active session record', () => {
 
   assert.equal(record.id, 'session-1');
   assert.equal(record.status, 'active');
+});
+
+test('continuing a paused session reuses its record and transcript items', () => {
+  const repository = createMemorySessionRepository({ now: 1000, idFactory: () => 'session-1' });
+  const first = createActiveSessionRecord(repository, buildSessionRecordInput({
+    id: 'session-1', status: 'created', targetLanguageCode: 'en',
+    meetingId: 'meeting-1', segmentId: 'segment-1'
+  }));
+  repository.updateSessionRecord(first.id, { status: 'active' });
+  repository.appendTranscriptItem(first.id, {
+    id: 'source-1', stream: 'source', text: 'hello', isFinal: true, sequence: 1
+  });
+  repository.updateSessionRecord(first.id, { status: 'paused' });
+
+  const resumed = createActiveSessionRecord(repository, buildSessionRecordInput({
+    id: first.id, status: 'created', targetLanguageCode: 'en',
+    meetingId: 'meeting-1', segmentId: 'segment-2'
+  }));
+
+  assert.equal(resumed.id, first.id);
+  assert.equal(resumed.status, 'active');
+  assert.equal(resumed.segmentId, 'segment-2');
+  assert.equal(repository.getSessionRecord(first.id).transcriptItems.length, 1);
 });
 
 test('append only newly finalized source transcript items', () => {

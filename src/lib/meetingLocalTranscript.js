@@ -1,13 +1,14 @@
 import { effectiveSourceForCue, effectiveTranslationForCue } from './cueContent.js';
 
-export function mergeMeetingDetailWithLocalCues(detail, localRecords = []) {
+import { mergeFinalCue } from '../domain/subtitleCue/index.js';
+
+export function mergeMeetingDetailWithLocalCues(detail, localRecords = [], { authoritative = false } = {}) {
   if (!detail || typeof detail !== 'object') return detail;
 
   const cloudCues = finalCues(detail.cues);
   const localCues = finalCues((Array.isArray(localRecords) ? localRecords : []).map(localCueFromRecord));
-  if (localCues.length === 0) return detail;
-
-  const cues = mergeFinalCues(cloudCues, localCues);
+  if (localCues.length === 0 && !authoritative) return detail;
+  const cues = authoritative ? localCues : reconcileDurableCues(cloudCues, localCues);
   const sourceParagraphs = cueParagraphs(cues, 'source');
   const translationParagraphs = cueParagraphs(cues, 'translation');
   const totalItems = sourceParagraphs.length + translationParagraphs.length;
@@ -57,42 +58,29 @@ export function mergeMeetingDetailWithLocalCues(detail, localRecords = []) {
   };
 }
 
-export async function persistFinalMeetingCues({
-  persistence,
-  meetingId,
-  cues = [],
-  sessionId,
-  segmentId,
-  now = () => Date.now()
-} = {}) {
-  if (!persistence || typeof persistence.saveCue !== 'function') {
-    throw new TypeError('persistence.saveCue is required.');
-  }
-  if (typeof meetingId !== 'string' || meetingId.trim() === '') {
-    throw new TypeError('meetingId must be a non-empty string.');
-  }
-
-  const final = mergeFinalCues([], finalCues(cues));
-  const records = final.map((cue) => {
-    const resolvedSessionId = cue.sessionId || sessionId;
-    const resolvedSegmentId = cue.segmentId || segmentId;
-    if (!resolvedSessionId || !resolvedSegmentId) {
-      throw new TypeError(`Cue ${cue.cueId || '<unknown>'} is missing sessionId or segmentId.`);
+// Local records own versioned Final Cues. Historical unversioned snapshots keep
+// their existing read projection until they can be compared by revision.
+export function reconcileDurableCues(checkpointCues = [], localCues = []) {
+  const byId = new Map(finalCues(checkpointCues).map((cue) => [cue.cueId, cue]));
+  for (const local of finalCues(localCues)) {
+    const checkpoint = byId.get(local.cueId);
+    if (!checkpoint) {
+      byId.set(local.cueId, local);
+      continue;
     }
-    return {
-      meetingId,
-      sessionId: resolvedSessionId,
-      segmentId: resolvedSegmentId,
-      cue: {
-        ...cue,
-        sessionId: resolvedSessionId,
-        segmentId: resolvedSegmentId
-      },
-      producedAt: finiteTimestamp(cue.finalizedAt) ?? now()
-    };
-  });
-
-  return Promise.all(records.map((record) => persistence.saveCue(record)));
+    if (Number.isSafeInteger(checkpoint.revision) && Number.isSafeInteger(local.revision)) {
+      const result = mergeFinalCue([checkpoint], local);
+      if (result.cue.revision !== local.revision) {
+        const error = new Error('Checkpoint Cue is ahead of the Local Cue Store.');
+        error.code = 'local_cue_checkpoint_ahead';
+        throw error;
+      }
+      byId.set(local.cueId, local);
+    } else {
+      byId.set(local.cueId, mergeFinalCues([checkpoint], [local])[0]);
+    }
+  }
+  return [...byId.values()].sort(compareCues);
 }
 
 export function mergeFinalCues(existingCues = [], incomingCues = []) {
@@ -203,10 +191,6 @@ function meaningfulText(value) {
 
 function finiteVersion(value) {
   return Number.isInteger(value) && value >= 0 ? value : 0;
-}
-
-function finiteTimestamp(value) {
-  return Number.isFinite(value) ? value : null;
 }
 
 function minFinite(left, right) {

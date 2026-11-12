@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMeetingCheckpointService, meetingSettingsSnapshot } from '../../src/application/meetingCheckpointService.js';
 import { createMemoryMeetingRepository } from '../../src/infrastructure/meetingRepositoryAdapter.js';
+import { MeetingSegment } from '../../src/domain/meeting/index.js';
 import { transcriptItemsFromSegments } from '../../src/readModels/meetingReadModels.js';
 import {
   assertNoMissingDuplicateOrOutOfOrderChunks,
@@ -95,6 +96,7 @@ test('meeting settings snapshots normalize legacy glossary aliases for recovered
   const baseRepository = createMemoryMeetingRepository();
   const repository = {
     ...baseRepository,
+    mutateMeetingSegment: baseRepository.mutateMeetingSegment,
     getMeeting(meetingId) {
       const meeting = baseRepository.getMeeting(meetingId);
       return meeting
@@ -178,6 +180,28 @@ test('duplicate checkpoint chunks are idempotent', async () => {
   assert.equal(result.checkpoint.durableChunks.length, 1);
 });
 
+test('legacy cursor key derives a scoped operation from content and replays safely', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting();
+  const legacyKey = `checkpoint:${segment.id}:source:1`;
+  const first = checkpoint({ idempotencyKey: legacyKey, durableChunks: [chunk({ sequence: 1, text: 'hello' })] });
+  const second = checkpoint({ idempotencyKey: legacyKey, durableChunks: [
+    chunk({ sequence: 1, text: 'hello' }),
+    chunk({ sequence: 2, text: 'world' })
+  ] });
+
+  const firstResult = await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: first, protocol: 'legacy' });
+  const secondResult = await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: second, protocol: 'legacy' });
+  const replay = await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: second, protocol: 'legacy' });
+
+  assert.equal(firstResult.checkpoint.revision, 1);
+  assert.equal(secondResult.checkpoint.revision, 2);
+  assert.equal(replay.checkpoint.revision, 2);
+  assert.equal(secondResult.checkpoint.durableChunks.length, 2);
+  assert.notEqual(firstResult.checkpoint.idempotencyKey, secondResult.checkpoint.idempotencyKey);
+});
+
 test('checkpoint updates an existing cue when a later merged payload only extends it', async () => {
   const repository = createMemoryMeetingRepository();
   const service = createService(repository);
@@ -186,7 +210,7 @@ test('checkpoint updates an existing cue when a later merged payload only extend
   const mergedCue = { ...baseCue, sourceText: '你好世界', translatedText: 'hello world', endTimeMs: 200, finalizedReason: 'merged' };
 
   await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: checkpoint({ finalCues: [baseCue] }) });
-  await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: checkpoint({ finalCues: [mergedCue] }) });
+  await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: checkpoint({ idempotencyKey: 'checkpoint-2', finalCues: [mergedCue] }) });
 
   const result = await service.getCheckpoint({ meetingId: meeting.id, segmentId: segment.id });
   assert.deepEqual(result.checkpoint.finalCues, [{
@@ -213,7 +237,7 @@ test('checkpoint rejects conflicting idempotency keys and duplicate stream seque
     service.updateCheckpoint({
       meetingId: meeting.id,
       segmentId: segment.id,
-      checkpoint: checkpoint({ durableChunks: [chunk({ sequence: 1, text: 'changed' })] })
+      checkpoint: checkpoint({ idempotencyKey: 'checkpoint-2', durableChunks: [chunk({ sequence: 1, text: 'changed' })] })
     }),
     /checkpoint chunk conflict/
   );
@@ -222,7 +246,7 @@ test('checkpoint rejects conflicting idempotency keys and duplicate stream seque
     service.updateCheckpoint({
       meetingId: meeting.id,
       segmentId: segment.id,
-      checkpoint: checkpoint({ durableChunks: [chunk({ idempotencyKey: 'chunk-source-1b', sequence: 1, text: 'changed' })] })
+      checkpoint: checkpoint({ idempotencyKey: 'checkpoint-3', durableChunks: [chunk({ idempotencyKey: 'chunk-source-1b', sequence: 1, text: 'changed' })] })
     }),
     /checkpoint sequence conflict/
   );
@@ -291,6 +315,64 @@ test('rollover completes current segment and creates next active segment', async
   assert.equal(result.segment.sequence, 1);
   assert.equal(result.segment.status, 'active');
   assert.equal(result.segment.liveSessionId, 'live-session-2');
+});
+
+test('rollover delegates the complete revisioned transition to an atomic repository', async () => {
+  const memory = createMemoryMeetingRepository();
+  const calls = [];
+  const repository = {
+    ...memory,
+    async atomicRolloverSegment(input) {
+      calls.push(input);
+      return {
+        completedSegment: input.completed,
+        segment: new MeetingSegment({
+          id: 'segment-2', meetingId: input.current.meetingId,
+          sessionId: 'session-1', sequence: 1, status: 'active',
+          liveSessionId: input.nextLiveSessionId, startedAt: 1000,
+          createdAt: 1000, updatedAt: 1000
+        }),
+        replayed: false
+      };
+    }
+  };
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting();
+  const result = await service.rolloverSegment({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    recorderSessionId: 'session-1',
+    rollover: {
+      idempotencyKey: 'atomic-op',
+      checkpoint: checkpoint(),
+      nextLiveSessionId: 'live-2'
+    }
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].current.status, 'active');
+  assert.equal(calls[0].completed.status, 'completed');
+  assert.equal(calls[0].completed.checkpoint.revision, 1);
+  assert.equal(calls[0].recorderSessionId, 'session-1');
+  assert.equal(result.segment.id, 'segment-2');
+  assert.equal(memory.listMeetingSegments(meeting.id).length, 1, 'service must not write S1 outside the RPC');
+});
+
+test('legacy atomic rollover rejects a lifecycle v2 Segment before calling the RPC', async () => {
+  const memory = createMemoryMeetingRepository();
+  let called = false;
+  const repository = {
+    ...memory,
+    async atomicRolloverSegment() { called = true; }
+  };
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting();
+  await memory.updateMeetingSegment(new MeetingSegment({ ...segment, lifecycleContractVersion: 2 }));
+  await assert.rejects(service.rolloverSegment({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    rollover: { idempotencyKey: 'v2-forbidden', checkpoint: checkpoint(), nextLiveSessionId: 'live-2' }
+  }), (error) => error.code === 'meeting_lifecycle_conflict');
+  assert.equal(called, false);
 });
 
 test('rollover is idempotent for repeated request and rejects conflicting next segment', async () => {

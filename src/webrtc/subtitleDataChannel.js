@@ -3,11 +3,13 @@ export const SUBTITLE_ENVELOPE_TYPES = Object.freeze({
   snapshot: 'snapshot',
   cueAppend: 'cue.append',
   cueUpdate: 'cue.update',
+  segmentTransition: 'segment.transition',
   replayRequest: 'replay.request',
   replayResponse: 'replay.response',
   livenessPing: 'liveness.ping',
   livenessPong: 'liveness.pong',
-  meetingStopped: 'meeting.stopped'
+  meetingStopped: 'meeting.stopped',
+  recordingStopped: 'recording.stopped'
 });
 
 const CUE_TYPES = new Set([SUBTITLE_ENVELOPE_TYPES.cueAppend, SUBTITLE_ENVELOPE_TYPES.cueUpdate]);
@@ -40,12 +42,19 @@ export function assertEnvelope(envelope) {
     throw validationError('invalid_sequence', 'Cue envelope requires a positive sequence.');
   }
   if (CUE_TYPES.has(envelope.type)) validateSubtitleCue(envelope.cue);
+  if (envelope.type === SUBTITLE_ENVELOPE_TYPES.segmentTransition) {
+    if (!Number.isSafeInteger(envelope.sequence) || envelope.sequence < 1) {
+      throw validationError('invalid_sequence', 'Segment transition requires a positive sequence.');
+    }
+    validateSegmentTransition(envelope.segment);
+  }
   if (envelope.type === SUBTITLE_ENVELOPE_TYPES.snapshot) {
     if (!Number.isSafeInteger(envelope.sequence) || envelope.sequence < 0) {
       throw validationError('invalid_sequence', 'Snapshot envelope requires a non-negative sequence.');
     }
     if (!Array.isArray(envelope.cues)) throw validationError('invalid_snapshot_cues', 'Snapshot envelope requires cues.');
     envelope.cues.forEach(validateSubtitleCue);
+    if (envelope.segment != null) validateSegmentTransition(envelope.segment);
   }
   if (envelope.type === SUBTITLE_ENVELOPE_TYPES.replayResponse) {
     if (!Array.isArray(envelope.events)) throw validationError('invalid_replay_events', 'Replay response requires events.');
@@ -68,6 +77,7 @@ export function createSubtitleSource({ meetingId, sourceId = createSourceId(), m
   let sequence = 0;
   const history = [];
   const cues = new Map();
+  let segment = null;
 
   function publish(type, cue) {
     if (!cue || !nonEmpty(cue.cueId)) throw new TypeError('Cue requires cueId.');
@@ -85,11 +95,25 @@ export function createSubtitleSource({ meetingId, sourceId = createSourceId(), m
   return {
     append(cue) { return publish(SUBTITLE_ENVELOPE_TYPES.cueAppend, cue); },
     update(cue) { return publish(SUBTITLE_ENVELOPE_TYPES.cueUpdate, cue); },
+    transition(nextSegment) {
+      validateSegmentTransition(nextSegment);
+      if (segment && segment.segmentId === nextSegment.segmentId
+        && segment.segmentSequence === nextSegment.segmentSequence
+        && segment.status === nextSegment.status) return null;
+      const event = buildSubtitleEnvelope(SUBTITLE_ENVELOPE_TYPES.segmentTransition, {
+        meetingId, sourceId, sequence: ++sequence, segment: { ...nextSegment }
+      });
+      segment = event.segment;
+      history.push(event);
+      while (history.length > maxHistory) history.shift();
+      return event;
+    },
     snapshot() {
       return createEnvelope(SUBTITLE_ENVELOPE_TYPES.snapshot, {
         meetingId,
         sourceId,
         sequence,
+        segment: segment ? { ...segment } : null,
         cues: [...cues.values()].map((cue) => structuredClone(cue))
       });
     },
@@ -186,6 +210,14 @@ function normalizeSubtitleCue(cue) {
   }
   validateSubtitleCue(normalized);
   return normalized;
+}
+
+function validateSegmentTransition(segment) {
+  if (!segment || !nonEmpty(segment.segmentId)
+    || !Number.isSafeInteger(segment.segmentSequence) || segment.segmentSequence < 1
+    || !['switching', 'ready'].includes(segment.status)) {
+    throw validationError('invalid_segment_transition', 'Segment transition requires identity, sequence, and status.');
+  }
 }
 
 function validateSubtitleCue(cue) {

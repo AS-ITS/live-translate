@@ -7,3 +7,9 @@ node_modules
 data
 .env
 .env.*
+tests/
+docs/
+artifacts/
+.github/
+public/webrtc-poc.html
+public/webrtc-poc.js

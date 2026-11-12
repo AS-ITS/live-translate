@@ -8,7 +8,7 @@ export function resolveInputAudioDownloadState({
   const cloudArtifact = sourceArtifacts
     .filter((artifact) => artifact.status === 'ready')
     .sort(compareNewestArtifact)[0] || null;
-  const source = downloadUrl ? 'local' : cloudArtifact ? 'cloud' : 'none';
+  const source = downloadUrl || inputArtifact?.status === 'sealed' ? 'local' : cloudArtifact ? 'cloud' : 'none';
   const available = source !== 'none';
   const processing = !available && (
     ['processing', 'finalizing', 'uploading'].includes(inputArtifact?.status)

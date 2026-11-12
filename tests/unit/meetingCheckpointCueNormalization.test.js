@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createMeetingCheckpointService } from '../../src/application/meetingCheckpointService.js';
 import { createMemoryMeetingRepository } from '../../src/infrastructure/meetingRepositoryAdapter.js';
 
-test('checkpoint treats persisted cue metadata normalization as idempotent', async () => {
+test('checkpoint rejects an unversioned finalizedReason change without proof', async () => {
   const repository = createMemoryMeetingRepository();
   const service = createMeetingCheckpointService({
     meetingRepository: repository,
@@ -39,16 +39,16 @@ test('checkpoint treats persisted cue metadata normalization as idempotent', asy
     }
   });
 
-  await service.updateCheckpoint({
+  await assert.rejects(service.updateCheckpoint({
     meetingId: meeting.id,
     segmentId: segment.id,
     checkpoint: {
-      idempotencyKey: 'checkpoint-1',
+      idempotencyKey: 'checkpoint-2',
       durableChunks: [],
       finalCues: [{ ...cue, finalizedReason: 'generationComplete' }],
       pendingPartial: null
     }
-  });
+  }), (error) => error.code === 'subtitle_cue_conflict');
 
   const result = await service.getCheckpoint({ meetingId: meeting.id, segmentId: segment.id });
   assert.deepEqual(result.checkpoint.finalCues, [{

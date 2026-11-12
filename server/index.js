@@ -40,6 +40,9 @@ import { createStructuredLogger } from '../src/infrastructure/structuredLogger.j
 import { createExportController } from './exportController.js';
 import { isMeetingContentExpired, meetingContentExpiredError } from '../src/lib/meetingRetention.js';
 import { createPublicRuntimeConfig } from './publicRuntimeConfig.js';
+import { createDefaultWebRtcDeviceAuthorizer, createDefaultWebRtcShareResolver, createVercelWebRtcSignalingHandler, parseWebRtcIceServersJson } from '../api/webrtc/[...path].js';
+import { createRedisRestAdapter } from './webrtc/signalingRoute.js';
+import Redis from 'ioredis';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -47,13 +50,17 @@ if (IS_MAIN && process.argv.includes('--production')) {
   process.env.NODE_ENV ??= 'production';
 }
 
-if (IS_MAIN) {
+if (IS_MAIN && process.env.LOCAL_SUPABASE_MODE !== 'true' && !(process.env.NODE_ENV === 'test' && process.env.E2E_TEST_MODE === 'true')) {
   loadDotenv();
 }
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SERVER_HOST = IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1';
-const SERVER_PORT = IS_PRODUCTION ? 8000 : 3000;
+const TEST_SERVER_PORT = Number(process.env.ISSUE41_E2E_API_PORT || 3000);
+if (!IS_PRODUCTION && process.env.NODE_ENV === 'test' && (!Number.isInteger(TEST_SERVER_PORT) || TEST_SERVER_PORT < 1 || TEST_SERVER_PORT > 65535)) {
+  throw new Error('Invalid isolated E2E API port.');
+}
+const SERVER_PORT = IS_PRODUCTION ? 8000 : (process.env.NODE_ENV === 'test' ? TEST_SERVER_PORT : 3000);
 const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
@@ -121,6 +128,7 @@ const ERROR_RESPONSES = {
   meeting_checkpoint_unavailable: { status: 503, message: 'Meeting checkpoint persistence is not configured.' },
   meeting_terminal: { status: 409, message: 'Meeting has already ended.' },
   meeting_content_expired: { status: 410, message: 'Meeting content retention period has expired.' },
+  meeting_content_local_only: { status: 410, message: 'Meeting content is available only on the Host device.' },
   meeting_share_invalid: { status: 404, message: 'Meeting share is invalid or expired.' },
   meeting_not_found: { status: 404, message: 'Meeting not found.' },
   meeting_delete_not_allowed: { status: 409, message: 'Only meetings that have not started can be deleted.' },
@@ -625,7 +633,15 @@ export function getDefaultApplicationDependencies() {
 }
 
 export function selectDefaultApplicationDependenciesFactory({ env = process.env } = {}) {
-  return env.NODE_ENV === 'production' || hasConfiguredGeminiApiKey(env)
+  let localSupabase = false;
+  if (env.SUPABASE_URL && env.SUPABASE_SECRET_KEY) {
+    try {
+      const url = new URL(env.SUPABASE_URL);
+      localSupabase = url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+        && Boolean(env.SUPABASE_SECRET_KEY);
+    } catch { /* Fail closed to the regular development composition. */ }
+  }
+  return env.NODE_ENV === 'production' || hasConfiguredGeminiApiKey(env) || localSupabase
     ? createProductionApplicationDependencies
     : createApplicationDependencies;
 }
@@ -780,7 +796,6 @@ export function createRequestHandler(options = {}) {
  meetingMembershipService,
     sessionAudioArtifactRepository,
     meetingAudioService,
-  meetingCueService,
   meetingEventRepository,
     viewerRealtimeTokenService,
     sessionApplicationService,
@@ -849,8 +864,7 @@ export function createRequestHandler(options = {}) {
  meetingMembershipService: resolvedMeetingMembershipService,
       sessionAudioArtifactRepository,
       meetingAudioService,
-      meetingCueService,
-      meetingEventRepository,
+          meetingEventRepository,
       viewerRealtimeTokenService,
       ...(sessionApplicationService !== undefined ? { sessionApplicationService } : {}),
       translationProviderOptionsController,
@@ -864,8 +878,6 @@ export function createRequestHandler(options = {}) {
       sessionShareService,
     translationOutputMaxBytes,
     recorderLeaseService,
-    meetingLifecycleService: options.meetingLifecycleService,
-    legacyResumeService: options.legacyResumeService,
     recorderGrantService,
       sessionEventBroadcaster,
       meetingEventBroadcaster,
@@ -894,13 +906,11 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
- { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), authEventAuditLogService = createAuditLogService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), strictCheckpointPathIds = true } = {}
+ { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService,  viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), authEventAuditLogService = createAuditLogService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), strictCheckpointPathIds = true } = {}
 ) {
   const exportArtifactService = arguments[2]?.exportArtifactService;
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const meetingMembershipService = arguments[2]?.meetingMembershipService;
-  const meetingLifecycleService = arguments[2]?.meetingLifecycleService;
-  const legacyResumeService = arguments[2]?.legacyResumeService;
   const meetingPurgeWorker = arguments[2]?.meetingPurgeWorker;
   const observabilityMetricRepository = arguments[2]?.observabilityMetricRepository;
   const observabilityMetrics = arguments[2]?.observabilityMetrics;
@@ -909,6 +919,14 @@ async function handleRequestWithSessionReadController(
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
+  // New recordings are local-only; legacy recording commands have no HTTP writer.
+  if (/^\/api\/meetings\/[^/]+\/recording(?:\/|$)/u.test(path)
+    || /^\/api\/meetings\/[^/]+\/heartbeat$/u.test(path)) {
+    const allowed = isAllowedOrigin(req);
+    sendJson(res, allowed ? 410 : 403,
+      errorPayload(allowed ? 'meeting_content_local_only' : 'invalid_origin', requestId), requestId);
+    return;
+  }
   if (path === '/api/live-token') res.setHeader?.('Cache-Control', 'no-store');
   const clientIp = getClientIp(req);
   const origin = req.headers?.origin || '';
@@ -1249,6 +1267,12 @@ if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
       }
     }
 
+    if (isLocalOnlyContentEndpoint(req.method, path)) {
+      statusCode = 410;
+      sendJson(res, statusCode, errorPayload('meeting_content_local_only', requestId), requestId);
+      return;
+    }
+
     if (authenticatedUser?.role === 'member' && !hasRecorderHeaders(req) && (isMemberMeetingRecordingPath(req.method, path) || isMemberSessionRecordingPath(req.method, path))) {
       try {
         const sessionContext = isMemberSessionRecordingPath(req.method, path)
@@ -1418,6 +1442,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     let sessionCreateError = null;
     try {
       const body = await readJson(req);
+        if (Object.keys(body || {}).some((key) => !new Set([
+          'id', 'name', 'meetingId', 'segmentId', 'targetLanguageCode', 'targetLanguageLabel',
+          'sourceLanguageCode', 'echoTargetLanguage', 'shouldRecordInputAudio',
+          'meetingGlossaryEntries', 'selectedInputDeviceId', 'inputDeviceLabelSnapshot'
+        ]).has(key))) throw createHttpError('meeting_content_local_only');
       if (authenticatedUser?.role === 'member' && !body?.meetingId) throw createHttpError('recorder_forbidden');
       if (body?.meetingId) {
         if (!await meetingMembershipService?.canRecord?.(body.meetingId, authenticatedUser.id)) throw createHttpError('recorder_forbidden');
@@ -1826,246 +1855,17 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     return;
   }
 
-  if (req.method === 'POST' && isLegacyMeetingResumePath(path)) {
-    let statusCode = 500;
-    const legacyResumeDiagnostic = {
-      meetingId: null,
-      operationId: null,
-      sourceSegmentId: null,
-      successorSegmentId: null,
-      nextLiveSessionId: null,
-      sessionId: null,
-      lifecycleVersion: null,
-      rpcName: null,
-      rpcAttempted: false,
-      cloudCapabilitySource: null,
-      glossarySnapshotSource: null,
-      glossaryRefreshErrorCode: null,
-      failureStage: 'request',
-      commitStatus: 'not_started'
-    };
-    try {
-      legacyResumeDiagnostic.failureStage = 'capability_composition';
-      if (!legacyResumeService) {
-        legacyResumeDiagnostic.cloudCapabilitySource = 'legacy_resume_service';
-        throw createHttpError('cloud_capability_unavailable');
-      }
-      const meetingId = parseLegacyMeetingResumePath(path);
-      legacyResumeDiagnostic.meetingId = meetingId;
-      const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
-      const sourceSegmentId = String(body?.sourceSegmentId || '').trim();
-      legacyResumeDiagnostic.operationId = String(body?.operationId || '').trim() || null;
-      legacyResumeDiagnostic.sourceSegmentId = sourceSegmentId || null;
-      legacyResumeDiagnostic.nextLiveSessionId = String(body?.nextLiveSessionId || '').trim() || null;
-      legacyResumeDiagnostic.sessionId = String(body?.expectedSessionId || '').trim() || null;
-      if (!sourceSegmentId) throw createHttpError('invalid_request');
-      legacyResumeDiagnostic.failureStage = 'authorization';
-      const principal = await resolveMeetingLifecyclePrincipal({
-        req,
-        meetingId,
-        authenticatedUser,
-        meetingMembershipService,
-        sessionShareService
-      });
-      await authorizeRecorderMeetingWrite({
-        req,
-        meetingId,
-        segmentId: sourceSegmentId,
-        sessionRepository,
-        meetingRepository,
-        sessionShareService,
-        recorderGrantService,
-        recorderLeaseService
-      });
-      let result;
-      if (body?.reconcileOnly === true) {
-        legacyResumeDiagnostic.failureStage = 'reconcile_rpc';
-        legacyResumeDiagnostic.rpcName = 'get_legacy_resume_operation';
-        legacyResumeDiagnostic.rpcAttempted = true;
-        legacyResumeDiagnostic.commitStatus = 'read_only';
-        result = await legacyResumeService.getOperation({
-          ownerUserId: principal.ownerUserId,
-          meetingId,
-          operationId: body?.operationId
-        });
-        if (!result) throw createHttpError('meeting_segment_not_found');
-      } else {
-        const payload = legacyResumePayload({ meetingId, ...body });
-        const payloadHash = crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-        if (payloadHash !== body?.payloadHash) throw createHttpError('invalid_request');
-        legacyResumeDiagnostic.failureStage = 'meeting_read';
-        const meeting = await meetingRepository.getMeeting(meetingId);
-        if (!meeting) throw createHttpError('meeting_not_found');
-        legacyResumeDiagnostic.lifecycleVersion = Number.isInteger(meeting.lifecycleVersion)
-          ? meeting.lifecycleVersion
-          : null;
-        legacyResumeDiagnostic.failureStage = 'glossary_read';
-        let globalGlossaryEntries;
-        try {
-          const allGlossaryEntries = await glossaryController.listEntries();
-          globalGlossaryEntries = liveGlossaryEntriesForTarget(
-            allGlossaryEntries,
-            meeting.targetLanguageCode
-          );
-          legacyResumeDiagnostic.glossarySnapshotSource = 'latest_global_glossary';
-        } catch (error) {
-          legacyResumeDiagnostic.glossaryRefreshErrorCode = errorCodeFor(error);
-          const segments = await meetingRepository.listMeetingSegments(meetingId);
-          const sourceSegment = segments.find((segment) => segment.id === sourceSegmentId);
-          globalGlossaryEntries = mergeMeetingGlossaryEntries(
-            sourceSegment?.settingsSnapshot?.globalGlossaryEntries || [],
-            [],
-            meeting.targetLanguageCode
-          );
-          legacyResumeDiagnostic.glossarySnapshotSource = 'source_segment_fallback';
-        }
-        legacyResumeDiagnostic.failureStage = 'resume_rpc';
-        legacyResumeDiagnostic.rpcName = 'resume_legacy_meeting_segment';
-        legacyResumeDiagnostic.rpcAttempted = true;
-        legacyResumeDiagnostic.commitStatus = 'unknown';
-        result = await legacyResumeService.execute({
-          ...payload,
-          ownerUserId: principal.ownerUserId,
-          operationId: body.operationId,
-          payloadHash,
-          globalGlossaryEntries
-        });
-      }
-      legacyResumeDiagnostic.successorSegmentId = result?.segment?.id || null;
-      legacyResumeDiagnostic.lifecycleVersion = Number.isInteger(result?.meeting?.lifecycleVersion)
-        ? result.meeting.lifecycleVersion
-        : legacyResumeDiagnostic.lifecycleVersion;
-      legacyResumeDiagnostic.failureStage = 'response';
-      legacyResumeDiagnostic.commitStatus = 'committed';
-      statusCode = body?.reconcileOnly === true ? 200 : 201;
-      sendJson(res, statusCode, normalizeLegacyResumeResult(result), requestId);
-      requestLogger({
-        level: 'info',
-        event: 'legacy_resume_command',
-        requestId,
-        method: req.method,
-        path,
-        statusCode,
-        durationMs: Math.round(performance.now() - startedAt),
-        ...legacyResumeDiagnostic
-      });
-    } catch (error) {
-      const code = errorCodeFor(error);
-      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
-      requestLogger({
-        level: statusCode >= 500 ? 'error' : 'info',
-        event: 'legacy_resume_command',
-        requestId,
-        method: req.method,
-        path,
-        statusCode,
-        errorCode: code,
-        durationMs: Math.round(performance.now() - startedAt),
-        ...legacyResumeDiagnostic,
-        ...safeSupabaseFailureDiagnostics(error)
-      });
-    }
-    return;
-  }
-
-  if (req.method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path))) {
-    const lifecycleDiagnostic = { meetingId: null, command: null, operationId: null, sessionId: null, segmentId: null };
-    try {
-      if (!meetingLifecycleService) throw createHttpError('cloud_capability_unavailable');
-      const route = parseMeetingLifecyclePath(path);
-      lifecycleDiagnostic.meetingId = route.meetingId;
-      lifecycleDiagnostic.command = route.action;
-      const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
-      lifecycleDiagnostic.operationId = body?.operationId || null;
-      const principal = await resolveMeetingLifecyclePrincipal({
-        req,
-        meetingId: route.meetingId,
-        authenticatedUser,
-        meetingMembershipService,
-        sessionShareService
-      });
-
-      if (route.action === 'lease-heartbeat') {
-        statusCode = 200;
-        sendJson(res, statusCode, await meetingLifecycleService.renewLease({
-          ...principal,
-          meetingId: route.meetingId,
-          leaseId: body?.leaseId,
-          fenceToken: body?.fenceToken
-        }), requestId);
-        return;
-      }
-
-      if (route.action === 'liveness') {
-        statusCode = 200;
-        sendJson(res, statusCode, await meetingLifecycleService.touchLiveness({
-          ...principal,
-          meetingId: route.meetingId,
-          leaseId: body?.leaseId,
-          fenceToken: body?.fenceToken
-        }), requestId);
-        return;
-      }
-
-      const payload = { ...(body || {}) };
-      for (const field of ['operationId', 'expectedLifecycleVersion', 'leaseId', 'fenceToken']) delete payload[field];
-      const result = await meetingLifecycleService.execute({
-        ...principal,
-        meetingId: route.meetingId,
-        command: route.action,
-        operationId: body?.operationId,
-        expectedLifecycleVersion: body?.expectedLifecycleVersion,
-        leaseId: body?.leaseId,
-        fenceToken: body?.fenceToken,
-        payload
-      });
-      lifecycleDiagnostic.sessionId = result?.session?.id || null;
-      lifecycleDiagnostic.segmentId = result?.segment?.id || null;
-      statusCode = ['start', 'resume', 'rollover', 'recover', 'takeover'].includes(route.action) ? 201 : 200;
-      sendJson(res, statusCode, result, requestId);
-    } catch (error) {
-      const code = errorCodeFor(error);
-      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
-    } finally {
-      requestLogger({
-        level: statusCode >= 500 ? 'error' : (statusCode >= 400 ? 'warn' : 'info'),
-        event: 'meeting_lifecycle_command',
-        requestId,
-        method: req.method,
-        path,
-        statusCode,
-        durationMs: Math.round(performance.now() - startedAt),
-        ...lifecycleDiagnostic
-      });
-    }
-    return;
-  }
-
-  if (meetingLifecycleService && isMeetingLifecycleFencedWrite(req.method, path)) {
-    try {
-      const target = parseMeetingLifecycleFencedWritePath(path);
-      const fenceValue = req.headers?.['x-meeting-fence-token'];
-      await meetingLifecycleService.validateWrite({
-        meetingId: target.meetingId,
-        sessionId: req.headers?.['x-meeting-session-id'],
-        segmentId: target.segmentId || req.headers?.['x-meeting-segment-id'],
-        leaseId: req.headers?.['x-meeting-lease-id'],
-        fenceToken: fenceValue === undefined ? null : Number(fenceValue)
-      });
-    } catch (error) {
-      const code = errorCodeFor(error);
-      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
-      return;
-    }
-  }
-
   if (req.method === 'POST' && isMeetingCompletePath(path)) {
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId } = parseMeetingCompletePath(path);
+      if (!authenticatedUser?.id || !await meetingMembershipService?.canManage?.(meetingId, authenticatedUser)) {
+        throw createHttpError('auth_forbidden');
+      }
+      const targetMeeting = await meetingRepository?.getMeeting?.(meetingId);
+      if (targetMeeting && Number(targetMeeting.lifecycleContractVersion) !== 2) {
+        throw createHttpError('meeting_content_local_only');
+      }
       const result = await meetingCheckpointService.completeMeeting({ meetingId });
       statusCode = 200;
       sendJson(res, statusCode, result, requestId);
@@ -2078,13 +1878,27 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
   }
 
   if (req.method === 'PATCH' && isMeetingDetailPath(path)) {
+    let patchStage = 'request_parse';
+    let databaseWriteStatus = 'not_started';
+    let requestShape = [];
+    let dictionaryIdCount = 0;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const meetingId = parseMeetingDetailPath(path).meetingId;
       meetingDiagnosticId = meetingId;
       const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
+      requestShape = Object.entries(body || {}).slice(0, 24).map(([field, value]) => ({
+        field: /^[a-z][a-z0-9]{0,63}$/iu.test(field) ? field : '[other]',
+        type: Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value
+      }));
+      dictionaryIdCount = (Array.isArray(body?.glossaryEntries)
+        ? body.glossaryEntries.filter((entry) => typeof entry?.id === 'string').length : 0)
+        + (Array.isArray(body?.dictionaryIds) ? body.dictionaryIds.length : 0)
+        + (typeof body?.dictionaryId === 'string' ? 1 : 0);
+      patchStage = 'payload_validation';
       if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) throw createHttpError('unsupported_language');
       if (body?.sourceLanguageCode && !isSupportedLanguage(body.sourceLanguageCode)) throw createHttpError('unsupported_language');
+      patchStage = 'meeting_update';
       const result = await meetingCheckpointService.updateMeeting({ meetingId, settings: {
         ...(Object.hasOwn(body || {}, 'name') ? { name: body.name } : {}),
         ...(Object.hasOwn(body || {}, 'sourceLanguageCode') ? { sourceLanguageCode: body.sourceLanguageCode } : {}),
@@ -2094,7 +1908,9 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         ...(Object.hasOwn(body || {}, 'glossaryEntries') ? { glossaryEntries: body.glossaryEntries } : {}),
         ...(Object.hasOwn(body || {}, 'privateGlossaryEntries') ? { privateGlossaryEntries: body.privateGlossaryEntries } : {})
       }});
+      databaseWriteStatus = 'committed';
       if (Object.hasOwn(body || {}, 'glossaryEntries') || Object.hasOwn(body || {}, 'privateGlossaryEntries')) {
+        patchStage = 'glossary_revision';
         const updatedMeeting = result?.meeting || result;
         const sourceLanguageCode = updatedMeeting?.sourceLanguageCode || body.sourceLanguageCode || 'zh-Hant';
         const targetLanguageCode = updatedMeeting?.targetLanguageCode || body.targetLanguageCode || 'en';
@@ -2126,12 +1942,28 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         requestLogger({ ...glossaryEvent, event: 'GLOSSARY_REVISION_UPDATED' });
       }
       statusCode = 200;
+      patchStage = 'response_send';
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       meetingDiagnosticErrorCode = code;
       meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      requestLogger({
+        level: 'error', event: 'meeting_dictionary_patch_failure', requestId,
+        method: req.method, path, stage: error?.meetingPatchStage || patchStage,
+        authenticatedUserPresent: Boolean(authenticatedUser?.id),
+        ownerMatchesActor: authenticatedUser?.id && currentRequestOwnerId()
+          ? authenticatedUser.id === currentRequestOwnerId() : null,
+        requestShape, dictionaryIdCount,
+        exceptionType: typeof error?.name === 'string' && /^[a-z][a-z0-9]{0,63}$/iu.test(error.name)
+          ? error.name : 'UnknownError',
+        postgresSqlstate: error?.supabaseCode || null,
+        databaseWriteStatus: error?.meetingPatchWriteStatus || databaseWriteStatus,
+        mappingStatus: error?.meetingPatchStage === 'response_mapping' ? 'failed'
+          : databaseWriteStatus === 'committed' ? 'passed' : 'not_reached',
+        ...safeSupabaseFailureDiagnostics(error)
+      });
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
       requestLogger({
@@ -2237,7 +2069,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const input = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
       if (input?.targetLanguageCode && !isSupportedLanguage(input.targetLanguageCode)) throw createHttpError('unsupported_language');
       if (input?.sourceLanguageCode && !isSupportedLanguage(input.sourceLanguageCode)) throw createHttpError('unsupported_language');
-      const result = await meetingCheckpointService.createMeeting({ ...input, draft: input?.draft === true });
+      const result = await meetingCheckpointService.createMeeting({
+        ...input,
+        draft: true,
+        lifecycleContractVersion: 2
+      });
       meetingDiagnosticId = result?.meeting?.id || null;
       statusCode = 201;
       sendJson(res, statusCode, result, requestId);
@@ -2272,6 +2108,32 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     return;
   }
 
+  if (req.method === 'GET' && isSharedMeetingMetadataPath(path)) {
+    const share = await resolveSharedMeeting(path, sessionShareService);
+    if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') {
+      sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
+      return;
+    }
+    if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
+    let metadata;
+    try {
+      metadata = await meetingReadController?.getMeetingViewerMetadata(share.meetingId);
+    } catch (error) {
+      if (error?.code !== 'meeting_content_expired') throw error;
+      sendJson(res, 410, errorPayload('meeting_content_expired', requestId), requestId);
+      return;
+    }
+    if (!metadata) {
+      sendJson(res, 404, errorPayload('meeting_not_found', requestId), requestId);
+      return;
+    }
+    sendJson(res, 200, {
+      ...metadata,
+      capability: { role: share.role, meetingId: share.meetingId, expiresAt: share.expiresAt }
+    }, requestId);
+    return;
+  }
+
   if (req.method === 'GET' && isSharedMeetingDetailPath(path)) {
     const share = await resolveSharedMeeting(path, sessionShareService);
     if (!share || share.resourceType !== 'meeting' || !['viewer', 'recorder'].includes(share.role)) {
@@ -2279,6 +2141,17 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       return;
     }
     if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
+    if (share.role === 'viewer') {
+      const metadata = await meetingReadController?.getMeetingViewerMetadata(share.meetingId);
+      if (!metadata) {
+        sendJson(res, 404, errorPayload('meeting_not_found', requestId), requestId);
+        return;
+      }
+      if (Number(metadata?.meeting?.lifecycleContractVersion) >= 2) {
+        sendJson(res, 410, errorPayload('meeting_content_local_only', requestId), requestId);
+        return;
+      }
+    }
     const meeting = share.role === 'viewer'
       ? await meetingReadController?.getMeetingViewerPage(share.meetingId, parseViewerPageOptions(req))
       : await meetingReadController?.getMeeting(share.meetingId);
@@ -2297,70 +2170,6 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       };
     }
     sendJson(res, 200, { ...payload, capability: { role: share.role, meetingId: share.meetingId, expiresAt: share.expiresAt } }, requestId);
-    return;
-  }
-
-  if (req.method === 'POST' && isMeetingCuePublishPath(path)) {
-    const cueRequestContext = {};
-    try {
-      if ((!meetingEventBroadcaster && !meetingCueService) || !sessionRepository) throw createHttpError('meeting_checkpoint_unavailable');
-      const { meetingId, segmentId } = parseMeetingCuePublishPath(path);
-      cueRequestContext.meetingId = meetingId;
-      cueRequestContext.segmentId = segmentId;
-      const body = await readJson(req, { maxBytes: 100_000 });
-      const sessionId = body?.sessionId || req.headers?.['x-recorder-session-id'];
-      cueRequestContext.sessionId = sessionId || null;
-      const existing = await validateMeetingSessionSegmentBinding({
-        meetingId,
-        segmentId,
-        sessionId,
-        sessionRepository,
-        meetingRepository
-      });
-      if (hasRecorderHeaders(req)) {
-        await authorizeRecorderMeetingWrite({
-          req,
-          meetingId,
-          segmentId,
-          sessionRepository,
-          meetingRepository,
-          sessionShareService,
-          recorderGrantService,
-          recorderLeaseService
-        });
-      }
-      const cue = normalizePublishedCue(body?.cue, { meetingId, segmentId, sessionId });
-      cueRequestContext.cueId = cue.cueId;
-      cueRequestContext.sequence = cue.sequence;
-      if (meetingCueService) {
-        await meetingCueService.persist({ meetingId, segmentId, sessionId, sessionRecord: existing.sessionRecord, cue });
-        const event = meetingEventRepository
-          ? await meetingEventRepository.append({ meetingId, segmentId, cue })
-          : null;
-        statusCode = 202;
-        sendJson(res, statusCode, { transport: 'supabase', eventId: event?.eventId || null, cueSequence: cue.sequence }, requestId);
-        return;
-      }
-      const event = meetingEventBroadcaster.publish(meetingId, { segmentId, cue, producedAt: body?.producedAt });
-      statusCode = 202;
-      sendJson(res, statusCode, { eventId: event.eventId, cueSequence: event.cue.sequence }, requestId);
-    } catch (error) {
-      const code = errorCodeFor(error);
-      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      requestLogger({
-        level: statusCode >= 500 ? 'error' : 'warn',
-        event: 'meeting_cue_publish_failed',
-        requestId,
-        method: req.method,
-        path,
-        statusCode,
-        errorCode: code,
-        ...safeSupabaseFailureDiagnostics(error),
-        ...cueRequestContext,
-        durationMs: Math.round(performance.now() - startedAt)
-      });
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
-    }
     return;
   }
 
@@ -2470,6 +2279,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const result = await meetingCheckpointService.rolloverSegment({
         meetingId,
         segmentId,
+        recorderSessionId: hasRecorderHeaders(req) ? req.headers['x-recorder-session-id'] : null,
         rollover: await readJson(req, { maxBytes: meetingCheckpointMaxBytes })
       });
       statusCode = 201;
@@ -2502,6 +2312,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingSegmentStartPath(path);
+      const targetMeeting = await meetingRepository?.getMeeting?.(meetingId);
+      if (targetMeeting) throw createHttpError(
+        Number(targetMeeting.lifecycleContractVersion) === 2
+          ? 'meeting_lifecycle_conflict'
+          : 'meeting_content_local_only'
+      );
       const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
       const result = await meetingCheckpointService.startMeeting({ meetingId, segmentId, liveSessionId: body?.liveSessionId });
       statusCode = 201;
@@ -2560,7 +2376,17 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const { meetingId } = parseMeetingSegmentsPath(path);
       const segments = await meetingCheckpointService.listMeetingSegments(meetingId);
       statusCode = 200;
-      sendJson(res, statusCode, { meetingId, segments }, requestId);
+      sendJson(res, statusCode, { meetingId, segments: segments.map((segment) => ({
+        id: segment.id,
+        meetingId: segment.meetingId,
+        sessionId: segment.sessionId ?? null,
+        sequence: segment.sequence,
+        status: segment.status,
+        liveSessionId: segment.liveSessionId ?? null,
+        startedAt: segment.startedAt ?? null,
+        endedAt: segment.endedAt ?? null,
+        lifecycleContractVersion: segment.lifecycleContractVersion ?? null
+      })) }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -2581,13 +2407,20 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       if (req.method === 'PUT') {
         await authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, meetingRepository, sessionShareService, recorderGrantService, recorderLeaseService });
       }
-      const result = req.method === 'GET'
-        ? await meetingCheckpointService.getCheckpoint({ meetingId, segmentId })
-        : await meetingCheckpointService.updateCheckpoint({
-            meetingId,
-            segmentId,
-            checkpoint: await readJson(req, { maxBytes: meetingCheckpointMaxBytes })
-          });
+        const checkpoint = req.method === 'PUT'
+          ? await readJson(req, { maxBytes: meetingCheckpointMaxBytes }) : null;
+        const protocolHeader = req.headers?.['x-checkpoint-protocol'];
+        const legacyKey = `checkpoint:${segmentId}:`;
+        const protocol = protocolHeader === '2' ? 'v2'
+          : protocolHeader === undefined
+            && typeof checkpoint?.idempotencyKey === 'string'
+            && checkpoint.idempotencyKey.startsWith(legacyKey)
+            && /^(source|translation|empty):\d+$/u.test(checkpoint.idempotencyKey.slice(legacyKey.length))
+            ? 'legacy' : protocolHeader === undefined ? 'v2' : null;
+        if (req.method === 'PUT' && !protocol) throw createHttpError('invalid_request');
+        const result = req.method === 'GET'
+          ? await meetingCheckpointService.getCheckpoint({ meetingId, segmentId })
+          : await meetingCheckpointService.updateCheckpoint({ meetingId, segmentId, checkpoint, protocol });
       statusCode = 200;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
@@ -2891,6 +2724,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       }
       const body = await readJson(req);
       const allowedKeys = new Set(['name', 'status', 'targetLanguageCode', 'targetLanguageLabel', 'sourceLanguageCode', 'meetingId', 'segmentId']);
+        if (Object.keys(body || {}).some((key) => !allowedKeys.has(key))) throw createHttpError('invalid_request');
+        if (Object.entries(body || {}).some(([key, value]) => {
+          if (key === 'targetLanguageLabel' && value === null) return false;
+          const maxLength = ['name', 'meetingId', 'segmentId'].includes(key) ? 256 : 128;
+          return typeof value !== 'string' || value.length === 0 || value.length > maxLength;
+        })) throw createHttpError('invalid_request');
       const patch = Object.fromEntries(Object.entries(body || {}).filter(([key]) => allowedKeys.has(key)));
       if (patch.meetingId !== undefined && (typeof patch.meetingId !== 'string' || patch.meetingId.trim() === '')) {
         throw createHttpError('invalid_request');
@@ -2907,7 +2746,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       statusCode = 200;
       sendJson(res, statusCode, { session }, requestId);
     } catch (error) {
-      const code = errorCodeFor(error);
+      const code = error?.supabaseCode === 'P0043' && error?.supabaseMessage === 'meeting_content_local_only'
+        ? 'meeting_content_local_only' : errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
@@ -3160,19 +3000,25 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     if (typeof body?.meetingId !== 'string' || !body.meetingId.trim() || typeof body?.sessionId !== 'string' || !body.sessionId.trim()) {
       throw createHttpError('recorder_forbidden');
     }
+    const hostLocalOnly = req.headers?.['x-host-local-recording'] === '1';
+    if (hostLocalOnly && (typeof body.segmentId !== 'string' || !body.segmentId.trim()
+      || req.headers?.['x-meeting-session-id'] !== body.sessionId
+      || req.headers?.['x-meeting-segment-id'] !== body.segmentId)) {
+      throw createHttpError('recorder_session_mismatch');
+    }
     liveTokenFailureStage = 'session_lookup';
-    const detail = typeof sessionRepository?.getSessionRecord === 'function'
+    const detail = hostLocalOnly ? null : typeof sessionRepository?.getSessionRecord === 'function'
       ? await sessionRepository.getSessionRecord(body.sessionId)
       : await sessionReadController?.getSession?.(body.sessionId);
     const session = detail?.sessionRecord || detail?.session;
     liveTokenSessionFound = Boolean(session);
     liveTokenSessionMeetingId = session?.meetingId || null;
     liveTokenSessionSegmentId = session?.segmentId || null;
-    if (!session) {
+    if (!hostLocalOnly && !session) {
       liveTokenFailureStage = 'session_not_found';
       throw createHttpError('recorder_forbidden');
     }
-    if (session.meetingId !== body.meetingId) {
+    if (!hostLocalOnly && session.meetingId !== body.meetingId) {
       liveTokenFailureStage = 'session_meeting_mismatch';
       throw createHttpError('recorder_forbidden');
     }
@@ -3192,7 +3038,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     let tokenRequest = body;
     let authoritativeSegment = null;
     let authoritativeBinding = null;
-    if (hasRecorderHeaders(req)) {
+    if (hasRecorderHeaders(req) && !hostLocalOnly) {
       const sessionId = body?.sessionId;
       const auth = await authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
       if (body.targetLanguageCode && body.targetLanguageCode !== session.targetLanguageCode) throw createHttpError('recorder_session_mismatch');
@@ -3201,41 +3047,19 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       void auth;
     }
     const meeting = await meetingRepository?.getMeeting?.(body.meetingId);
-    if (meeting?.lifecycleContractVersion === 2) {
-      const headerSessionId = req.headers?.['x-meeting-session-id'];
-      const headerSegmentId = req.headers?.['x-meeting-segment-id'];
-      const headerLeaseId = req.headers?.['x-meeting-lease-id'];
-      const headerFenceToken = Number(req.headers?.['x-meeting-fence-token']);
-      const headerLifecycleVersion = Number(req.headers?.['x-meeting-lifecycle-version']);
-      if (!meetingLifecycleService
-        || typeof body.segmentId !== 'string'
-        || body.segmentId !== headerSegmentId
-        || body.sessionId !== headerSessionId
-        || !Number.isSafeInteger(headerFenceToken)
-        || !Number.isSafeInteger(headerLifecycleVersion)
-        || headerLifecycleVersion !== meeting.lifecycleVersion) {
-        throw createHttpError('recorder_session_mismatch');
-      }
-      await meetingLifecycleService.validateWrite({
-        meetingId: body.meetingId,
-        sessionId: headerSessionId,
-        segmentId: headerSegmentId,
-        leaseId: headerLeaseId,
-        fenceToken: headerFenceToken
-      });
-      const segments = await meetingRepository.listMeetingSegments(body.meetingId);
-      authoritativeSegment = segments.find((segment) => segment.id === headerSegmentId) || null;
-      if (!authoritativeSegment
-        || authoritativeSegment.status !== 'active'
-        || (authoritativeSegment.sessionId && authoritativeSegment.sessionId !== headerSessionId)) {
-        throw createHttpError('recorder_session_mismatch');
-      }
-      authoritativeBinding = {
-        meetingId: body.meetingId,
-        sessionId: headerSessionId,
-        segmentId: authoritativeSegment.id,
-        lifecycleVersion: meeting.lifecycleVersion
+    if (Number(meeting?.lifecycleContractVersion) === 2 && !hostLocalOnly) {
+      throw createHttpError('recorder_session_mismatch');
+    }
+    if (hostLocalOnly) {
+      if (!meeting || ['completed', 'deleted'].includes(meeting.status)) throw createHttpError('recorder_forbidden');
+      if (meeting.targetLanguageCode && body.targetLanguageCode !== meeting.targetLanguageCode) throw createHttpError('recorder_session_mismatch');
+      if (meeting.sourceLanguageCode && body.sourceLanguageCode !== meeting.sourceLanguageCode) throw createHttpError('recorder_session_mismatch');
+      tokenRequest = {
+        ...body,
+        targetLanguageCode: meeting.targetLanguageCode || body.targetLanguageCode,
+        sourceLanguageCode: meeting.sourceLanguageCode || body.sourceLanguageCode
       };
+      authoritativeSegment = { settingsSnapshot: meeting };
     }
     targetLanguageCode = tokenRequest.targetLanguageCode || 'en';
     const token = await liveTokenCreator(tokenRequest, {
@@ -3380,6 +3204,7 @@ function isPublicApiPath(method, path) {
     isSharedSessionDetailPath(path) ||
     isSharedSessionEventsPath(path) ||
     isSharedMeetingDetailPath(path) ||
+    isSharedMeetingMetadataPath(path) ||
     isSharedMeetingEventsPath(path)
   )) || (method === 'POST' && (path === '/api/auth-events' || isSharedMeetingRealtimeTokenPath(path) || isSharedMeetingTelemetryPath(path))) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
 }
@@ -3497,46 +3322,10 @@ async function meetingPermissionsFor(meetingId, user, meetingMembershipService) 
   };
 }
 
-async function resolveMeetingLifecyclePrincipal({
-  req,
-  meetingId,
-  authenticatedUser,
-  meetingMembershipService,
-  sessionShareService
-} = {}) {
-  if (hasRecorderHeaders(req)) {
-    const code = req.headers?.['x-recorder-code'];
-    const token = req.headers?.['x-recorder-token'];
-    const share = code
-      ? await sessionShareService?.resolveCode?.(code)
-      : await sessionShareService?.resolveShare?.(token);
-    if (!share || share.resourceType !== 'meeting' || share.meetingId !== meetingId || share.role !== 'recorder') {
-      throw createHttpError('recorder_forbidden');
-    }
-    if (!share._ownerUserId) throw createHttpError('meeting_share_invalid');
-    return {
-      ownerUserId: share._ownerUserId,
-      principalType: 'share',
-      principalId: share.id,
-      forceAllowed: false
-    };
-  }
-
-  if (!authenticatedUser?.id) throw createHttpError('auth_required');
-  const ownerUserId = currentRequestOwnerId();
-  if (!ownerUserId) throw createHttpError('auth_forbidden');
-  const canForce = authenticatedUser.role === 'super_admin'
-    || await meetingMembershipService?.canManage?.(meetingId, authenticatedUser);
-  return {
-    ownerUserId,
-    principalType: 'user',
-    principalId: authenticatedUser.id,
-    forceAllowed: Boolean(canForce)
-  };
-}
-
 function isRecorderAuthorizedPath(method, path, req) {
   if (!hasRecorderHeaders(req)) return false;
+  if (method === 'GET' && isMeetingLifecycleOperationLookupPath(path)) return true;
+  if (method === 'POST' && isMeetingLeaseRecoveryPath(path)) return true;
   if (method === 'PUT' && /^\/api\/sessions\/[^/]+$/.test(path)) return true;
   if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)$/.test(path)) return true;
   if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)\/segments\/\d+$/.test(path)) return true;
@@ -3548,6 +3337,8 @@ function isRecorderAuthorizedPath(method, path, req) {
 }
 
 function isMemberMeetingRecordingPath(method, path) {
+  if (method === 'GET' && isMeetingLifecycleOperationLookupPath(path)) return true;
+  if (method === 'POST' && isMeetingLeaseRecoveryPath(path)) return true;
   return (method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path) || isLegacyMeetingResumePath(path))) ||
     (method === 'POST' && isMeetingCuePublishPath(path)) ||
     (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) ||
@@ -3605,6 +3396,9 @@ async function validateMeetingSessionSegmentBinding({ meetingId, segmentId, sess
 async function authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, meetingRepository, sessionShareService, recorderGrantService, recorderLeaseService }) {
   if (!hasRecorderHeaders(req)) return null;
   const sessionId = req.headers?.['x-recorder-session-id'];
+  const authorization = await authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
+  if (!authorization?.share?._ownerUserId) throw createHttpError('recorder_forbidden');
+  setRequestUser({ id: authorization.share._ownerUserId });
   await validateMeetingSessionSegmentBinding({
     meetingId,
     segmentId,
@@ -3612,7 +3406,7 @@ async function authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessio
     sessionRepository,
     meetingRepository
   });
-  return authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
+  return authorization;
 }
 
 function validateRecorderSnapshot(existingSession, body) {
@@ -3750,110 +3544,20 @@ function isMeetingRecordingCommandPath(path) {
   return /^\/api\/meetings\/[^/]+\/recording\/(?:start|pause|resume|rollover|recover|stop|takeover|lease\/heartbeat)$/u.test(path);
 }
 
+function isMeetingLifecycleOperationLookupPath(path) {
+  return /^\/api\/meetings\/[^/]+\/recording\/operations\/[^/]+$/u.test(path);
+}
+
+function isMeetingLeaseRecoveryPath(path) {
+  return /^\/api\/meetings\/[^/]+\/recording\/lease\/recover$/u.test(path);
+}
+
 function isLegacyMeetingResumePath(path) {
   return /^\/api\/meetings\/[^/]+\/recording\/legacy-resume$/u.test(path);
 }
 
-function parseLegacyMeetingResumePath(path) {
-  const match = path.match(/^\/api\/meetings\/([^/]+)\/recording\/legacy-resume$/u);
-  if (!match) throw createHttpError('invalid_request');
-  return safeDecodePathComponent(match[1]);
-}
-
-function legacyResumePayload(input = {}) {
-  const checkpoint = input.checkpoint && typeof input.checkpoint === 'object' ? input.checkpoint : {};
-  return {
-    meetingId: String(input.meetingId || '').trim(),
-    sourceSegmentId: String(input.sourceSegmentId || '').trim(),
-    nextLiveSessionId: String(input.nextLiveSessionId || '').trim(),
-    expectedSessionId: String(input.expectedSessionId || '').trim() || null,
-    checkpoint: {
-      lastFinalCueSequence: Number.isSafeInteger(checkpoint.lastFinalCueSequence)
-        ? checkpoint.lastFinalCueSequence
-        : 0,
-      finalCues: Array.isArray(checkpoint.finalCues) ? checkpoint.finalCues : [],
-      durableChunks: Array.isArray(checkpoint.durableChunks) ? checkpoint.durableChunks : [],
-      cueCheckpoint: checkpoint.cueCheckpoint && typeof checkpoint.cueCheckpoint === 'object'
-        ? checkpoint.cueCheckpoint
-        : null
-    }
-  };
-}
-
-function normalizeLegacyResumeResult(raw = {}) {
-  const meeting = camelizeSupabaseRecord(raw.meeting);
-  const segment = camelizeSupabaseRecord(raw.segment);
-  const interruptedSegment = camelizeSupabaseRecord(raw.interruptedSegment);
-  const settings = segment?.settingsSnapshot || {};
-  const effectiveEntries = mergeMeetingGlossaryEntries(
-    [...(settings.globalGlossaryEntries || []), ...(settings.glossaryEntries || [])],
-    settings.privateGlossaryEntries || [],
-    settings.targetLanguageCode
-  ).map((entry) => ({
-    source: entry.source,
-    target: entry.target || entry.translations?.[settings.targetLanguageCode],
-    replacementAliases: Array.isArray(entry.replacementAliases)
-      ? entry.replacementAliases
-      : entry.replacementAliases?.[settings.targetLanguageCode] || []
-  })).filter((entry) => typeof entry.target === 'string' && entry.target.trim() !== '');
-  const effectiveGlossaryRevision = crypto.createHash('sha256')
-    .update(serializeEffectiveGlossary({
-      sourceLanguageCode: settings.sourceLanguageCode,
-      targetLanguageCode: settings.targetLanguageCode,
-      entries: effectiveEntries
-    }))
-    .digest('hex');
-  return {
-    ...raw,
-    meeting,
-    segment,
-    interruptedSegment,
-    liveGlossaryEntries: effectiveEntries,
-    effectiveGlossaryRevision,
-    glossaryEntryCount: effectiveEntries.length
-  };
-}
-
-function camelizeSupabaseRecord(value) {
-  if (!value || typeof value !== 'object') return value || null;
-  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
-    key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()),
-    entry
-  ]));
-}
-
 function isMeetingLifecycleHeartbeatPath(path) {
   return /^\/api\/meetings\/[^/]+\/heartbeat$/u.test(path);
-}
-
-function parseMeetingLifecyclePath(path) {
-  const commandMatch = path.match(/^\/api\/meetings\/([^/]+)\/recording\/(start|pause|resume|rollover|recover|stop|takeover|lease\/heartbeat)$/u);
-  if (commandMatch) {
-    return {
-      meetingId: safeDecodePathComponent(commandMatch[1]),
-      action: commandMatch[2] === 'lease/heartbeat' ? 'lease-heartbeat' : commandMatch[2]
-    };
-  }
-  const heartbeatMatch = path.match(/^\/api\/meetings\/([^/]+)\/heartbeat$/u);
-  if (!heartbeatMatch) throw createHttpError('invalid_request');
-  return { meetingId: safeDecodePathComponent(heartbeatMatch[1]), action: 'liveness' };
-}
-
-function isMeetingLifecycleFencedWrite(method, path) {
-  return (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/cues$/u.test(path)) ||
-    (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/u.test(path)) ||
-    (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/audio-uploads$/u.test(path));
-}
-
-function parseMeetingLifecycleFencedWritePath(path) {
-  const segmentMatch = path.match(/^\/api\/meetings\/([^/]+)\/segments\/([^/]+)\/(?:cues|checkpoint|audio-uploads)$/u);
-  if (segmentMatch) {
-    return {
-      meetingId: safeDecodePathComponent(segmentMatch[1]),
-      segmentId: safeDecodePathComponent(segmentMatch[2])
-    };
-  }
-  throw createHttpError('invalid_request');
 }
 
 function isMeetingShareCollectionPath(path) {
@@ -3864,14 +3568,23 @@ function isMeetingSharePath(path) {
   return /^\/api\/meetings\/[^/]+\/shares\/[^/]+$/.test(path);
 }
 
-function isMeetingCuePublishPath(path) {
-  return /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/cues$/.test(path);
+function isLocalOnlyContentEndpoint(method, path) {
+  if (/^\/api\/saved-transcripts\/[^/]+\/translations$/u.test(path)) return true;
+  if (/^\/api\/shared-sessions\//u.test(path)) return method !== 'DELETE';
+  if (/^\/api\/translation-(?:requests|executions|outputs|dead-letter-queue)(?:\/|$)/u.test(path)) return method !== 'DELETE';
+  if (/^\/api\/meetings\/[^/]+\/exports(?:\/|$)/u.test(path)) return method !== 'DELETE';
+  if (/^\/api\/meetings\/[^/]+\/(?:audio\/|audio-artifacts(?:\/|$))/u.test(path)) return method !== 'DELETE';
+  if (/^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(?:cues|checkpoint|audio-uploads)(?:\/|$)/u.test(path)) return true;
+  if (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(?:rollover|recover)(?:\/|$)/u.test(path)) return true;
+  if (method === 'POST' && /^\/api\/meetings\/[^/]+\/recording\/legacy-resume$/u.test(path)) return true;
+  if (/^\/api\/sessions\/[^/]+\/(?:audio|translations|retranslations)(?:\/|$)/u.test(path)) return method !== 'DELETE';
+  if (/^\/api\/sessions\/[^/]+$/u.test(path) && (method === 'GET' || method === 'PUT')) return true;
+  if (method === 'GET' && isSharedMeetingEventsPath(path)) return true;
+  return false;
 }
 
-function parseMeetingCuePublishPath(path) {
-  const match = path.match(/^\/api\/meetings\/([^/]+)\/segments\/([^/]+)\/cues$/);
-  if (!match) throw createHttpError('invalid_request');
-  return { meetingId: safeDecodePathComponent(match[1]), segmentId: safeDecodePathComponent(match[2]) };
+function isMeetingCuePublishPath(path) {
+  return /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/cues$/.test(path);
 }
 
 function parseMeetingShareCollectionPath(path) {
@@ -4606,6 +4319,11 @@ function isSharedMeetingDetailPath(path) {
     (path.split('/').length === 4 || path.split('/').length === 5);
 }
 
+function isSharedMeetingMetadataPath(path) {
+  return path.startsWith('/api/shared-meetings/') && path.endsWith('/metadata') &&
+    (path.split('/').length === 5 || path.split('/').length === 6);
+}
+
 function isSharedMeetingEventsPath(path) {
   return path.startsWith('/api/shared-meetings/') && path.endsWith('/events') &&
     (path.split('/').length === 5 || path.split('/').length === 6);
@@ -4644,7 +4362,7 @@ async function assertMeetingShareRevocable(meetingId, shareId, meetingRepository
 }
 
 async function resolveSharedMeeting(path, sessionShareService) {
-  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events|realtime-token|events\/telemetry)$/, '');
+  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events|realtime-token|events\/telemetry|metadata)$/, '');
   if (raw.startsWith('code/')) return sessionShareService.resolveCode(decodeURIComponent(raw.slice('code/'.length)));
   return sessionShareService.resolveShare(decodeURIComponent(raw));
 }
@@ -4728,48 +4446,6 @@ function parseViewerPageOptions(req) {
   };
 }
 
-function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw createHttpError('subtitle_cue_invalid');
-  const cue = {
-    cueId: value.cueId,
-    sessionId,
-    segmentId,
-    sequence: value.sequence,
-    startTimeMs: value.startTimeMs,
-    endTimeMs: value.endTimeMs,
-    sourceLanguageCode: value.sourceLanguageCode || null,
-    targetLanguageCode: value.targetLanguageCode || null,
-    sourceText: value.sourceText ?? '',
-    translatedText: value.translatedText ?? '',
-    sourceStatus: value.sourceStatus || (value.sourceText ? 'finalized' : 'pending'),
-    translationStatus: value.translationStatus || (value.translatedText ? 'finalized' : 'pending'),
-    sourceVersion: Number.isInteger(value.sourceVersion) ? value.sourceVersion : (value.sourceText ? 1 : 0),
-    translationVersion: Number.isInteger(value.translationVersion) ? value.translationVersion : (value.translatedText ? 1 : 0),
-    ...(value.rawSource !== undefined ? { rawSource: value.rawSource } : {}),
-    ...(value.rawTranslation !== undefined ? { rawTranslation: value.rawTranslation } : {}),
-    ...(value.initialTranslation !== undefined ? { initialTranslation: value.initialTranslation } : {}),
-    ...(typeof value.correctionGlossaryRevision === 'string' && value.correctionGlossaryRevision
-      ? { correctionGlossaryRevision: value.correctionGlossaryRevision }
-      : {}),
-    status: value.status,
-    finalizedReason: value.finalizedReason || null,
-    ...(value.refinement ? { refinement: value.refinement } : {})
-  };
-  if (typeof cue.cueId !== 'string' || !cue.cueId || cue.status !== 'final' ||
-      !Number.isInteger(cue.sequence) || cue.sequence < 1 ||
-      !Number.isFinite(cue.startTimeMs) || cue.startTimeMs < 0 ||
-      (cue.endTimeMs !== null && cue.endTimeMs !== undefined && (!Number.isFinite(cue.endTimeMs) || cue.endTimeMs < cue.startTimeMs)) ||
-      typeof cue.sourceText !== 'string' || typeof cue.translatedText !== 'string' ||
-      (!cue.sourceText.trim() && !cue.translatedText.trim()) ||
-      !['pending', 'finalized', 'unavailable'].includes(cue.sourceStatus) ||
-      !['pending', 'finalized', 'unavailable'].includes(cue.translationStatus) ||
-      !Number.isInteger(cue.sourceVersion) || cue.sourceVersion < 0 ||
-      !Number.isInteger(cue.translationVersion) || cue.translationVersion < 0) {
-    throw createHttpError('subtitle_cue_invalid');
-  }
-  return { ...cue, meetingId };
-}
-
 function publicMeetingCueEvent(event) {
   return {
     eventId: event.eventId,
@@ -4835,7 +4511,21 @@ function publicMeetingViewerDetail(detail) {
 if (IS_MAIN) {
   const defaultApplicationDependencies = getDefaultApplicationDependencies();
   await ensureDataDirectory();
-  const server = http.createServer(handleRequest);
+  const signalingUrl = process.env.WEBRTC_SIGNALING_REDIS_URL;
+  const redis = /^redis:\/\//u.test(signalingUrl || '')
+    ? new Redis(signalingUrl, { lazyConnect: true, enableOfflineQueue: false, maxRetriesPerRequest: 1, retryStrategy: () => null })
+    : createRedisRestAdapter({ url: signalingUrl, token: process.env.WEBRTC_SIGNALING_REDIS_TOKEN });
+  if (redis instanceof Redis) {
+    redis.on('error', () => {});
+    await redis.connect();
+  }
+  const webRtcHandler = createVercelWebRtcSignalingHandler({
+    redis,
+    resolveShareToken: createDefaultWebRtcShareResolver(),
+    authorizeDevice: createDefaultWebRtcDeviceAuthorizer(),
+    iceServers: parseWebRtcIceServersJson(process.env.WEBRTC_ICE_SERVERS_JSON)
+  });
+  const server = http.createServer((req, res) => routeNodeRequest(req, res, { webRtcHandler, applicationHandler: handleRequest }));
   attachExecutionEventsWebSocket({
     server,
     accessControl: globalAccessControl,
@@ -4853,8 +4543,15 @@ if (IS_MAIN) {
     process.once(signal, () => {
       stopTranslationExecutionWorkerRuntime();
       server.close(() => {
+        if (redis instanceof Redis) redis.disconnect();
         process.exit(0);
       });
     });
   }
+}
+
+export function routeNodeRequest(req, res, { webRtcHandler, applicationHandler }) {
+  return /^\/api\/webrtc(?:\/|$)/u.test(new URL(req.url, 'http://localhost').pathname)
+    ? webRtcHandler(req, res)
+    : applicationHandler(req, res);
 }

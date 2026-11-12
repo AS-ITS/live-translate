@@ -25,6 +25,11 @@ async function openViewer(page, { code, fullscreenApi = 'native', cues = default
       source?.onerror?.(new Event('error'));
       source?.onopen?.(new Event('open'));
     };
+    window.__emitViewerCue = (payload) => {
+      MockEventSource.instances.at(-1)?.dispatchEvent(new MessageEvent('cue.append', {
+        data: JSON.stringify(payload)
+      }));
+    };
 
     if (mode === 'unsupported') {
       Object.defineProperty(Element.prototype, 'requestFullscreen', { configurable: true, value: undefined });
@@ -72,6 +77,69 @@ async function scrollViewerUp(viewport) {
     node.dispatchEvent(new Event('scroll', { bubbles: true }));
   });
 }
+
+test('Viewer subtitle size updates immediately, persists, and preserves history mode', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await openViewer(page, {
+    code: 'FONT-SIZE',
+    fullscreenApi: 'unsupported',
+    cues: defaultCues(30)
+  });
+
+  const shell = page.getByTestId('viewer-fullscreen-shell');
+  const viewport = page.getByTestId('meeting-viewer-cue-viewport');
+  const source = page.locator('.viewer-cue-source p').first();
+  const translation = page.locator('.viewer-cue-translation p').first();
+
+  await expect(shell).toHaveAttribute('data-subtitle-font-size', 'medium');
+  await expect(source).toHaveCSS('font-size', '36px');
+  await expect(translation).toHaveCSS('font-size', '36px');
+
+  await scrollViewerUp(viewport);
+  await expect(page.getByTestId('viewer-follow-latest-button')).toBeVisible();
+  await page.getByTestId('viewer-font-size-large').click();
+
+  await expect(shell).toHaveAttribute('data-subtitle-font-size', 'large');
+  await expect(source).toHaveCSS('font-size', '52px');
+  await expect(translation).toHaveCSS('font-size', '52px');
+  await expect(page.getByTestId('viewer-follow-latest-button')).toBeVisible();
+  await expect.poll(() => viewport.evaluate((node) => (
+    node.scrollTop < node.scrollHeight - node.clientHeight
+  ))).toBe(true);
+
+  await page.evaluate(() => window.__emitViewerCue({
+    eventId: 31,
+    type: 'cue.append',
+    cue: {
+      cueId: 'cue-31',
+      segmentId: 'segment-1',
+      segmentSequence: 1,
+      sequence: 31,
+      sourceText: '新同步原文',
+      translatedText: 'New synchronized translation',
+      sourceVersion: 1,
+      translationVersion: 1
+    }
+  }));
+  await expect(page.getByTestId('viewer-follow-latest-button')).toContainText('1 則新字幕');
+  await page.getByTestId('viewer-follow-latest-button').click();
+  await expect(page.getByText('New synchronized translation')).toHaveCSS('font-size', '52px');
+
+  await page.getByTestId('viewer-fullscreen-toggle').click();
+  await expect(shell).toHaveAttribute('data-fullscreen-mode', 'css');
+  await expect(shell).toHaveAttribute('data-subtitle-font-size', 'large');
+  await page.getByTestId('viewer-fullscreen-toggle').click();
+
+  await page.reload();
+  await expect(page.getByTestId('meeting-viewer-cue-viewport')).toBeVisible();
+  await expect(shell).toHaveAttribute('data-subtitle-font-size', 'large');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(() => page.evaluate(() => (
+    document.documentElement.scrollWidth <= document.documentElement.clientWidth
+  ))).toBe(true);
+  await expect.poll(() => viewport.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+});
 
 test('Viewer uses native Fullscreen API and exits through the same toggle', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile-webkit', 'iPhone Safari is covered by the CSS fullscreen fallback test.');

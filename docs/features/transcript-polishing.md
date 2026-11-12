@@ -72,8 +72,9 @@ the provider model remains server-controlled by `TRANSCRIPT_POLISHING_MODEL`.
 
 Live and history views keep the existing content types:
 
-- `rawSource` and `rawTranslation` are the canonical audit/recovery values.
+- `rawSource` and `rawTranslation` are the canonical audit/recovery values. Background `cue_translation` outputs remain in translation history unless a newer Live event with matching turn provenance authorizes a Final Cue update.
 - `refinedSource` and `refinedTranslation` are optional effective values.
+- Dictionary correction of an asynchronous refinement may update `refinedTranslation`; it must not rewrite a committed Cue's `initialTranslation` without a newer Live translation event.
 - A Cue's `refinement` object stores status, version, input hash, execution
   identity, timestamps, and safe failure metadata.
 - `polishedArticle` is derived from effective finalized Cue values.

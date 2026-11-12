@@ -30,7 +30,7 @@ export function LiveRecordingPage({ children, drawers = null, error = '', errorC
             <div className="error-message live-error-message">
               <AlertCircle className="live-error-icon" size={18} aria-hidden="true" />
               <p role="alert">{error}</p>
-              {status === 'error' && onRetry ? (
+              {['error', 'provider-recovery-failed'].includes(status) && onRetry ? (
                 <button className="inline-retry live-error-retry" type="button" onClick={onRetry}>
                   重試
                 </button>

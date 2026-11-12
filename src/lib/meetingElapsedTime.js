@@ -5,6 +5,40 @@ export function meetingElapsedMs(startedAt, now = Date.now()) {
   return Math.max(0, nowMs - startedAtMs);
 }
 
+const timerKey = (meetingId) => `live-translate:meeting-timer:${meetingId}`;
+
+export function readMeetingTimerStart(meetingId) {
+  if (!meetingId) return null;
+  try {
+    const value = JSON.parse(globalThis.sessionStorage.getItem(timerKey(meetingId)));
+    return value?.meetingId === meetingId && Number.isFinite(value.startedAt)
+      ? value.startedAt : null;
+  } catch {
+    return null;
+  }
+}
+
+export function startMeetingTimer(meetingId, now = Date.now()) {
+  if (!meetingId || !Number.isFinite(now)) return null;
+  const existing = readMeetingTimerStart(meetingId);
+  if (existing !== null) return existing;
+  try {
+    globalThis.sessionStorage.setItem(timerKey(meetingId), JSON.stringify({ meetingId, startedAt: now }));
+    return now;
+  } catch {
+    return null;
+  }
+}
+
+export function clearMeetingTimer(meetingId) {
+  if (!meetingId) return;
+  try {
+    globalThis.sessionStorage.removeItem(timerKey(meetingId));
+  } catch {
+    // The timer is optional UI state.
+  }
+}
+
 export function formatMeetingElapsed(elapsedMs) {
   if (!Number.isFinite(elapsedMs)) return '00:00:00';
   const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));

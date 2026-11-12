@@ -1,14 +1,47 @@
 const STREAMS = new Set(['source', 'translation']);
 const DEFAULT_MINIMUM_GAP_MS = 1;
 const DEFAULT_MINIMUM_CUE_DURATION_MS = 300;
-const DEFAULT_ADJACENT_CUE_MAX_GAP_MS = 1200;
-const DEFAULT_MAX_CUE_TEXT_LENGTH = 120;
 export const DEFAULT_TURN_COMPLETE_DEBOUNCE_MS = 700;
 export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 5000;
 export const DEFAULT_MAX_RETRANSLATION_ATTEMPTS = 2;
 export const MAX_PROCESSED_EVENT_IDS = 1024;
 import { cueRefinementInputHash } from './cueContent.js';
 import { isCumulativeSnapshot } from './cumulativeTranscript.js';
+
+export function durableUnassignedFinalCues(cues = []) {
+  return (Array.isArray(cues) ? cues : []).filter((cue) => (
+    cue?.status === 'final' && cue.segmentId == null
+    && typeof cue.cueId === 'string' && cue.cueId.trim()
+    && typeof cue.sessionId === 'string' && cue.sessionId.trim()
+    && Number.isSafeInteger(cue.sequence) && cue.sequence > 0
+    && Number.isSafeInteger(cue.revision) && cue.revision > 0
+    && Number.isFinite(cue.startTimeMs) && Number.isFinite(cue.endTimeMs)
+  ));
+}
+
+export function unassignedCuePersistenceChanges(previous, next) {
+  const previousCues = new Map(cuesInState(previous).map((cue) => [cue.cueId, cue]));
+  const nextCues = new Map(cuesInState(next).map((cue) => [cue.cueId, cue]));
+  const upserts = [...nextCues.values()].filter((cue) => cue.segmentId == null &&
+    JSON.stringify(previousCues.get(cue.cueId)) !== JSON.stringify(cue));
+  return { upserts, removals: [] };
+}
+
+export function nextCueSequenceFromRecords(initial = 1, ...groups) {
+  let next = Number.isSafeInteger(initial) && initial > 0 ? initial : 1;
+  for (const group of groups) {
+    for (const record of Array.isArray(group) ? group : [group]) {
+      const cue = record?.cue || record;
+      if (Number.isSafeInteger(cue?.sequence) && cue.sequence > 0) {
+        next = Math.max(next, cue.sequence + 1);
+      }
+      if (Number.isSafeInteger(record?.allocationFloor) && record.allocationFloor > 0) {
+        next = Math.max(next, record.allocationFloor);
+      }
+    }
+  }
+  return next;
+}
 
 export function createSubtitleCueState(input = {}) {
   const finalCues = Array.isArray(input.finalCues) ? input.finalCues.map(copyCue) : [];
@@ -31,14 +64,85 @@ export function createSubtitleCueState(input = {}) {
     lastFinalizedAtMs: Number.isFinite(input.lastFinalizedAtMs) ? input.lastFinalizedAtMs : null,
     lastFinalizedStream: input.lastFinalizedStream || null,
     lastFinalizedReason: input.lastFinalizedReason || null,
-    nextSequence: Number.isInteger(input.nextSequence) && input.nextSequence > 0 ? input.nextSequence : 1,
+    nextSequence: nextCueSequenceFromRecords(input.nextSequence, finalCues, pendingCues, input.currentCue),
     finalizedCueKeys: Array.isArray(input.finalizedCueKeys)
       ? [...input.finalizedCueKeys]
       : finalCues.map(stableCueKey),
+    recoveredCueIds: Array.isArray(input.recoveredCueIds) ? [...input.recoveredCueIds] : [],
+    retiredCues: Array.isArray(input.retiredCues) ? input.retiredCues.map(copyCue) : [],
     processedEventIds: Array.isArray(input.processedEventIds)
       ? input.processedEventIds.slice(-MAX_PROCESSED_EVENT_IDS)
       : []
   };
+}
+
+// The only revision allocator for accepted Cue-state transitions. Callers
+// commit synchronously against their latest state ref before persisting.
+export function commitSubtitleCueState(latest, proposed, { baseState = latest } = {}) {
+  if (baseState !== latest) return { accepted: false, state: latest };
+  if (proposed === latest) return { accepted: true, state: latest };
+  const previousCues = cuesInState(latest);
+  const previousById = new Map(previousCues.map((cue) => [cue.cueId, cue]));
+  const previousByAllocation = new Map(previousCues
+    .filter((cue) => cue.sessionId && Number.isInteger(cue.sequence))
+    .map((cue) => [`${cue.sessionId}\u0000${cue.sequence}`, cue]));
+  const revisedById = new Map();
+  const revise = (cue) => {
+    if (!cue?.cueId) return cue;
+    if (revisedById.has(cue.cueId)) return revisedById.get(cue.cueId);
+    const previous = previousById.get(cue.cueId);
+    const previousAllocation = previousByAllocation.get(`${cue.sessionId}\u0000${cue.sequence}`);
+    if (!previous && previousAllocation && previousAllocation.cueId !== cue.cueId) {
+      throw new Error('cue_identity_conflict');
+    }
+    if (previous && (previous.sessionId !== cue.sessionId || previous.sequence !== cue.sequence)) {
+      throw new Error('cue_identity_conflict');
+    }
+    const currentInputHash = previous?.status === 'final' && cue.status === 'final'
+      && (previous.refinement || cue.refinement) ? cueRefinementInputHash(cue) : null;
+    const resetRefinement = currentInputHash &&
+      cueRefinementInputHash(previous) !== currentInputHash &&
+      cue.refinement?.inputHash !== currentInputHash;
+    const acceptedCue = resetRefinement ? {
+      ...cue, refinedSource: null, refinedTranslation: null,
+      refinement: { status: 'pending', version: 1, inputHash: currentInputHash }
+    } : cue;
+    const revision = previous
+      ? sameCueSnapshot(previous, acceptedCue) ? previous.revision : (previous.revision || 0) + 1
+      : 1;
+    const revised = revision == null ? acceptedCue : { ...acceptedCue, revision };
+    revisedById.set(cue.cueId, revised);
+    return revised;
+  };
+  return {
+    accepted: true,
+    state: {
+      ...proposed,
+      finalCues: (proposed.finalCues || []).map(revise),
+      pendingCues: (proposed.pendingCues || []).map(revise),
+      currentCue: proposed.currentCue ? revise(proposed.currentCue) : null,
+      retiredCues: (proposed.retiredCues || []).map(revise)
+    }
+  };
+}
+
+function cuesInState(state) {
+  return [...(state?.finalCues || []), ...(state?.pendingCues || []), state?.currentCue,
+    ...(state?.retiredCues || [])].filter(Boolean);
+}
+
+function sameCueSnapshot(left, right) {
+  const canonical = (value, root = false) => {
+    if (Array.isArray(value)) return value.map((item) => canonical(item));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.keys(value).sort()
+        .filter((key) => (!root || key !== 'revision')
+          && value[key] !== undefined && typeof value[key] !== 'function')
+        .map((key) => [key, canonical(value[key])]));
+    }
+    return value;
+  };
+  return JSON.stringify(canonical(left, true)) === JSON.stringify(canonical(right, true));
 }
 
 export function resetSubtitleCueState() {
@@ -69,6 +173,10 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
   const state = createSubtitleCueState(stateInput);
   const event = normalizeEvent(eventInput, { ...options, finalCues: state.finalCues });
   if (!event) return stateInput;
+  if (event.stream && !event.segmentId && !(event.sessionId || event.liveSessionId)) {
+    options.onDrop?.({ event, reason: 'unassigned_cue_missing_session_identity' });
+    return stateInput;
+  }
   if (state.processedEventIds.includes(event.eventId)) return stateInput;
 
   const marked = markEventProcessed(state, event.eventId);
@@ -289,7 +397,7 @@ function normalizeEvent(event, options) {
     generationComplete: Boolean(event.generationComplete),
     sessionId: event.sessionId || options.sessionId || null,
     liveSessionId: event.liveSessionId || options.liveSessionId || null,
-    segmentId: event.segmentId || options.segmentId || null,
+    segmentId: event.segmentId || null,
     turnIndex: event.turnIndex ?? options.turnIndex ?? null
   };
 }
@@ -314,12 +422,15 @@ export function dismissSubtitleCue(stateInput, cueId) {
   const state = createSubtitleCueState(stateInput);
   if (!cueId) return stateInput;
   if (state.currentCue?.cueId === cueId) {
-    return { ...state, currentCue: null };
+    return { ...state, currentCue: null,
+      retiredCues: [...state.retiredCues, { ...state.currentCue, dismissed: true }] };
   }
   const pendingCues = state.pendingCues.filter((cue) => cue.cueId !== cueId);
   return pendingCues.length === state.pendingCues.length
     ? stateInput
-    : { ...state, pendingCues };
+    : { ...state, pendingCues,
+      retiredCues: [...state.retiredCues,
+        ...state.pendingCues.filter((cue) => cue.cueId === cueId).map((cue) => ({ ...cue, dismissed: true }))] };
 }
 
 function applyBoundary(state, event, options) {
@@ -384,10 +495,12 @@ function moveCueToNextState(state, current, event) {
 }
 
 function findPairingCue(state, event) {
-  if (state.currentCue && cueCanAcceptCurrentCue(state.currentCue, event)) {
+  if (state.currentCue && !state.recoveredCueIds.includes(state.currentCue.cueId)
+    && cueCanAcceptCurrentCue(state.currentCue, event)) {
     return { key: 'current', cue: state.currentCue };
   }
-  const index = state.pendingCues.findIndex((cue) => cueCanAccept(cue, event));
+  const index = state.pendingCues.findIndex((cue) =>
+    !state.recoveredCueIds.includes(cue.cueId) && cueCanAccept(cue, event));
   return index >= 0 ? { key: `pending:${index}`, cue: state.pendingCues[index] } : null;
 }
 
@@ -425,6 +538,7 @@ function findSameAudioTurnFinalCue(state, event, options = {}) {
   if (!eventIdentity) return null;
   for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
     const cue = state.finalCues[index];
+    if (state.recoveredCueIds.includes(cue.cueId)) continue;
     if (turnIdentityFor(cue) !== eventIdentity
       || !cueScopeMatchesEvent(cue, event)) continue;
     if (!isWithinFinalRevisionWindow(state, cue, event, options)
@@ -482,6 +596,7 @@ function latestSameTurnFinalCue(state, event) {
   if (!eventIdentity) return null;
   for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
     const cue = state.finalCues[index];
+    if (state.recoveredCueIds.includes(cue.cueId)) continue;
     if (turnIdentityFor(cue) === eventIdentity && cueScopeMatchesEvent(cue, event)) return cue;
   }
   return null;
@@ -498,7 +613,9 @@ function isLocalTerminalReplay(currentText, event) {
 function findNumericCorrectionCue(state, event) {
   if (!event.retranslationCueId || event.stream !== 'translation') return null;
   const index = state.finalCues.findIndex((cue) => cue.cueId === event.retranslationCueId);
-  return index >= 0 ? { index, cue: state.finalCues[index], replace: true } : null;
+  return index >= 0 && cueScopeMatchesEvent(state.finalCues[index], event)
+    ? { index, cue: state.finalCues[index], replace: true }
+    : null;
 }
 
 function isWithinFinalRevisionWindow(state, cue, event, options = {}) {
@@ -534,7 +651,8 @@ function findIdentitylessLateTarget(state, event, options = {}) {
   const finalCandidates = state.finalCues
     .map((cue, index) => ({ key: 'final', target: { index, cue } }))
     .filter(({ target }) => (
-      cueScopeMatchesEvent(target.cue, event)
+      !state.recoveredCueIds.includes(target.cue.cueId)
+      && cueScopeMatchesEvent(target.cue, event)
       && normalizeText(target.cue[field]) === incomingText
       && isWithinFinalRevisionWindow(state, target.cue, event, options)
     ));
@@ -545,6 +663,7 @@ function findIdentitylessLateTarget(state, event, options = {}) {
 function findLateCounterpartCue(state, event) {
   for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
     const cue = state.finalCues[index];
+    if (state.recoveredCueIds.includes(cue.cueId)) continue;
     const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
     if (normalizeText(cue[field])) continue;
     if (!cueScopeMatchesEvent(cue, event)) continue;
@@ -556,6 +675,7 @@ function findLateCounterpartCue(state, event) {
 }
 
 function cueScopeMatchesEvent(cue, event) {
+  if ((cue.segmentId || null) !== (event.segmentId || null)) return false;
   return ['sessionId', 'liveSessionId', 'segmentId'].every((field) => (
     !event[field] || !cue[field] || event[field] === cue[field]
   ));
@@ -662,6 +782,12 @@ function updateFinalCue(state, target, event) {
     providerEventSequence: Number.isFinite(event.eventSequence)
       ? event.eventSequence
       : target.cue.providerEventSequence,
+      providerEpoch: event.providerEpoch ?? target.cue.providerEpoch,
+      connectionEpoch: event.connectionEpoch ?? target.cue.connectionEpoch,
+      providerEventId: event.providerEventId ?? target.cue.providerEventId,
+      eventId: event.eventId ?? target.cue.eventId,
+      ...(event.stream === 'source' ? { sourceProvenance: cueEventProvenance(event) }
+        : event.stream === 'translation' ? { translationProvenance: cueEventProvenance(event) } : {}),
     finalizedReason: target.replace ? 'numeric-correction' : 'merged',
     ...(target.replace ? { numericCorrectionRequested: false } : {})
   };
@@ -776,6 +902,12 @@ function addCue(state, event) {
     ...(event.audioTurnId ? { audioTurnId: event.audioTurnId } : {}),
     updatedTimeMs: event.sessionTimeMs,
     providerEventSequence: Number.isFinite(event.eventSequence) ? event.eventSequence : null,
+    providerEpoch: event.providerEpoch ?? null,
+    connectionEpoch: event.connectionEpoch ?? null,
+    providerEventId: event.providerEventId ?? null,
+    eventId: event.eventId ?? null,
+    ...(event.stream === 'source' ? { sourceProvenance: cueEventProvenance(event) }
+      : event.stream === 'translation' ? { translationProvenance: cueEventProvenance(event) } : {}),
     boundaryAtMs: event.turnComplete || event.generationComplete
       ? event.sessionTimeMs
       : state.pendingBoundaryAtMs,
@@ -831,6 +963,12 @@ function updateCue(state, target, event) {
     providerEventSequence: Number.isFinite(event.eventSequence)
       ? event.eventSequence
       : cue.providerEventSequence,
+    providerEpoch: event.providerEpoch ?? cue.providerEpoch,
+    connectionEpoch: event.connectionEpoch ?? cue.connectionEpoch,
+    providerEventId: event.providerEventId ?? cue.providerEventId,
+    eventId: event.eventId ?? cue.eventId,
+    ...(event.stream === 'source' ? { sourceProvenance: cueEventProvenance(event) }
+      : event.stream === 'translation' ? { translationProvenance: cueEventProvenance(event) } : {}),
     status: 'partial',
     ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
     ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
@@ -926,27 +1064,6 @@ function finalizeCue(state, cue, options = {}) {
     status: 'final', startTimeMs, endTimeMs,
     finalizedReason: reason || 'final'
   };
-  const previousCue = state.finalCues.at(-1);
-  const mergedCue = mergeAdjacentFinalCues(previousCue, finalCue, {
-    ...options,
-    observedEndTimeMs
-  });
-  if (mergedCue) {
-    const previousKey = stableCueKey(previousCue);
-    const mergedKey = stableCueKey(mergedCue);
-    return {
-      ...state,
-      finalCues: [...state.finalCues.slice(0, -1), mergedCue],
-      finalizedCueKeys: [...new Set([...state.finalizedCueKeys, previousKey, stableCueKey(finalCue), mergedKey])],
-      nextSequence: Math.max(state.nextSequence, cue.sequence + 1),
-      lastFinalizedCueId: mergedCue.cueId,
-      lastFinalizedAtMs: Number.isFinite(nowMs) ? nowMs : mergedCue.endTimeMs,
-      lastFinalizedStream: options.stream || null,
-      lastFinalizedReason: mergedCue.finalizedReason,
-      currentCue: state.currentCue?.cueId === cue.cueId ? null : state.currentCue,
-      pendingCues: state.pendingCues.filter((item) => item.cueId !== cue.cueId)
-    };
-  }
   const cueKey = stableCueKey(finalCue);
   let next = {
     ...state,
@@ -973,70 +1090,12 @@ function finalizeCue(state, cue, options = {}) {
   return { ...next, pendingCues: next.pendingCues.filter((item) => item.cueId !== cue.cueId) };
 }
 
-function mergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
-  if (!previousCue || !canMergeAdjacentFinalCues(previousCue, nextCue, options)) return null;
-  const sourceText = mergeCueText(previousCue.sourceText, nextCue.sourceText);
-  const translatedText = mergeCueText(previousCue.translatedText, nextCue.translatedText);
-  return {
-    ...previousCue,
-    sourceText,
-    translatedText,
-    sourceStatus: 'finalized',
-    translationStatus: 'finalized',
-    sourceVersion: nextSideVersion(previousCue.sourceVersion, previousCue.sourceText, sourceText),
-    translationVersion: nextSideVersion(previousCue.translationVersion, previousCue.translatedText, translatedText),
-    rawSource: mergeCueText(previousCue.rawSource || previousCue.sourceText, nextCue.rawSource || nextCue.sourceText),
-    rawTranslation: mergeCueText(previousCue.rawTranslation || previousCue.translatedText, nextCue.rawTranslation || nextCue.translatedText),
-    refinedSource: null,
-    refinedTranslation: null,
-    refinement: { status: 'pending', version: 1, inputHash: cueRefinementInputHash({
-      cueId: previousCue.cueId,
-      sequence: previousCue.sequence,
-      rawSource: mergeCueText(previousCue.rawSource || previousCue.sourceText, nextCue.rawSource || nextCue.sourceText),
-      rawTranslation: mergeCueText(previousCue.rawTranslation || previousCue.translatedText, nextCue.rawTranslation || nextCue.translatedText)
-    }) },
-    endTimeMs: Math.max(previousCue.endTimeMs, options.observedEndTimeMs || nextCue.endTimeMs),
-    updatedTimeMs: Math.max(previousCue.updatedTimeMs || 0, nextCue.updatedTimeMs || 0),
-    finalizedReason: nextCue.finalizedReason === 'length' ? 'length' : 'merged'
-  };
-}
-
-function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
-  if (previousCue.status !== 'final' || nextCue.status !== 'final') return false;
-  if (previousCue.finalizedReason === 'length' || nextCue.finalizedReason === 'length') return false;
-  if (previousCue.sessionId && nextCue.sessionId && previousCue.sessionId !== nextCue.sessionId) return false;
-  if (previousCue.liveSessionId && nextCue.liveSessionId && previousCue.liveSessionId !== nextCue.liveSessionId) return false;
-  if (previousCue.segmentId && nextCue.segmentId && previousCue.segmentId !== nextCue.segmentId) return false;
-  if (previousCue.audioTurnId && nextCue.audioTurnId && previousCue.audioTurnId !== nextCue.audioTurnId) return false;
-  if (previousCue.sourceText === nextCue.sourceText && previousCue.translatedText === nextCue.translatedText) return false;
-  if (endsSentence(previousCue.sourceText) || endsSentence(previousCue.translatedText)) return false;
-  const adjacentTexts = [previousCue.sourceText, previousCue.translatedText, nextCue.sourceText, nextCue.translatedText];
-  if (!adjacentTexts.some(endsFragment) && !adjacentTexts.some(isNumericFragment)) return false;
-
-  const gapMs = Math.max(0, nextCue.startTimeMs - previousCue.endTimeMs);
-  if (gapMs > DEFAULT_ADJACENT_CUE_MAX_GAP_MS) return false;
-
-  const sourceText = mergeCueText(previousCue.sourceText, nextCue.sourceText);
-  const translatedText = mergeCueText(previousCue.translatedText, nextCue.translatedText);
-  const maxLength = DEFAULT_MAX_CUE_TEXT_LENGTH;
-  // Prefer a complete sentence over provider turn boundaries. The length cap
-  // is only a safety valve so an absent punctuation event cannot grow one Cue
-  // without limit.
-  return Boolean(sourceText && translatedText)
-    && sourceText.length <= maxLength
-    && translatedText.length <= maxLength;
-}
-
 function containsCjk(text) {
   return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text);
 }
 
 function endsFragment(text) {
   return /[,，、:：;；]/u.test(normalizeText(text));
-}
-
-function isNumericFragment(text) {
-  return /^\d[\d\s]*$/u.test(normalizeText(text));
 }
 
 function endsSentence(text) {
@@ -1131,4 +1190,15 @@ function normalizeText(text) { return String(text || '').replace(/\s+/gu, ' ').t
 function stablePendingKey(cue) { return cue.cueId || stableCueKey(cue); }
 function stableCueKey(cue) { return [cue.sessionId || cue.liveSessionId || '', cue.segmentId || '', cue.sequence, cue.startTimeMs, cue.sourceText, cue.translatedText].join('|'); }
 function cueIdFor({ sessionId, segmentId, sequence }) { return ['cue', sessionId, segmentId, sequence].filter(Boolean).join(':'); }
+function cueEventProvenance(event) {
+  return {
+    audioTurnId: event.audioTurnId ?? null,
+    turnKey: event.turnKey ?? null,
+    providerEventId: event.providerEventId ?? null,
+    eventId: event.eventId ?? null,
+    connectionEpoch: event.connectionEpoch ?? null,
+    providerEpoch: event.providerEpoch ?? null,
+    eventSequence: event.eventSequence ?? null
+  };
+}
 function copyCue(cue) { return { ...cue }; }

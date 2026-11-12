@@ -16,6 +16,7 @@ const PROTECTED_TOKEN = /https?:\/\/[^\s]+|www\.[^\s]+|[\w.+-]+@[\w.-]+\.[A-Za-z
 const WORD_TOKEN = /[\p{L}\p{N}_]+(?:['’.-][\p{L}\p{N}_]+)*/u;
 const CJK_TOKEN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 import { effectiveSourceForCue, effectiveTranslationForCue } from './cueContent.js';
+import { projectAdjacentFinalCues } from './adjacentCueProjection.js';
 
 export function normalizeExportableCues(cues = [], options = {}) {
   const stream = normalizeStream(options.stream);
@@ -132,7 +133,7 @@ export function formatVttTimestamp(milliseconds) {
 
 export function exportCuesToTxt(cues, options = {}) {
   const stream = normalizeStream(options.stream);
-  const normalized = normalizeCueTimeline(normalizeExportableCues(cues, { ...options, stream }), options);
+ const normalized = normalizeCueTimeline(projectAdjacentFinalCues(normalizeExportableCues(cues, { ...options, stream }), { stream }), options);
   if (normalized.length === 0) throw exportError('No exportable subtitle cues.', 'subtitle_cue_empty');
 
   if (stream === 'both') {
@@ -159,7 +160,7 @@ export function canExportCues(cues, options = {}) {
   try {
     const stream = normalizeStream(options.stream);
     if ((options.format === 'srt' || options.format === 'vtt') && stream === 'both') return false;
-    const normalized = normalizeCueTimeline(normalizeExportableCues(cues, { ...options, stream }), options);
+ const normalized = normalizeCueTimeline(projectAdjacentFinalCues(normalizeExportableCues(cues, { ...options, stream }), { stream }), options);
     return normalized.length > 0;
   } catch {
     return false;
@@ -169,7 +170,7 @@ export function canExportCues(cues, options = {}) {
 function formatTimedCueExport(cues, options) {
   const stream = normalizeStream(options.stream);
   if (stream === 'both') throw new Error('SRT and VTT export support one subtitle stream at a time.');
-  const normalized = normalizeCueTimeline(normalizeExportableCues(cues, { ...options, stream }), options);
+ const normalized = normalizeCueTimeline(projectAdjacentFinalCues(normalizeExportableCues(cues, { ...options, stream }), { stream }), options);
   if (normalized.length === 0) throw exportError('No exportable subtitle cues.', 'subtitle_cue_empty');
   const blocks = normalized.map((cue, index) => {
     const text = wrapSubtitleText(textForStream(cue, stream, cue.__exportVariant), languageForStream(cue, stream), options);

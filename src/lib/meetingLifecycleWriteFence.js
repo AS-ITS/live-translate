@@ -12,6 +12,13 @@ export function meetingLifecycleWriteHeaders(meetingId, segmentId = null) {
   if (!activeFence || activeFence.meetingId !== meetingId) return {};
   const resolvedSegmentId = segmentId || activeFence.segmentId;
   if (!resolvedSegmentId || resolvedSegmentId !== activeFence.segmentId) return {};
+  if (activeFence.localOnly) {
+    return {
+      'x-host-local-recording': '1',
+      'x-meeting-session-id': activeFence.sessionId,
+      'x-meeting-segment-id': activeFence.segmentId
+    };
+  }
   return {
     'x-meeting-session-id': activeFence.sessionId,
     'x-meeting-segment-id': activeFence.segmentId,

@@ -57,8 +57,8 @@ jobs:
           tests/unit/meetingViewerRealtime.test.js
           tests/unit/meetingViewerState.test.js
 
-  long-meeting-soak:
-    name: Long meeting soak (Node ${{ matrix.node-version }})
+  local-only-contract:
+    name: Local-only contract (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -75,5 +75,12 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Run long meeting soak
-        run: node --test tests/integration/longMeetingSoak.integration.test.js
+      - name: Run Local-only meeting contracts
+        run: >-
+          node --test
+          tests/unit/localMeetingRecorder.test.js
+          tests/unit/localMeetingPersistence.test.js
+          tests/unit/localSegmentIntegrity.test.js
+          tests/unit/localMeetingOwnerAccess.test.js
+          tests/unit/issue41CloudZeroWriteContract.test.js
+          tests/unit/issue41OwnershipEvidence.test.js

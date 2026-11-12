@@ -1,34 +1,22 @@
-# WebRTC 正式流程與 Preview 驗證 Runbook
+# WebRTC Host／Viewer Preview 驗證 Runbook
 
-## 證據邊界
+## 版本與證據邊界
 
-正式錄音端與 Viewer 已接入 `subtitle-webrtc/v1` DataChannel fast path。自動化驗證涵蓋授權、participant heartbeat、snapshot、`cue.append`、`cue.update`、same-source replay、暫時斷線 grace、ICE restart、poll/snapshot retry、舊 epoch 隔離、重試耗盡、去重、清理與安全錯誤碼；跨網路、實機 candidate pair、TURN relay、錄音 gap 仍待人工驗證。
+本文件適用 Issue #41 整合後的 Host Local-only Meeting。早期 WebRTC PoC／Cloud Recording 時期的「Realtime／SSE fallback 依賴雲端 Cue 寫入」、「尚未完成本機錄製整合」與 checkpoint／cue 503 結論**只屬整合前歷史驗證**，不代表目前產品狀態。現行 Host 在 OPFS／IndexedDB 保存 PCM、音訊、Cue、Transcript、Checkpoint、Journal、Recovery；Supabase 僅保存 metadata、設定、字典、授權及必要協調 metadata。DataChannel ACK 不等於本機持久化成功。
 
-Realtime／SSE fallback 仍依賴既有雲端 cue 寫入。本輪沒有完成本機錄製整合，也沒有解決 checkpoint／cue 503，不得把 fallback 可用性或 DataChannel ACK 當成字幕已持久化證據。
+已通過的定向自動化測試涵蓋授權、participant heartbeat、snapshot、`cue.append`、`cue.update`、same-source replay、斷線 grace、ICE restart、poll／snapshot retry、舊 epoch 隔離、去重與清理；詳見 [TESTING](../TESTING.md#webrtc-正式流程)。這些是當時的測試結果，**尚未等同目前版本的跨網路 Safari 實機驗收**。RC-M1～RC-M6、Chrome／Safari 實機矩陣及 TURN candidate pair 仍按 [RC1 狀態](../TESTING.md#issue-41-rc1-acceptance-status-2026-11-09) 標示 `NOT_TESTED`／`BLOCKED`，不可由單元測試推定通過。
 
-## 正式使用者流程
+## 現行正式流程
 
-- 錄音端使用目前登入 JWT 與既有 `canRecordMeeting` 規則加入 `device`；不接受 Viewer code/token 取得錄製權限。
-- Viewer 從既有 `#viewer?code=` 或 `#viewer?token=` 分享連結自動解析 meetingId，participantId 由瀏覽器產生。
-- Device sidecar 失敗只更新分享狀態，不中止 Gemini session 或本機錄音。暫停、停止、離頁、重新啟動會關閉 PeerConnection、DataChannel、polling 與 reconnect timer。
-- Viewer 接收 snapshot、`cue.append`、`cue.update` 與 replay；cueId/version merge 防止 DataChannel 與 Realtime/SSE 重複新增。
-- `/webrtc-poc.html` 保留為工程測試頁，正式頁面沒有 meetingId、token、participantId 或 signaling URL 輸入欄位。
+1. Host 使用登入 JWT 與 `canRecordMeeting` 授權加入 `device`；Viewer code／token 不授予錄製權。Host 的字幕 Cue 由本機持久化路徑產生，WebRTC sidecar 以 DataChannel 發送 snapshot、append、update 與 replay。
+2. Viewer 從 `#viewer?code=` 或 `#viewer?token=` 分享連結解析 Meeting，瀏覽器產生 participantId；透過 `/api/webrtc/:meetingId` signaling 建立 PeerConnection／DataChannel，收到字幕後按 cueId／version 合併並去重。Viewer 不下載 Host 的 PCM、音訊或 Transcript。
+3. Sidecar 失敗更新分享狀態，不代表 Gemini session 或 Host 本機錄音自動停止。Pause、Stop、離頁與重新啟動須清理 PeerConnection、DataChannel、polling 與 reconnect timer；重新連線後查 snapshot／replay 是否補齊、不重複。
 
-## 授權與 signaling contract
+工程 `/webrtc-poc.html` 僅供本機 Vite 開發驗證，Preview／Production build 不包含該頁。signaling 端點 `POST /join`、`POST /signal`、`GET /signal`、`POST /leave`、`POST /stop` 的授權與狀態依現行 API；不要把 PoC 當成使用者流程。
 
-| 呼叫 | Device | Viewer |
-| --- | --- | --- |
-| `POST /join` | Bearer JWT + `{ participantId, role: "device" }` | `{ participantId, role: "viewer", shareCode }` 或 `shareToken` |
-| `POST /signal` | offer、ICE candidate | answer、ICE candidate |
-| `GET /signal` | 已加入 participant | 已加入 participant |
-| `POST /leave` | 清除自己的短期 signaling 狀態 | 清除自己的短期 signaling 狀態 |
-| `POST /stop` | 可撤銷該 meeting signaling | 固定拒絕 `revoke_forbidden` |
+## Preview signaling 設定
 
-Viewer code 走正式 `resolveCode()`／`short_code_hash`；opaque token 走 `resolveShare()`／`token_hash`。invalid、expired、revoked、meeting mismatch 固定拒絕；已完成或失敗的 meeting 回 `meeting_stopped`。錯誤回應與前端紀錄不得包含憑證。
-
-## Redis 設定格式
-
-Vercel signaling route 使用 Upstash HTTPS REST client：
+Vercel signaling 使用 Redis HTTPS REST：
 
 ```text
 WEBRTC_SIGNALING_REDIS_URL=https://<upstash-rest-host>
@@ -36,48 +24,20 @@ WEBRTC_SIGNALING_REDIS_TOKEN=<upstash-rest-token>
 WEBRTC_ICE_SERVERS_JSON=[{"urls":["stun:stun.example.com:3478"]},{"urls":["turns:turn.example.com:5349"],"username":"<short-lived-user>","credential":"<short-lived-credential>"}]
 ```
 
-保留的 Relay core 使用 ioredis 時必須使用另一組連線設定：
+保留的 Relay core 使用 ioredis 時才使用 `WEBRTC_RELAY_REDIS_URL=rediss://:<password>@<redis-host>:<port>`；不可互換 REST 與 ioredis 連線值。`WEBRTC_ICE_SERVERS_JSON` 僅設於 server，僅接受 `stun:`、`stuns:`、`turn:`、`turns:` URL。未配置並實測 TURN 前，跨網路恢復維持未驗證。
+
+## Preview 與一對一實機驗收
+
+Preview 使用 `npm run deploy:preview`（`vercel deploy --yes` 與 preflight），不使用 `--prebuilt`。部署後的 Host／Viewer 路徑：
 
 ```text
-WEBRTC_RELAY_REDIS_URL=rediss://:<password>@<redis-host>:<port>
+Host:   https://<preview-host>/#live?meetingId=<meeting-id>
+Viewer: https://<preview-host>/#viewer?code=<share-code>
 ```
 
-不得把 REST URL/token 傳給 ioredis，也不得把 `rediss://` 傳給 REST adapter。`WEBRTC_ICE_SERVERS_JSON` 是 server-only 設定，只接受 `stun:`、`stuns:`、`turn:`、`turns:` URL；格式錯誤會拒絕啟動 signaling，且不得把 TURN credential 寫入日誌。跨 NAT 或 Wi-Fi／行動網路切換需要可達的 TURN，建議至少提供 `turns:` TLS 端點與短效 credential。未配置並實測 TURN 前，不得宣稱跨網路恢復已完整驗證。
+1. Host 登入 Preview，從可錄製 Meeting 按「開始錄音」，核對本機錄音與字幕分享狀態；Viewer 於第二裝置、另一網路以分享連結加入，不輸入技術欄位。
+2. 說兩段內容，確認 Viewer snapshot、append 與同 cueId update；斷網 30 秒後恢復，再測鎖屏／回前景和 Wi-Fi／行動網路切換，確認 replay 無遺漏或重複。
+3. Host 執行 Pause／Continue、provider reconnect／rollover、End；核對 Viewer 狀態與本機 Cue／Checkpoint／Journal 回讀。Expired／revoked share 應顯示失效且停止 retry。各步記錄裝置、OS、瀏覽器版本、時間與去識別證據；未執行仍為 `NOT_TESTED`。
+4. 在 Host 與 Viewer 的 DevTools 各執行 `await window.__liveTranslateWebRtcGetStats()`，保存 selected／nominated candidate pair 的去敏 JSON。任一側 candidate type 為 `relay` 才可記 TURN；缺不同網路端點或候選證據時保持待驗證。Safari 實機需獨立執行及判定，不可用 mobile WebKit 自動化結果替代。
 
-## Preview 部署
-
-本專案沿用 feature branch push 觸發 Vercel Preview，不使用 `--prebuilt`。若之後改用 `--prebuilt`，順序固定為 `vercel pull --environment=preview`、`vercel build`、確認 `.vercel/output`，最後才可 `vercel deploy --prebuilt`。
-
-部署後網址：
-
-```text
-正式錄音端：https://<preview-host>/#live?meetingId=<meeting-id>
-正式 Viewer：https://<preview-host>/#viewer?code=<share-code>
-工程 POC：https://<preview-host>/webrtc-poc.html
-```
-
-合法分享 code/token 只在瀏覽器操作，不貼入 issue、公開日誌、截圖標題或報告。
-
-## 一對一實機驗收
-
-1. Device 端登入 Preview，從會議頁選取可錄製 meeting，按「開始錄音」。確認本機錄音持續，詳細狀態出現「字幕分享：連線中／已連線」。
-2. Viewer 在另一個網路開啟既有分享連結，不填任何技術欄位。確認依序顯示「連線中／等待錄音開始／已連線」。
-3. 說出兩段內容，確認 Viewer 收到 snapshot、append；再觸發修正文句，確認同 cueId 更新且沒有重複列。
-4. Viewer 斷網 30 秒後恢復，再測試鎖屏／回前景與 Wi-Fi/4G 切換事件。確認既有字幕保留，狀態依序顯示「正在重新連線」與三秒「已恢復連線」，replay/snapshot 後 Cue 不重複。若六次自動重連用盡，按「重新連線」。
-5. Device 執行 pause/resume 與 provider reconnect/rollover，確認 Viewer 透過 snapshot/replay 補齊且不清空既有 Cue。
-6. Device 結束錄音，確認 Viewer 顯示「會議已停止」。另用 expired/revoked code 驗證「分享已失效」，且不再發出 snapshot、heartbeat 或 fallback retry。
-
-## `getStats()` 證據
-
-在 Device 與 Viewer 各自的 DevTools Console 執行以下命令並保存 JSON。函式只回傳 candidate-pair 欄位，不包含 JWT 或分享憑證：
-
-```js
-const rows = await window.__liveTranslateWebRtcGetStats();
-console.log(JSON.stringify(rows, null, 2));
-```
-
-local/remote 都是 `host`、`srflx` 或 `prflx` 才記為 direct；任一側是 `relay` 才記為 TURN。沒有兩個不同網路端點及 selected/nominated JSON 時，跨網路與 direct/TURN 狀態維持待驗證。
-
-## 文件核對事項
-
-LAR-44～LAR-51 原文尚未取得，只列為後續文件核對事項，不宣稱已完整對照。這不影響已完成的正式 resolver、Device canRecord、sidecar 與 Viewer 接線。
+不得在 issue、截圖標題或報告揭露 share code／token、JWT、TURN credential 或 API key。LAR-44～LAR-51 原文尚未取得，僅列為後續文件核對事項，不宣稱已逐項對照。

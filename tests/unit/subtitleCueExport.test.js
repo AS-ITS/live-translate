@@ -11,6 +11,7 @@ import {
   wrapSubtitleText
 } from '../../src/lib/subtitleCueExport.js';
 import { cueListForDisplay } from '../../src/lib/cueUi.js';
+import { cueRefinementInputHash } from '../../src/lib/cueContent.js';
 
 const cue = (overrides = {}) => ({
   cueId: 'cue-1',
@@ -153,7 +154,11 @@ test('source and translation exports preserve the same Cue timeline', () => {
 });
 
 test('refined export is default and raw export remains explicit', () => {
-  const refinedCue = cue({ rawSource: 'raw source', rawTranslation: 'raw translation', refinedSource: 'refined source', refinedTranslation: 'refined translation' });
+  const refinedCue = cue({ rawSource: 'raw source', rawTranslation: 'raw translation',
+    initialTranslation: 'raw translation', translationVersion: 1,
+    translationProvenance: { connectionEpoch: 1, providerEpoch: 1, eventSequence: 1 },
+    refinedSource: 'refined source', refinedTranslation: 'refined translation' });
+  refinedCue.refinement = { status: 'completed', version: 1, inputHash: cueRefinementInputHash(refinedCue) };
   assert.equal(exportCuesToTxt([refinedCue], { stream: 'translation' }), 'refined translation\n');
   assert.equal(exportCuesToTxt([refinedCue], { stream: 'translation', variant: 'raw' }), 'raw translation\n');
 });

@@ -1,12 +1,16 @@
 import { Meeting, MeetingSegment } from '../domain/meeting/index.js';
 import { MEETING_REPOSITORY_METHODS } from '../domain/meeting/meetingRepository.js';
 import { currentRequestOwnerId, currentRequestUserId } from '../../server/requestIdentity.js';
-import { eq } from './supabaseRestClient.js';
+import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
 import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
 import { compareViewerCues, encodeViewerCursor } from '../lib/meetingViewerPagination.js';
 
+const MEETING_METADATA_COLUMNS = 'id,owner_user_id,name,source_language_code,target_language_code,status,created_at,started_at,ended_at,updated_at,settings,lifecycle_contract_version,lifecycle_version,purge_at,retention_policy_version,purge_status';
+const SEGMENT_METADATA_COLUMNS = 'id,owner_user_id,meeting_id,session_id,sequence,status,started_at,ended_at,live_session_id,created_at,updated_at,lifecycle_contract_version';
+
 export function createSupabaseMeetingRepository(options = {}) {
   const clientForRequest = createSupabaseRequestClient(options);
+  const privileged = createSupabaseServiceRoleClient(options);
   const client = {
     request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args),
     rpc: (...args) => requireSupabaseRequestClient(clientForRequest).rpc(...args)
@@ -20,19 +24,22 @@ export function createSupabaseMeetingRepository(options = {}) {
   const repository = {
     async createMeeting(input) {
       const entity = new Meeting(input);
-      const rows = await client.request('meetings', { method: 'POST', body: [meetingRow(entity, owner())] });
+      const rows = await client.request('meetings', { method: 'POST', query: `?select=${MEETING_METADATA_COLUMNS}`, body: [meetingRow(entity, owner())] });
       return meetingFromRow(rows[0]);
     },
     async createMeetingWithInitialSegment({ meeting, segment }) {
       const ownerUserId = owner();
       const meetingEntity = new Meeting({ ...meeting, ownerUserId });
-      const segmentEntity = new MeetingSegment({ ...segment, meetingId: meetingEntity.id, ownerUserId });
+      const isLifecycleV2Creation = meetingEntity.lifecycleContractVersion === 2 && segment === null;
+      const segmentEntity = isLifecycleV2Creation
+        ? null
+        : new MeetingSegment({ ...segment, meetingId: meetingEntity.id, ownerUserId });
       const result = await client.rpc('create_meeting_with_initial_segment', {
         p_meeting: meetingRow(meetingEntity, ownerUserId),
-        p_segment: segmentRow(segmentEntity, ownerUserId)
+        p_segment: segmentEntity ? segmentRow(segmentEntity, ownerUserId) : null
       });
       const payload = Array.isArray(result) ? result[0] : result;
-      if (!payload?.meeting || !payload?.segment) {
+      if (!payload?.meeting || (isLifecycleV2Creation ? payload.segment !== null : !payload.segment)) {
         const error = new Error('Supabase meeting creation RPC returned an invalid result.');
         error.code = 'supabase_request_failed';
         error.status = 503;
@@ -40,29 +47,73 @@ export function createSupabaseMeetingRepository(options = {}) {
       }
       return {
         meeting: meetingFromRow(payload.meeting),
-        segment: await hydrateSegment(client, payload.segment, ownerUserId)
+        segment: payload.segment ? await hydrateSegment(client, payload.segment, ownerUserId) : null
       };
     },
     async getMeeting(id) {
-      const rows = await client.request('meetings', { query: `?select=*&${eq('id', id)}&${eq('owner_user_id', owner())}` });
+      const rows = await client.request('meetings', { query: `?select=${MEETING_METADATA_COLUMNS}&${eq('id', id)}&${eq('owner_user_id', owner())}` });
+      return rows[0] ? meetingFromRow(rows[0]) : null;
+    },
+    async getMeetingMetadata(id) {
+      const rows = await client.request('meetings', {
+        query: `?select=id,owner_user_id,name,status,source_language_code,target_language_code,lifecycle_contract_version,lifecycle_version,started_at,ended_at,purge_at,retention_policy_version,created_at,updated_at&${eq('id', id)}&${eq('owner_user_id', owner())}`
+      });
       return rows[0] ? meetingFromRow(rows[0]) : null;
     },
     async updateMeeting(input) {
       const entity = new Meeting(input);
-      const rows = await client.request('meetings', { method: 'PATCH', query: `?${eq('id', entity.id)}&${eq('owner_user_id', owner())}`, body: meetingRow(entity, owner()) });
+      const rows = await client.request('meetings', { method: 'PATCH', query: `?select=${MEETING_METADATA_COLUMNS}&${eq('id', entity.id)}&${eq('owner_user_id', owner())}`, body: meetingRow(entity, owner()) });
       return rows[0] ? meetingFromRow(rows[0]) : null;
+    },
+    async updateMeetingSettings(input) {
+      const entity = new Meeting(input);
+      let rows;
+      try {
+        rows = await client.request('meetings', {
+          method: 'PATCH',
+          query: `?select=${MEETING_METADATA_COLUMNS}&${eq('id', entity.id)}&${eq('owner_user_id', owner())}&status=neq.completed`,
+          body: {
+            name: entity.name,
+            source_language_code: entity.sourceLanguageCode,
+            target_language_code: entity.targetLanguageCode,
+            updated_at: toSupabaseTimestamp(entity.updatedAt),
+            settings: meetingRow(entity, owner()).settings
+          }
+        });
+      } catch (error) {
+        error.meetingPatchStage = 'database_write';
+        error.meetingPatchWriteStatus = error.supabaseStatus ? 'not_committed' : 'unknown';
+        throw error;
+      }
+      try {
+        return rows[0] ? meetingFromRow(rows[0]) : null;
+      } catch (error) {
+        error.meetingPatchStage = 'response_mapping';
+        error.meetingPatchWriteStatus = 'committed';
+        throw error;
+      }
+    },
+    async completeLocalMeeting(meetingId) {
+      if (!privileged) throw capabilityUnavailable();
+      const result = await privileged.rpc('complete_local_only_meeting', {
+        p_owner_user_id: owner(),
+        p_meeting_id: meetingId
+      });
+      const row = Array.isArray(result) ? result[0] : result;
+      return row ? meetingFromRow(row) : null;
     },
     async deleteMeeting(id) {
       const existing = await this.getMeeting(id);
       if (!existing) return null;
-      await client.request('meetings', { method: 'DELETE', query: `?${eq('id', id)}&${eq('owner_user_id', owner())}` });
+      if (!privileged) throw capabilityUnavailable();
+      await privileged.request('meetings', { method: 'DELETE', query: `?${eq('id', id)}&${eq('owner_user_id', owner())}` });
       return existing;
     },
     async listMeetings({ includeAll = false } = {}) {
       const ownerUserId = owner();
       const actorUserId = currentRequestUserId() || ownerUserId;
       if (includeAll) {
-        const rows = await client.request('meetings', { query: '?select=*&order=created_at.desc' });
+      const rows = await client.request('meetings', { query: `?select=${MEETING_METADATA_COLUMNS}&order=created_at.desc` });
         return rows.map(meetingFromRow);
       }
       const memberships = await client.request('meeting_members', {
@@ -70,32 +121,47 @@ export function createSupabaseMeetingRepository(options = {}) {
       });
       const meetingIds = memberships.map((item) => item.meeting_id).filter(Boolean);
       const query = meetingIds.length > 0
-        ? `?select=*&or=(owner_user_id.eq.${encodeURIComponent(ownerUserId)},id.in.(${meetingIds.map(encodeURIComponent).join(',')}))&order=created_at.desc`
-        : `?select=*&${eq('owner_user_id', ownerUserId)}&order=created_at.desc`;
+        ? `?select=${MEETING_METADATA_COLUMNS}&or=(owner_user_id.eq.${encodeURIComponent(ownerUserId)},id.in.(${meetingIds.map(encodeURIComponent).join(',')}))&order=created_at.desc`
+        : `?select=${MEETING_METADATA_COLUMNS}&${eq('owner_user_id', ownerUserId)}&order=created_at.desc`;
       const rows = await client.request('meetings', { query });
       return rows.map(meetingFromRow);
     },
     async createMeetingSegment(input) {
       const entity = new MeetingSegment(input);
-      const rows = await client.request('meeting_segments', { method: 'POST', body: [segmentRow(entity, owner())] });
-      await persistCues(client, entity, owner());
+      const rows = await client.request('meeting_segments', { method: 'POST', query: `?select=${SEGMENT_METADATA_COLUMNS}`, body: [segmentRow(entity, owner())] });
       return hydrateSegment(client, rows[0], owner());
     },
     async getMeetingSegment(id) {
-      const rows = await client.request('meeting_segments', { query: `?select=*&${eq('id', id)}&${eq('owner_user_id', owner())}` });
+      const rows = await client.request('meeting_segments', { query: `?select=${SEGMENT_METADATA_COLUMNS}&${eq('id', id)}&${eq('owner_user_id', owner())}` });
       if (!rows[0]) return null;
       const userId = owner();
       return hydrateSegment(client, rows[0], userId);
     },
     async listMeetingSegments(meetingId, explicitOwnerUserId = null) {
       const userId = explicitOwnerUserId || owner();
-      const rows = await client.request('meeting_segments', { query: `?select=*&${eq('meeting_id', meetingId)}&${eq('owner_user_id', userId)}&order=sequence.asc` });
+      const rows = await client.request('meeting_segments', { query: `?select=${SEGMENT_METADATA_COLUMNS}&${eq('meeting_id', meetingId)}&${eq('owner_user_id', userId)}&order=sequence.asc` });
       return Promise.all(rows.map((row) => hydrateSegment(client, row, userId)));
+    },
+    async listMeetingSegmentMetadata(meetingId, explicitOwnerUserId = null) {
+      const userId = explicitOwnerUserId || owner();
+      const rows = await client.request('meeting_segments', {
+        query: `?select=id,meeting_id,session_id,sequence,status,started_at,ended_at,created_at&${eq('meeting_id', meetingId)}&${eq('owner_user_id', userId)}&order=sequence.asc,created_at.asc,id.asc`
+      });
+      return rows.map((row) => ({
+        id: row.id,
+        meetingId: row.meeting_id,
+        sessionId: row.session_id,
+        sequence: row.sequence,
+        status: row.status,
+        startedAt: row.started_at,
+        endedAt: row.ended_at,
+        createdAt: row.created_at
+      }));
     },
     async getMeetingViewerPage(meetingId, { before = null, limit = 100 } = {}) {
       const userId = owner();
       const meetingRows = await client.request('meetings', {
-        query: `?select=*&${eq('id', meetingId)}&${eq('owner_user_id', userId)}`
+        query: `?select=${MEETING_METADATA_COLUMNS}&${eq('id', meetingId)}&${eq('owner_user_id', userId)}`
       });
       if (!meetingRows[0]) return null;
 
@@ -128,12 +194,91 @@ export function createSupabaseMeetingRepository(options = {}) {
     async updateMeetingSegment(input) {
       const entity = new MeetingSegment(input);
       const userId = owner();
-      const rows = await client.request('meeting_segments', { method: 'PATCH', query: `?${eq('id', entity.id)}&${eq('owner_user_id', userId)}`, body: segmentRow(entity, userId) });
-      if (rows[0]) await persistCues(client, entity, userId);
+      const rows = await client.request('meeting_segments', { method: 'PATCH', query: `?select=${SEGMENT_METADATA_COLUMNS}&${eq('id', entity.id)}&${eq('owner_user_id', userId)}`, body: segmentMetadataRow(entity) });
       return rows[0] ? hydrateSegment(client, rows[0], userId) : null;
+    },
+    async commitCheckpoint({ current, next, incoming }) {
+      owner();
+      if (!privileged) throw capabilityUnavailable();
+      const cues = checkpointCueRows(next.checkpoint);
+      let checkpoint;
+      try {
+        checkpoint = await privileged.rpc('apply_meeting_checkpoint_operation_v2', {
+          p_meeting_id: next.meetingId,
+          p_segment_id: next.id,
+          p_expected_revision: current.checkpoint?.revision || 0,
+          p_operation_key: incoming.idempotencyKey,
+          p_canonical_payload: next.checkpoint._operationPayloads[incoming.idempotencyKey],
+          p_next_checkpoint: next.checkpoint,
+          p_cues: cues,
+          p_next_status: next.status,
+          p_ended_at: toSupabaseTimestamp(next.endedAt),
+          p_error_info: next.errorInfo
+        });
+      } catch (error) {
+        if (error?.supabaseCode === 'P0041') {
+          error.code = 'checkpoint_revision_conflict';
+          error.status = 409;
+        }
+        if (error?.supabaseCode === 'P0042') {
+          error.code = 'checkpoint_conflict';
+          error.status = 409;
+        }
+        throw error;
+      }
+      return new MeetingSegment({ ...next, checkpoint });
+    },
+    async atomicRolloverSegment({ current, completed, incoming, recorderSessionId, nextLiveSessionId, settingsSnapshot }) {
+      const ownerUserId = owner();
+      if (!privileged) throw capabilityUnavailable();
+      let payload;
+      try {
+        payload = await privileged.rpc('rollover_legacy_meeting_segment_v1', {
+          p_owner_user_id: ownerUserId,
+          p_meeting_id: current.meetingId,
+          p_source_segment_id: current.id,
+          p_expected_session_id: recorderSessionId || null,
+          p_operation_id: incoming.idempotencyKey,
+          p_canonical_payload: completed.checkpoint._operationPayloads[incoming.idempotencyKey],
+          p_expected_revision: current.checkpoint?.revision || 0,
+          p_next_checkpoint: completed.checkpoint,
+          p_cues: checkpointCueRows(completed.checkpoint),
+          p_ended_at: toSupabaseTimestamp(completed.endedAt),
+          p_next_live_session_id: nextLiveSessionId,
+          p_settings_snapshot: settingsSnapshot
+        });
+      } catch (error) {
+        if (error?.supabaseCode === 'P0041') {
+          error.code = 'checkpoint_revision_conflict';
+          error.status = 409;
+        } else if (error?.supabaseCode === 'P0042' || error?.supabaseCode === '23505') {
+          error.code = 'checkpoint_conflict';
+          error.status = 409;
+        } else if (error?.supabaseCode === 'P0043') {
+          error.code = 'recorder_session_mismatch';
+          error.status = 403;
+        } else if (error?.supabaseCode === 'P0044') {
+          error.code = 'meeting_lifecycle_conflict';
+          error.status = 409;
+        }
+        throw error;
+      }
+      const result = Array.isArray(payload) ? payload[0] : payload;
+      if (!result?.completedSegment || !result?.segment) throw capabilityUnavailable();
+      return {
+        completedSegment: await hydrateSegment(client, result.completedSegment, ownerUserId),
+        segment: await hydrateSegment(client, result.segment, ownerUserId),
+        replayed: result.replayed === true
+      };
     }
   };
   const exposed = Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method].bind(repository)]));
+  Object.defineProperty(exposed, 'updateMeetingSettings', {
+    value: repository.updateMeetingSettings.bind(repository), enumerable: false
+  });
+  Object.defineProperty(exposed, 'completeLocalMeeting', {
+    value: repository.completeLocalMeeting.bind(repository), enumerable: false
+  });
   Object.defineProperty(exposed, 'createMeetingWithInitialSegment', {
     value: repository.createMeetingWithInitialSegment.bind(repository),
     enumerable: false
@@ -142,7 +287,37 @@ export function createSupabaseMeetingRepository(options = {}) {
     value: repository.getMeetingViewerPage.bind(repository),
     enumerable: false
   });
+  Object.defineProperty(exposed, 'listMeetingSegmentMetadata', {
+    value: repository.listMeetingSegmentMetadata.bind(repository),
+    enumerable: false
+  });
+  Object.defineProperty(exposed, 'getMeetingMetadata', {
+    value: repository.getMeetingMetadata.bind(repository),
+    enumerable: false
+  });
+  Object.defineProperty(exposed, 'commitCheckpoint', {
+    value: repository.commitCheckpoint.bind(repository), enumerable: false
+  });
+  Object.defineProperty(exposed, 'atomicRolloverSegment', {
+    value: repository.atomicRolloverSegment.bind(repository), enumerable: false
+  });
   return Object.freeze(exposed);
+}
+
+function checkpointCueRows(checkpoint) {
+  return (Array.isArray(checkpoint?.finalCues) ? checkpoint.finalCues : []).map((cue) => ({
+    id: cue.cueId,
+    session_id: cue.sessionId,
+    sequence: cue.sequence,
+    source_text: cue.sourceText || '',
+    translated_text: cue.translatedText || null,
+    source_status: cue.sourceStatus,
+    translation_status: cue.translationStatus,
+    source_version: cue.sourceVersion,
+    translation_version: cue.translationVersion,
+    started_at: cue.startTimeMs,
+    ended_at: cue.endTimeMs
+  }));
 }
 
 function meetingRow(entity, ownerUserId) {
@@ -162,39 +337,40 @@ function segmentRow(entity, ownerUserId) {
     ended_at: toSupabaseTimestamp(entity.endedAt),
     live_session_id: Number(entity.lifecycleContractVersion) === 2 ? null : entity.liveSessionId,
     settings_snapshot: entity.settingsSnapshot,
-    checkpoint: { ...(entity.checkpoint || {}), finalCues: undefined },
     error_info: entity.errorInfo,
     created_at: toSupabaseTimestamp(entity.createdAt),
     updated_at: toSupabaseTimestamp(entity.updatedAt)
   };
 }
 
+function segmentMetadataRow(entity) {
+  return {
+    session_id: entity.sessionId,
+    status: entity.status,
+    started_at: toSupabaseTimestamp(entity.startedAt),
+    ended_at: toSupabaseTimestamp(entity.endedAt),
+    live_session_id: Number(entity.lifecycleContractVersion) === 2 ? null : entity.liveSessionId,
+    settings_snapshot: entity.settingsSnapshot,
+    error_info: entity.errorInfo,
+    updated_at: toSupabaseTimestamp(entity.updatedAt)
+  };
+}
+
+function capabilityUnavailable() {
+  const error = new Error('Controlled meeting write is unavailable.');
+  error.code = 'cloud_capability_unavailable';
+  error.status = 503;
+  return error;
+}
+
 async function hydrateSegment(client, row, ownerUserId) {
-  const cueRows = await client.request('subtitle_cues', { query: `?select=*&${eq('owner_user_id', ownerUserId)}&${eq('segment_id', row.id)}&order=sequence.asc` });
-  const storedCheckpoint = isPersistedCheckpoint(row.checkpoint) ? { ...row.checkpoint } : null;
-  const settingsSnapshot = row.settings_snapshot || {};
-  const finalCues = cueRows
-    .filter((cue) => cue.segment_id === row.id)
-    .map((cue) => cueFromRow(cue, { settingsSnapshot, mode: storedCheckpoint?.mode }));
-  const checkpoint = finalCues.length > 0
-    ? { ...(storedCheckpoint || { durableChunks: [], pendingPartial: null }), finalCues }
-    : storedCheckpoint;
-  return new MeetingSegment({ ...row, checkpoint, meetingId: row.meeting_id, sessionId: row.session_id, lifecycleContractVersion: row.lifecycle_contract_version, startedAt: row.started_at, endedAt: row.ended_at, liveSessionId: row.live_session_id, settingsSnapshot, errorInfo: row.error_info, createdAt: row.created_at, updatedAt: row.updated_at });
+  const settingsSnapshot = {};
+  return new MeetingSegment({ ...row, checkpoint: null, meetingId: row.meeting_id, sessionId: row.session_id, lifecycleContractVersion: row.lifecycle_contract_version, startedAt: row.started_at, endedAt: row.ended_at, liveSessionId: row.live_session_id, settingsSnapshot, errorInfo: row.status === 'failed' ? { reason: 'recording_failed', category: 'lifecycle' } : null, createdAt: row.created_at, updatedAt: row.updated_at });
 }
 
 function meetingFromRow(row) {
   const settings = row.settings || {};
-  return new Meeting({ ...row, ownerUserId: row.owner_user_id, lifecycleContractVersion: row.lifecycle_contract_version, lifecycleVersion: row.lifecycle_version, sourceLanguageCode: row.source_language_code, targetLanguageCode: row.target_language_code, startedAt: row.started_at, endedAt: row.ended_at, createdAt: row.created_at, updatedAt: row.updated_at, failureInfo: row.failure_info, ...settings });
-}
-
-async function persistCues(client, entity, ownerUserId) {
-  const cues = entity.checkpoint?.finalCues || [];
-  if (!cues.length) return;
-  await client.request('subtitle_cues', {
-    method: 'POST',
-    headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-    body: cues.map((cue) => ({ id: cue.cueId, owner_user_id: ownerUserId, session_id: cue.sessionId, segment_id: entity.id, sequence: cue.sequence, source_text: cue.sourceText || null, translated_text: cue.translatedText || null, source_status: cue.sourceStatus || (cue.sourceText ? 'finalized' : 'pending'), translation_status: cue.translationStatus || (cue.translatedText ? 'finalized' : 'pending'), source_version: Number.isInteger(cue.sourceVersion) ? cue.sourceVersion : (cue.sourceText ? 1 : 0), translation_version: Number.isInteger(cue.translationVersion) ? cue.translationVersion : (cue.translatedText ? 1 : 0), started_at: cue.startTimeMs, ended_at: cue.endTimeMs }))
-  });
+  return new Meeting({ ...row, ownerUserId: row.owner_user_id, lifecycleContractVersion: row.lifecycle_contract_version, lifecycleVersion: row.lifecycle_version, sourceLanguageCode: row.source_language_code, targetLanguageCode: row.target_language_code, startedAt: row.started_at, endedAt: row.ended_at, createdAt: row.created_at, updatedAt: row.updated_at, failureInfo: row.status === 'failed' ? { reason: 'recording_failed', category: 'lifecycle' } : null, ...settings });
 }
 
 function toSupabaseTimestamp(value) {

@@ -3,7 +3,51 @@ import { authenticatedFetch } from '../lib/accessToken.js';
 import { mergeMeetingCues } from '../lib/meetingViewerState.js';
 import { createWebRtcSubtitleTransport } from './subtitleTransport.js';
 
-export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = 'idle', cues = [], segmentId = null, segmentSequence = null, segments = [] } = {}) {
+export function hostViewerCuesFromLocalRecords(meetingId, records = []) {
+  if (!meetingId || !Array.isArray(records)) return [];
+  return mergeMeetingCues([], records.filter((record) => record?.meetingId === meetingId
+    && record?.segmentId && record?.sessionId && record?.cue?.status === 'final'
+    && (!record.cue.meetingId || record.cue.meetingId === meetingId)
+    && (!record.cue.segmentId || record.cue.segmentId === record.segmentId)
+    && (!record.cue.sessionId || record.cue.sessionId === record.sessionId)
+    && record.cue.cueId === record.cueId
+    && record.cue.sequence === record.sequence)
+    .map((record) => ({ ...record.cue, meetingId,
+      sessionId: record.sessionId, segmentId: record.segmentId, sequence: record.sequence })));
+}
+
+export function publishCommittedLocalCues(meetingId, records, publishCue) {
+  const cues = hostViewerCuesFromLocalRecords(meetingId, records);
+  cues.forEach(publishCue);
+  return cues;
+}
+
+export function viewerSidecarEnabled(status) {
+  return ['listening', 'reconnecting', 'switching-segment', 'provider-recovery', 'provider-recovery-failed', 'stopping'].includes(status);
+}
+
+export function createWebRtcDeviceSidecarLease(transportRef, lifecycleStatusRef) {
+  let transport = null;
+  let disposed = false;
+  return {
+    get disposed() { return disposed; },
+    attach(nextTransport) {
+      if (disposed) return false;
+      transport = nextTransport;
+      transportRef.current = nextTransport;
+      return true;
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      if (transportRef.current === transport) transportRef.current = null;
+      if (transport) void transport.stop({ revoke: lifecycleStatusRef.current === 'ended' });
+    }
+  };
+}
+
+export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = 'idle', cues = [],
+  segmentId = null, segmentSequence = null, segments = [], loadLocalCues } = {}) {
   const [connection, setConnection] = useState({ value: 'idle' });
   const [retryVersion, setRetryVersion] = useState(0);
   const transportRef = useRef(null);
@@ -11,9 +55,11 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
   const cuesRef = useRef(cues);
   const segmentMetaRef = useRef({ segmentId, segmentSequence, segments });
   const lifecycleStatusRef = useRef(lifecycleStatus);
+  const loadLocalCuesRef = useRef(loadLocalCues);
   cuesRef.current = cues;
   segmentMetaRef.current = { segmentId, segmentSequence, segments };
   lifecycleStatusRef.current = lifecycleStatus;
+  loadLocalCuesRef.current = loadLocalCues;
 
   function rememberCues(nextCues, meta) {
     if (cueHistoryRef.current.meetingId !== meetingId) {
@@ -41,27 +87,48 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
       setConnection({ value: 'idle' });
       return undefined;
     }
-    let disposed = false;
-    const transport = createWebRtcSubtitleTransport({
-      meetingId,
-      role: 'device',
-      fetchImpl: authenticatedFetch(),
-      initialCues: cueHistoryRef.current.cues,
-      onStatus: (next) => { if (!disposed) setConnection(next); },
-      onError: () => {},
-    });
-    transportRef.current = transport;
-    const getStats = () => transport.getStats();
-    const publishTestCue = (cue) => transport.publishCue(cue);
-    globalThis.__liveTranslateWebRtcGetStats = getStats;
-    if (import.meta.env.DEV) globalThis.__liveTranslateWebRtcPublishTestCue = publishTestCue;
-    transport.start();
+    const lease = createWebRtcDeviceSidecarLease(transportRef, lifecycleStatusRef);
+    let transport = null;
+    let getStats = null;
+    let publishTestCue = null;
+    void (async () => {
+      try {
+        const records = await loadLocalCuesRef.current?.(meetingId) || [];
+        if (lease.disposed) return;
+        rememberCues(hostViewerCuesFromLocalRecords(meetingId, records), segmentMetaRef.current);
+        rememberCues(cuesRef.current, segmentMetaRef.current);
+        transport = createWebRtcSubtitleTransport({
+          meetingId,
+          role: 'device',
+          fetchImpl: authenticatedFetch(),
+          initialCues: cueHistoryRef.current.cues,
+          onStatus: (next) => { if (!lease.disposed) setConnection(next); },
+          onError: () => {},
+        });
+        lease.attach(transport);
+        const initialTransitionStatus = lifecycleStatusRef.current === 'switching-segment' ? 'switching'
+          : lifecycleStatusRef.current === 'listening' ? 'ready' : null;
+        if (initialTransitionStatus && segmentMetaRef.current.segmentId
+          && Number.isSafeInteger(segmentMetaRef.current.segmentSequence)) {
+          transport.publishSegmentTransition({
+            segmentId: segmentMetaRef.current.segmentId,
+            segmentSequence: segmentMetaRef.current.segmentSequence,
+            status: initialTransitionStatus
+          });
+        }
+        getStats = () => transport.getStats();
+        publishTestCue = (cue) => transport.publishCue(cue);
+        globalThis.__liveTranslateWebRtcGetStats = getStats;
+        if (import.meta.env.DEV) globalThis.__liveTranslateWebRtcPublishTestCue = publishTestCue;
+        transport.start();
+      } catch {
+        if (!lease.disposed) setConnection({ value: 'failed' });
+      }
+    })();
     return () => {
-      disposed = true;
+      lease.dispose();
       if (globalThis.__liveTranslateWebRtcGetStats === getStats) delete globalThis.__liveTranslateWebRtcGetStats;
       if (globalThis.__liveTranslateWebRtcPublishTestCue === publishTestCue) delete globalThis.__liveTranslateWebRtcPublishTestCue;
-      if (transportRef.current === transport) transportRef.current = null;
-      void transport.stop({ revoke: lifecycleStatusRef.current === 'stopped' });
     };
   }, [enabled, meetingId, retryVersion]);
 
@@ -71,9 +138,26 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
     if (!transport) return;
     cueHistoryRef.current.cues.forEach((cue) => transport.publishCue(cue));
   }, [cues, meetingId, segmentId, segmentSequence, segments]);
+  useEffect(() => {
+    const transitionStatus = lifecycleStatus === 'switching-segment' ? 'switching'
+      : lifecycleStatus === 'listening' ? 'ready' : null;
+    if (transitionStatus && segmentId && Number.isSafeInteger(segmentSequence)) {
+      transportRef.current?.publishSegmentTransition({
+        segmentId, segmentSequence,
+        status: transitionStatus
+      });
+    }
+  }, [lifecycleStatus, segmentId, segmentSequence]);
 
   return Object.freeze({
     ...connection,
+    publishCommittedCues(records) {
+      const transport = transportRef.current;
+      if (!transport) return false;
+      const committed = publishCommittedLocalCues(meetingId, records, (cue) => transport.publishCue(cue));
+      rememberCues(committed, segmentMetaRef.current);
+      return true;
+    },
     retry() { setRetryVersion((version) => version + 1); },
   });
 }

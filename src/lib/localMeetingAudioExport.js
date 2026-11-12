@@ -2,6 +2,10 @@ import { floatToPcm16, pcm16ChunksToWavBlob, resampleLinear } from './audio.js';
 
 const EXPORT_SAMPLE_RATE = 16000;
 
+function ramStage(stage, state, details = {}) {
+  try { globalThis.__issue41RamStage?.({ stage, state, at: Date.now(), ...details }); } catch { /* Diagnostics never affect audio durability. */ }
+}
+
 export async function composeLocalMeetingAudioArtifact({
   chunks = [],
   readChunk,
@@ -32,10 +36,28 @@ export async function composeLocalMeetingAudioArtifact({
   if (!Array.isArray(decoded) || decoded.length !== containers.length) {
     throw new Error('Unable to decode every saved audio segment.');
   }
-  const pcmChunks = decoded.map((segment) => floatToPcm16(
-    resampleLinear(mixChannelsToMono(segment.channels), segment.sampleRate, EXPORT_SAMPLE_RATE)
-  ));
-  const blob = pcm16ChunksToWavBlob(pcmChunks, { sampleRate: EXPORT_SAMPLE_RATE, BlobImpl });
+  const decodedBytes = decoded.reduce((sum, segment) => sum + segment.channels.reduce((bytes, channel) => bytes + channel.byteLength, 0), 0);
+  ramStage('pcm_resample', 'start', { inputBytes: decodedBytes });
+  let pcmChunks;
+  try {
+    pcmChunks = decoded.map((segment) => floatToPcm16(
+      resampleLinear(mixChannelsToMono(segment.channels), segment.sampleRate, EXPORT_SAMPLE_RATE)
+    ));
+    ramStage('pcm_resample', 'complete', { inputBytes: decodedBytes, outputBytes: pcmChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0) });
+  } catch (error) {
+    ramStage('pcm_resample', 'failed', { errorName: error?.name || 'Error' });
+    throw error;
+  }
+  const pcmBytes = pcmChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  ramStage('wav_encode', 'start', { inputBytes: pcmBytes });
+  let blob;
+  try {
+    blob = pcm16ChunksToWavBlob(pcmChunks, { sampleRate: EXPORT_SAMPLE_RATE, BlobImpl });
+    ramStage('wav_encode', 'complete', { inputBytes: pcmBytes, outputBytes: blob.size });
+  } catch (error) {
+    ramStage('wav_encode', 'failed', { errorName: error?.name || 'Error' });
+    throw error;
+  }
   if (blob.size <= 44) throw new Error('Saved audio segments produced an empty export.');
 
   return Object.freeze({
@@ -59,18 +81,24 @@ async function buildCaptureContainers(chunks, readChunk, BlobImpl) {
     }
   }
 
-  return Promise.all(groups.map(async (group) => {
-    const parts = await Promise.all(group.chunks.map(async (chunk) => normalizeBlob(
-      await readChunk(chunk.path),
-      group.mimeType,
-      BlobImpl
-    )));
-    return Object.freeze({
-      segmentId: group.chunks[0]?.segmentId || '',
-      mimeType: group.mimeType,
-      blob: new BlobImpl(parts, { type: group.mimeType })
-    });
-  }));
+  ramStage('opfs_readback', 'start', { chunkCount: chunks.length, inputBytes: chunks.reduce((sum, chunk) => sum + (chunk.byteSize || 0), 0) });
+  try {
+    const containers = await Promise.all(groups.map(async (group) => {
+      const parts = await Promise.all(group.chunks.map(async (chunk) => normalizeBlob(
+        await readChunk(chunk.path), group.mimeType, BlobImpl
+      )));
+      return Object.freeze({
+        segmentId: group.chunks[0]?.segmentId || '',
+        mimeType: group.mimeType,
+        blob: new BlobImpl(parts, { type: group.mimeType })
+      });
+    }));
+    ramStage('opfs_readback', 'complete', { chunkCount: chunks.length, outputBytes: containers.reduce((sum, container) => sum + container.blob.size, 0) });
+    return containers;
+  } catch (error) {
+    ramStage('opfs_readback', 'failed', { errorName: error?.name || 'Error' });
+    throw error;
+  }
 }
 
 async function decodeAudioSegments(containers) {
@@ -78,15 +106,20 @@ async function decodeAudioSegments(containers) {
   if (typeof AudioContextImpl !== 'function') throw new Error('Audio decoding is unavailable.');
   const context = new AudioContextImpl();
   try {
-    return await Promise.all(containers.map(async ({ blob }) => {
-      const buffer = await context.decodeAudioData(await blob.arrayBuffer());
-      return Object.freeze({
-        sampleRate: buffer.sampleRate,
-        channels: Object.freeze(Array.from(
+    return await Promise.all(containers.map(async ({ blob }, index) => {
+      ramStage('decode_audio', 'start', { segmentIndex: index, inputBytes: blob.size });
+      try {
+        const buffer = await context.decodeAudioData(await blob.arrayBuffer());
+        const channels = Object.freeze(Array.from(
           { length: buffer.numberOfChannels },
-          (_, index) => new Float32Array(buffer.getChannelData(index))
-        ))
-      });
+          (_, channelIndex) => new Float32Array(buffer.getChannelData(channelIndex))
+        ));
+        ramStage('decode_audio', 'complete', { segmentIndex: index, inputBytes: blob.size, outputBytes: channels.reduce((sum, channel) => sum + channel.byteLength, 0) });
+        return Object.freeze({ sampleRate: buffer.sampleRate, channels });
+      } catch (error) {
+        ramStage('decode_audio', 'failed', { segmentIndex: index, errorName: error?.name || 'Error' });
+        throw error;
+      }
     }));
   } finally {
     await context.close?.();

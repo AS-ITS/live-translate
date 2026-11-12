@@ -11,7 +11,7 @@ export const LOCAL_RECORDER_STATES = Object.freeze([
   'stop_incomplete'
 ]);
 
-export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = () => Date.now() } = {}) {
+export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = () => Date.now(), onTrace } = {}) {
   if (!manifestStore || typeof manifestStore.reserve !== 'function' || typeof manifestStore.seal !== 'function' || typeof manifestStore.mark !== 'function' || typeof manifestStore.list !== 'function') {
     throw new TypeError('manifestStore must implement reserve, seal, mark, and list.');
   }
@@ -32,6 +32,11 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
   let segmentNumber = 0;
   let captureEpoch = 0;
   let providerEpoch = 0;
+  let integrityVersion = null;
+  let pcmEnabled = null;
+  let pauseBoundary = null;
+  let ownerUserId = null;
+  let storageIdentity = null;
   const operations = new Map();
   let stopBarrier = null;
 
@@ -41,19 +46,30 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       if (meetingId && meetingId !== nextMeetingId && state !== 'idle') throw conflict('local_recorder_active');
       const durable = await manifestStore.getRecording(nextMeetingId);
       meetingId = nextMeetingId;
-      if (!durable) return snapshot();
+      if (!durable) {
+        ownerUserId = null;
+        storageIdentity = null;
+        return snapshot();
+      }
+      ownerUserId = durable.ownerUserId ?? null;
+      storageIdentity = durable.storageIdentity ?? null;
       recordingId = durable.recordingId;
       segmentId = durable.segmentId;
       segmentNumber = durable.segmentNumber;
       captureEpoch = durable.captureEpoch;
       providerEpoch = durable.providerEpoch;
+      integrityVersion = durable.integrityVersion;
+      pcmEnabled = durable.pcmEnabled;
+      pauseBoundary = durable.pauseBoundary;
       finalSequence = durable.finalSequence;
       state = durable.state;
       stopError = null;
       return snapshot();
     },
 
-    async start(nextMeetingId, { operationId, recordingId: requestedRecordingId, segmentId: requestedSegmentId } = {}) {
+    async start(nextMeetingId, { operationId, recordingId: requestedRecordingId, segmentId: requestedSegmentId,
+      pcmEnabled: requestedPcmEnabled = false, ownerUserId: requestedOwnerUserId = null,
+      storageIdentity: requestedStorageIdentity = null } = {}) {
       if (!nextMeetingId) throw invalid('meetingId is required.');
       if (meetingId !== nextMeetingId) await this.restore(nextMeetingId);
       const replayed = await replay(operationId, 'start');
@@ -65,20 +81,29 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       }
       meetingId = nextMeetingId;
       recordingId = requestedRecordingId || globalThis.crypto?.randomUUID?.() || `recording:${meetingId}:${now()}`;
+      ownerUserId = requestedOwnerUserId;
+      storageIdentity = requestedStorageIdentity;
       segmentId = requestedSegmentId || `segment:${recordingId}:1`;
       segmentNumber = 1;
       captureEpoch += 1;
       providerEpoch = 0;
+      integrityVersion = 2;
+      pcmEnabled = requestedPcmEnabled === true;
+    pauseBoundary = null;
       finalSequence = null;
       stopError = null;
       state = 'capturing';
       return persist(operationId, 'start');
     },
 
-    async pause({ operationId } = {}) {
+  async pause({ operationId, boundaryReceipt = null } = {}) {
       const replayed = await replay(operationId, 'pause');
       if (replayed) return replayed;
       if (state === 'capturing') {
+      if (integrityVersion === 2 && pcmEnabled && (boundaryReceipt?.recordingId !== recordingId
+        || boundaryReceipt.transitionOperationId !== operationId
+        || boundaryReceipt.captureEpoch !== captureEpoch)) throw conflict('local_segment_pause_boundary_conflict');
+      pauseBoundary = boundaryReceipt;
         state = 'paused';
         captureEpoch += 1;
       }
@@ -86,6 +111,7 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
     },
 
     async resume({ operationId } = {}) {
+    if (integrityVersion === 2 && pcmEnabled) throw conflict('local_segment_transition_required');
       const replayed = await replay(operationId, 'resume');
       if (replayed) return replayed;
       continueRecording();
@@ -93,6 +119,7 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
     },
 
     async recover({ operationId } = {}) {
+    if (integrityVersion === 2 && pcmEnabled) throw conflict('local_segment_transition_required');
       const replayed = await replay(operationId, 'recover');
       if (replayed) return replayed;
       continueRecording();
@@ -107,10 +134,113 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       return advanceProviderEpoch(operationId, 'provider_rollover');
     },
 
+    async prepareSegmentRollover({ operationId, nextSegmentId } = {}) {
+      assertActiveRecording();
+      if (integrityVersion !== 2) return null;
+      const requestedSuccessor = requiredIdentity(nextSegmentId, 'nextSegmentId');
+      const existing = await manifestStore.getSegmentTransition(meetingId, operationId);
+      if (existing) {
+        if (existing.recordingId !== recordingId || existing.successorId !== requestedSuccessor) {
+          throw conflict('local_segment_transition_conflict');
+        }
+        return existing;
+      }
+      return manifestStore.prepareSegmentTransition({ meetingId, recordingId, operationId,
+        predecessorId: segmentId, predecessorSequence: segmentNumber,
+        successorId: requestedSuccessor, successorSequence: segmentNumber + 1 });
+    },
+  async preparePausedContinue({ operationId, nextSegmentId, boundaryOperationId } = {}) {
+    if (state !== 'paused' || integrityVersion !== 2 || (pcmEnabled
+      && (!pauseBoundary || pauseBoundary.transitionOperationId !== boundaryOperationId))) {
+      throw conflict('local_segment_pause_boundary_conflict');
+    }
+    const existing = await manifestStore.getSegmentTransition(meetingId, operationId);
+    if (existing) return existing;
+    return manifestStore.prepareSegmentTransition({ meetingId, recordingId, operationId,
+      predecessorId: segmentId, predecessorSequence: segmentNumber,
+      successorId: requiredIdentity(nextSegmentId, 'nextSegmentId'), successorSequence: segmentNumber + 1,
+      boundaryOperationId });
+  },
+
+    async abortSegmentRollover({ operationId, nextSegmentId, boundaryReceipt = null } = {}) {
+      if (integrityVersion !== 2) return null;
+      return manifestStore.abortSegmentTransition({ meetingId, recordingId, operationId,
+        predecessorId: segmentId, predecessorSequence: segmentNumber,
+        successorId: requiredIdentity(nextSegmentId, 'nextSegmentId'), successorSequence: segmentNumber + 1,
+        boundary: boundaryReceipt });
+    },
+
+    async rolloverLocalSegment({ operationId, nextSegmentId, boundaryReceipt = null } = {}) {
+      const normalizedSegmentId = requiredIdentity(nextSegmentId, 'nextSegmentId');
+      if (integrityVersion === 2) {
+        const existing = await manifestStore.getSegmentTransition(meetingId, operationId);
+        if (existing && (existing.successorId !== normalizedSegmentId || existing.recordingId !== recordingId)) {
+          throw conflict('local_segment_transition_conflict');
+        }
+        if (existing?.phase === 'COMMITTED') {
+          segmentId = existing.result.segmentId;
+          segmentNumber = existing.result.segmentNumber;
+          captureEpoch = existing.result.captureEpoch;
+          providerEpoch = existing.result.providerEpoch;
+          state = existing.result.state;
+          pauseBoundary = existing.result.pauseBoundary;
+          return existing.result;
+        }
+        if (existing?.phase === 'ABORTED') throw conflict('local_segment_transition_aborted');
+        const prepared = existing || await this.prepareSegmentRollover({ operationId, nextSegmentId: normalizedSegmentId });
+        const result = await manifestStore.commitSegmentTransition({ ...prepared, boundary: boundaryReceipt });
+        segmentId = result.segmentId;
+        segmentNumber = result.segmentNumber;
+        captureEpoch = result.captureEpoch;
+        providerEpoch = result.providerEpoch;
+        state = result.state;
+        pauseBoundary = result.pauseBoundary;
+        trace('LOCAL_SEGMENT_SCOPE_SWITCHED', { operationId, oldSegmentId: prepared.predecessorId,
+          newSegmentId: segmentId, meetingId, recordingId, captureEpoch, providerEpoch });
+        return result;
+      }
+      const replayed = await replay(operationId, 'local_segment_rollover');
+      if (replayed) return replayed;
+      assertActiveRecording();
+      const oldSegmentId = segmentId;
+      const oldSegmentNumber = segmentNumber;
+      const oldProviderEpoch = providerEpoch;
+      if (segmentId !== normalizedSegmentId) {
+        segmentId = normalizedSegmentId;
+        segmentNumber += 1;
+        providerEpoch += 1;
+      }
+      let result;
+      try {
+        result = await persist(operationId, 'local_segment_rollover');
+      } catch (error) {
+        segmentId = oldSegmentId;
+        segmentNumber = oldSegmentNumber;
+        providerEpoch = oldProviderEpoch;
+        throw error;
+      }
+      trace('LOCAL_SEGMENT_SCOPE_SWITCHED', {
+        operationId,
+        oldSegmentId,
+        newSegmentId: segmentId,
+        meetingId,
+        recordingId,
+        captureEpoch,
+        providerEpoch
+      });
+      return result;
+    },
+
     appendChunk(input, bytes) {
       const task = appendQueue.then(() => appendChunkLocked(input, bytes));
       appendQueue = task.catch(() => {});
-      return task;
+      return task.catch((error) => {
+        trace('LOCAL_CHUNK_FAILED', {
+          ...chunkTraceIdentity(input),
+          errorCode: error?.code || error?.name || 'local_chunk_write_failed'
+        });
+        throw error;
+      });
     },
 
     async reconcile(files) {
@@ -196,6 +326,12 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
     if (state !== 'capturing') throw conflict('local_recorder_not_capturing');
   }
 
+  function assertActiveRecording() {
+    if (state !== 'capturing' && state !== 'paused') {
+      throw conflict('local_recorder_not_active');
+    }
+  }
+
   function continueRecording() {
     if (state !== 'paused' && state !== 'stop_incomplete') return;
     segmentNumber += 1;
@@ -214,35 +350,79 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
 
   async function appendChunkLocked(input, bytes) {
     assertCapturing();
-    const record = await manifestStore.reserve({
-      ...input,
-      meetingId: input?.meetingId || meetingId,
-      recordingId: input?.recordingId || recordingId,
-      segmentId: input?.segmentId || segmentId
-    });
+    let record;
+    try {
+      record = await manifestStore.reserve({
+        ...input,
+        meetingId: input?.meetingId || meetingId,
+        recordingId: input?.recordingId || recordingId,
+        segmentId: input?.segmentId || segmentId
+      });
+    } catch (error) {
+      if (error && typeof error === 'object') {
+        try { error.audioFailureStage = 'AUDIO_CHUNK_ENQUEUE'; } catch { /* Diagnostic only. */ }
+      }
+      throw error;
+    }
+    trace('LOCAL_CHUNK_RESERVED', chunkTraceIdentity(record));
     if (record.state === 'sealed') {
       await assertStoredChunkMatches(record, bytes);
+      trace('LOCAL_CHUNK_SEALED', { ...chunkTraceIdentity(record), reason: 'idempotent_retry' });
       return record;
     }
     try {
+      trace('LOCAL_CHUNK_WRITE_STARTED', chunkTraceIdentity(record));
       await chunkStore.write(record.path, bytes);
+      trace('LOCAL_CHUNK_WRITE_SUCCEEDED', chunkTraceIdentity(record));
     } catch (error) {
       if (error?.code === 'local_chunk_file_exists') {
         await assertStoredChunkMatches(record, bytes);
-        return manifestStore.seal(record.chunkId, {
+        const sealed = await manifestStore.seal(record.chunkId, {
           byteSize: record.byteSize,
           checksum: record.checksum,
           endedAt: record.endedAt || now()
         });
+        trace('LOCAL_CHUNK_SEALED', { ...chunkTraceIdentity(sealed), reason: 'existing_file_verified' });
+        return sealed;
       }
       stopError = error;
+      if (error && typeof error === 'object') {
+        try { error.audioFailureStage = 'AUDIO_CHUNK_WRITE'; } catch { /* Diagnostic only. */ }
+      }
       throw error;
     }
-    return manifestStore.seal(record.chunkId, {
-      byteSize: input?.byteSize,
-      checksum: input?.checksum,
-      endedAt: input?.endedAt || now()
-    });
+    let sealed;
+    try {
+      sealed = await manifestStore.seal(record.chunkId, {
+        byteSize: input?.byteSize,
+        checksum: input?.checksum,
+        endedAt: input?.endedAt || now()
+      });
+    } catch (error) {
+      if (error && typeof error === 'object') {
+        try { error.audioFailureStage = 'AUDIO_SEGMENT_COMMIT'; } catch { /* Diagnostic only. */ }
+      }
+      throw error;
+    }
+    trace('LOCAL_CHUNK_SEALED', chunkTraceIdentity(sealed));
+    return sealed;
+  }
+
+  function chunkTraceIdentity(value = {}) {
+    return {
+      meetingId: value.meetingId || meetingId,
+      recordingId: value.recordingId || recordingId,
+      segmentId: value.segmentId || segmentId,
+      chunkId: value.chunkId || null,
+      sequence: value.sequence ?? null,
+      captureEpoch,
+      providerEpoch,
+      pcmBytes: value.byteSize ?? null
+    };
+  }
+
+  function trace(stage, fields = {}) {
+    try { onTrace?.({ stage, ...fields }); } catch { /* Diagnostics must never interrupt local recording. */ }
   }
 
   async function assertStoredChunkMatches(record, bytes) {
@@ -286,6 +466,11 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
     return {
       ...snapshot(),
       segmentNumber,
+      integrityVersion,
+      pcmEnabled,
+      pauseBoundary,
+      ownerUserId,
+      storageIdentity,
       terminal: state === 'stopped_local',
       finalized: state === 'stopped_local'
     };
@@ -334,6 +519,13 @@ async function toUint8Array(value) {
 
 function assertOperationType(operation, type) {
   if (operation.type !== type) throw conflict('local_recorder_operation_conflict');
+}
+
+function requiredIdentity(value, name) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw invalid(`${name} must be a non-empty string.`);
+  }
+  return value;
 }
 
 function invalid(message) {

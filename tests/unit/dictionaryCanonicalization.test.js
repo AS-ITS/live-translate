@@ -18,17 +18,21 @@ test('Live partial and final callbacks canonicalize an exact dictionary hit once
     onOutputTranscript: (event) => outputEvents.push(event),
     onCueEvent: (event) => cueEvents.push(event)
   });
+  session.updateCorrectionGlossary({
+    revision: 'fixture-v1',
+    entries: [{ source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }]
+  });
 
   session.handleMessage({
     serverContent: {
       interimInputTranscription: { text: '你好' },
-      outputTranscription: { text: 'Hello. su3cl3.' }
+      outputTranscription: { text: 'Hello.' }
     }
   });
   session.handleMessage({
     serverContent: {
       inputTranscription: { text: '你好' },
-      outputTranscription: { text: 'su3cl3. su3cl3.' },
+      outputTranscription: { text: 'Hello.' },
       turnComplete: true
     }
   });
@@ -49,7 +53,7 @@ test('Live partial and final callbacks canonicalize an exact dictionary hit once
   );
   assert.deepEqual(
     cueEvents.filter((event) => event.stream === 'translation').map((event) => event.providerRawText),
-    ['Hello. su3cl3.', 'su3cl3. su3cl3.']
+    ['Hello.', 'Hello.']
   );
 });
 
@@ -80,14 +84,14 @@ test('Live token response dictionary is retained for canonical transcript correc
     session.handleMessage({
       serverContent: {
         inputTranscription: { text: '你好' },
-        outputTranscription: { text: 'Hello. su3cl3.' },
+        outputTranscription: { text: 'Hello.' },
         turnComplete: true
       }
     });
 
     assert.equal(session.liveGlossaryEntries.length, 1);
     assert.equal(outputEvents[0].text, 'su3cl3.');
-    assert.equal(outputEvents[0].rawText, 'Hello. su3cl3.');
+    assert.equal(outputEvents[0].rawText, 'Hello.');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -144,8 +148,13 @@ test('canonical dictionary translation survives cue update, snapshot, replay, Vi
     targetLanguageCode: 'en',
     rawSource: '你好',
     sourceText: '你好',
-    rawTranslation: 'Hello. su3cl3.',
-    translatedText: 'Hello. su3cl3.',
+    rawTranslation: 'Hello.',
+    translatedText: 'Hello.',
+    initialTranslation: 'Hello.',
+    translationProvenance: {
+      audioTurnId: 'turn-1', turnKey: 'turn-1',
+      connectionEpoch: 1, providerEpoch: 1, eventSequence: 1
+    },
     status: 'final'
   };
 
@@ -155,12 +164,15 @@ test('canonical dictionary translation survives cue update, snapshot, replay, Vi
     ...baseCue,
     revision: 2,
     translationVersion: 2,
-    refinedTranslation: 'su3cl3. su3cl3.'
+    translationProvenance: { ...baseCue.translationProvenance, eventSequence: 2 },
+    refinedTranslation: 'su3cl3.'
   }, glossary);
   const updated = source.update(updatedCue);
 
   assert.equal(appended.cue.cueId, 'cue-1');
   assert.equal(updated.cue.cueId, 'cue-1');
+  assert.equal(appended.cue.translationVersion, 1);
+  assert.equal(updated.cue.translationVersion, 2);
   assert.equal(effectiveTranslationForCue(updated.cue), 'su3cl3.');
 
   const snapshot = source.snapshot();
@@ -171,12 +183,14 @@ test('canonical dictionary translation survives cue update, snapshot, replay, Vi
     afterSequence: 0
   }));
   const viewer = mergeMeetingViewerSnapshot(null, snapshot);
+  const reloadedViewer = mergeMeetingViewerSnapshot(null, JSON.parse(JSON.stringify(snapshot)));
   const canonicalCue = viewer.cues[0];
 
   assert.equal(snapshot.cues.length, 1);
   assert.equal(replay.events.length, 2);
   assert.ok(replay.events.every((event) => effectiveTranslationForCue(event.cue) === 'su3cl3.'));
   assert.equal(effectiveTranslationForCue(canonicalCue), 'su3cl3.');
+  assert.equal(effectiveTranslationForCue(reloadedViewer.cues[0]), 'su3cl3.');
 
   for (const exported of [
     exportCuesToTxt([canonicalCue], { stream: 'translation' }),

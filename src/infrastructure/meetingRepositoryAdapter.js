@@ -1,4 +1,5 @@
 import { Meeting, MeetingSegment } from '../domain/meeting/index.js';
+import { assertCheckpointPreservedOnGenericUpdate } from '../lib/checkpointOperation.js';
 import { MEETING_REPOSITORY_METHODS } from '../domain/meeting/meetingRepository.js';
 
 export function createMemoryMeetingRepository() {
@@ -70,6 +71,10 @@ export function createMemoryMeetingRepository() {
       requireMeeting(meetingId);
       return (segments.get(meetingId) || []).map((segment) => new MeetingSegment(segment)).sort(compareSegments);
     },
+    listMeetingSegmentMetadata(meetingId) {
+      requireMeeting(meetingId);
+      return (segments.get(meetingId) || []).map(segmentMetadata).sort(compareSegments);
+    },
 
     updateMeetingSegment(segment) {
       const entity = new MeetingSegment(segment);
@@ -78,6 +83,7 @@ export function createMemoryMeetingRepository() {
       if (existing && existing.meetingId !== entity.meetingId) {
         throw new Error(`MeetingSegment ${entity.id} cannot change meetingId`);
       }
+      if (existing) assertCheckpointPreservedOnGenericUpdate(existing.segment.checkpoint, entity.checkpoint);
       const meetingSegments = segments.get(entity.meetingId) || [];
       const index = meetingSegments.findIndex((stored) => stored.id === entity.id);
 
@@ -91,10 +97,31 @@ export function createMemoryMeetingRepository() {
       nextSegments[index] = clonePlain(entity);
       segments.set(entity.meetingId, nextSegments);
       return new MeetingSegment(entity);
+    },
+
+    mutateMeetingSegment(segmentId, operation) {
+      const found = findSegmentById(segmentId);
+      if (!found) return null;
+      const current = new MeetingSegment(found.segment);
+      const next = operation(current);
+      if (next === current) return current;
+      const entity = new MeetingSegment(next);
+      if (entity.id !== current.id || entity.meetingId !== current.meetingId) {
+        throw new Error('MeetingSegment identity cannot change during checkpoint mutation.');
+      }
+      const meetingSegments = segments.get(entity.meetingId);
+      const index = meetingSegments.findIndex((stored) => stored.id === entity.id);
+      const nextSegments = [...meetingSegments];
+      nextSegments[index] = clonePlain(entity);
+      segments.set(entity.meetingId, nextSegments);
+      return new MeetingSegment(entity);
     }
   };
 
-  return Object.freeze(Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method]])));
+  const exposed = Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method]]));
+  Object.defineProperty(exposed, 'mutateMeetingSegment', { value: repository.mutateMeetingSegment });
+  Object.defineProperty(exposed, 'listMeetingSegmentMetadata', { value: repository.listMeetingSegmentMetadata });
+  return Object.freeze(exposed);
 
   function requireMeeting(meetingId) {
     if (!meetings.has(meetingId)) {
@@ -114,6 +141,11 @@ export function createMemoryMeetingRepository() {
 
 function compareSegments(left, right) {
   return left.sequence - right.sequence || compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id);
+}
+
+function segmentMetadata(segment) {
+  const { id, meetingId, sessionId, sequence, status, startedAt, endedAt, createdAt } = segment;
+  return { id, meetingId, sessionId, sequence, status, startedAt, endedAt, createdAt };
 }
 
 function compareTimestamps(left, right) {

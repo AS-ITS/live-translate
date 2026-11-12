@@ -1,5 +1,6 @@
 export const CUE_FOLLOW_BOTTOM_THRESHOLD_PX = 80;
 import { effectiveSourceForCue, effectiveTranslationForCue } from './cueContent.js';
+import { projectAdjacentFinalCues } from './adjacentCueProjection.js';
 import { toTraditionalChineseText } from './chineseText.js';
 
 export function formatCueTimecode(milliseconds) {
@@ -23,14 +24,14 @@ export function sortFinalCues(cues = []) {
 }
 
 export function sourceTextForCopy(cues = []) {
-  return sortFinalCues(cues)
+  return projectAdjacentFinalCues(sortFinalCues(cues), { stream: 'source' })
     .map((cue) => sourceTextForDisplay(cue))
     .filter(Boolean)
     .join('\n');
 }
 
 export function translationTextForCopy(cues = []) {
-  return sortFinalCues(cues)
+  return projectAdjacentFinalCues(sortFinalCues(cues), { stream: 'translation' })
     .map((cue) => effectiveTranslationForCue(cue))
     .filter(Boolean)
     .join('\n');
@@ -78,7 +79,8 @@ export function cueListForDisplay(state = {}, {
 } = {}) {
   const final = sortFinalCues(mergeRefinedCuesWithRaw(state.finalCues, state.refinedSubtitleCues));
   const partial = includePartial ? partialCueForDisplay(state, { requireSourceText: requireSourceTextForPartial }) : null;
-  const displayedFinal = mergeRepeatedFinalCues ? mergeAdjacentFinalCues(final) : final;
+ const projectedFinal = projectAdjacentFinalCues(final);
+ const displayedFinal = mergeRepeatedFinalCues ? mergeAdjacentFinalCues(projectedFinal) : projectedFinal;
   const cues = partial ? [...displayedFinal, partial] : displayedFinal;
   return cues.map((cue) => ({
     ...cue,

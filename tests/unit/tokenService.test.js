@@ -9,6 +9,17 @@ import {
   safeGeminiProviderDiagnostic
 } from '../../server/tokenService.js';
 
+test('live glossary prompt constrains overlapping names and single-pass translation', () => {
+  const instruction = buildTokenConfig({ sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
+    glossaryEntries: [{ source: '人工智慧', target: 'Artificial Intelligence' }] },
+  new Date('2026-07-06T00:00:00.000Z')).liveConnectConstraints.config.systemInstruction.parts[0].text;
+  assert.match(instruction, /Source term: 人工智慧\nRequired translation: Artificial Intelligence/);
+  assert.match(instruction, /longer glossary source terms before overlapping shorter terms/);
+  assert.match(instruction, /complete proper name intact/);
+  assert.match(instruction, /never match a glossary source term against translated or already replaced output/);
+  assert.match(instruction, /Do not delete, invent, or arbitrarily rearrange content/);
+});
+
 test('classifies and sanitizes provider token errors', () => {
   assert.equal(classifyGeminiProviderError({ status: 401, message: 'invalid API key' }), 'invalid_api_key');
   assert.equal(classifyGeminiProviderError({ status: 403, message: 'permission denied' }), 'permission_api_unavailable');

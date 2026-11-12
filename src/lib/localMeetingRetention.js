@@ -1,4 +1,5 @@
 import { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore } from './localMeetingStorage.js';
+import { createLocalPcmGapLedger } from './localPcmGapLedger.js';
 
 const RECORDER_LOCK_PREFIX = 'live-translate:meeting:';
 const CONTENT_LOCK_PREFIX = 'live-translate:meeting-content:';
@@ -6,6 +7,7 @@ const CONTENT_LOCK_PREFIX = 'live-translate:meeting-content:';
 export function createLocalMeetingRetention({
   manifestStore = createIndexedDbLocalMeetingManifestStore(),
   chunkStore = createOpfsChunkStore(),
+  gapStore = createLocalPcmGapLedger(),
   locks = globalThis.navigator?.locks,
   now = () => Date.now()
 } = {}) {
@@ -25,6 +27,15 @@ export function createLocalMeetingRetention({
   }
 
   async function withRead(meetingId, work) {
+    await assertReadable(meetingId);
+    if (!locks?.request) throw new Error('Browser content lock is unavailable.');
+    return locks.request(`${CONTENT_LOCK_PREFIX}${meetingId}`, { mode: 'shared' }, async () => {
+      await assertReadable(meetingId);
+      return work();
+    });
+  }
+
+  async function withWrite(meetingId, work) {
     await assertReadable(meetingId);
     if (!locks?.request) throw new Error('Browser content lock is unavailable.');
     return locks.request(`${CONTENT_LOCK_PREFIX}${meetingId}`, { mode: 'shared' }, async () => {
@@ -80,6 +91,7 @@ export function createLocalMeetingRetention({
                 // Remove OPFS first. A failed IDB transaction leaves a retryable
                 // index; deleting the index first could orphan audio forever.
                 await chunkStore.removeMeeting(record.meetingId);
+                await gapStore.clearMeeting(record.meetingId);
                 await manifestStore.clearMeetingContent(record.meetingId);
                 result.cleared += 1;
               });
@@ -93,5 +105,5 @@ export function createLocalMeetingRetention({
     return result;
   }
 
-  return Object.freeze({ assertReadable, withRead, observeMeeting, syncMeetings, check });
+  return Object.freeze({ assertReadable, withRead, withWrite, observeMeeting, syncMeetings, check });
 }

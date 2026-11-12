@@ -1,5 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Download } from 'lucide-react';
+import { createLocalMeetingOwnerAccess } from '../../lib/localMeetingOwnerAccess.js';
+import { createIndexedDbLocalMeetingManifestStore } from '../../lib/localMeetingStorage.js';
+import { createLocalMeetingObjectUrl, revokeLocalMeetingObjectUrl } from '../../lib/localMeetingObjectUrls.js';
 import {
   canExportCues,
   exportCuesToSrt,
@@ -16,10 +19,13 @@ export function LocalMeetingExportPanel({ meetingId, cues = [] }) {
     [cues, format, stream]
   );
 
-  function startExport() {
+  async function startExport() {
     setError('');
     try {
-      const content = exportMeetingCues(cues, { format, stream });
+      const content = await createLocalMeetingOwnerAccess().withOwner(
+        meetingId, createIndexedDbLocalMeetingManifestStore(),
+        () => exportMeetingCues(cues, { format, stream })
+      );
       if (!content.trim()) throw Object.assign(new Error('Empty transcript export.'), { code: 'subtitle_cue_empty' });
       downloadText(content, fileNameFor(meetingId, format));
     } catch {
@@ -66,7 +72,7 @@ function fileNameFor(meetingId, format) {
 
 function downloadText(content, fileName) {
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
+  const url = createLocalMeetingObjectUrl(blob);
   const link = document.createElement('a');
   link.href = url;
   link.download = fileName;
@@ -74,5 +80,5 @@ function downloadText(content, fileName) {
   document.body.append(link);
   link.click();
   link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  window.setTimeout(() => revokeLocalMeetingObjectUrl(url), 0);
 }

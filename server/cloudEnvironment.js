@@ -1,8 +1,7 @@
 const REQUIRED_SERVER_VARIABLES = Object.freeze([
   'SUPABASE_URL',
   'SUPABASE_SECRET_KEY',
-  'SUPABASE_JWKS_URL',
-  'AUTH_ALLOWED_EMAIL_DOMAINS'
+  'SUPABASE_JWKS_URL'
 ]);
 
 export function inspectCloudEnvironment({ env = process.env, requireBrowserConfig = false } = {}) {

@@ -36,7 +36,17 @@ test('cloud environment validator reports missing server configuration safely', 
   assert.deepEqual(result.issues.map((issue) => issue.variable), [
     'SUPABASE_URL',
     'SUPABASE_SECRET_KEY',
-    'SUPABASE_JWKS_URL',
-    'AUTH_ALLOWED_EMAIL_DOMAINS'
+    'SUPABASE_JWKS_URL'
   ]);
+});
+
+test('cloud environment accepts absent or blank domain allowlist', () => {
+  for (const domains of [undefined, '', '  ']) {
+    const result = inspectCloudEnvironment({
+      env: { ...validEnv, AUTH_ALLOWED_EMAIL_DOMAINS: domains },
+      requireBrowserConfig: true
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.issues, []);
+  }
 });

@@ -61,10 +61,16 @@ test('local frontend and API override cloud Supabase configuration together', ()
   assert.equal(env.VITE_SUPABASE_PUBLISHABLE_KEY, 'local-public');
   assert.equal(env.SUPABASE_JWKS_URL, `${env.SUPABASE_URL}/auth/v1/.well-known/jwks.json`);
   assert.equal(env.LOCAL_SUPABASE_MODE, 'true');
-  assert.equal(env.AUTH_ALLOWED_EMAIL_DOMAINS, 'as.edu.tw');
+  assert.equal(env.AUTH_ALLOWED_EMAIL_DOMAINS, '');
   assert.equal(env.SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET, undefined);
   assert.equal(env.SUPABASE_ACCESS_TOKEN, undefined);
   assert.equal(env.VERCEL_ENV, undefined);
+});
+
+test('local startup preserves only an explicitly exported domain allowlist', () => {
+  const local = { apiUrl: 'http://127.0.0.1:55421', anonKey: 'local-public', serviceKey: 'local-server' };
+  assert.equal(buildLocalEnvironment(local, { AUTH_ALLOWED_EMAIL_DOMAINS: ' as.edu.tw,gmail.com ' }).AUTH_ALLOWED_EMAIL_DOMAINS, 'as.edu.tw,gmail.com');
+  assert.equal(buildLocalEnvironment(local, {}).AUTH_ALLOWED_EMAIL_DOMAINS, '');
 });
 
 test('local startup rejects a cloud Supabase endpoint even with local keys', () => {

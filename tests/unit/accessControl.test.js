@@ -28,11 +28,16 @@ test('unconfigured non-production access remains available to local test adapter
   await assert.doesNotReject(createAccessControl({ env: { NODE_ENV: 'test' } }).validateRequest(request()));
 });
 
-test('email domain allowlist uses normalized exact matches and fails closed', () => {
+test('email domain allowlist uses normalized exact matches and is optional', () => {
   assert.equal(isAllowedEmailDomain(' Person@Example.COM ', ' example.com,other.example '), true);
+  assert.equal(isAllowedEmailDomain('person@gmail.com', ' as.edu.tw, GMAIL.COM '), true);
+  assert.equal(isAllowedEmailDomain('person@as.edu.tw', ' as.edu.tw, GMAIL.COM '), true);
   assert.equal(isAllowedEmailDomain('person@sub.example.com', 'example.com'), false);
   assert.equal(isAllowedEmailDomain('person@example.com.evil', 'example.com'), false);
   assert.equal(isAllowedEmailDomain('person@evil-example.com', 'example.com'), false);
   assert.equal(isAllowedEmailDomain('person@evil.com@example.com', 'example.com'), false);
-  assert.equal(isAllowedEmailDomain('person@example.com', ''), false);
+  assert.equal(isAllowedEmailDomain('person@gmail.com', ''), true);
+  assert.equal(isAllowedEmailDomain('person@as.edu.tw', undefined), true);
+  assert.equal(isAllowedEmailDomain('person@gmail.com', ', ,'), false);
+  assert.equal(isAllowedEmailDomain('not-an-email', ''), false);
 });

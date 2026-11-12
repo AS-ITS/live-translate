@@ -56,16 +56,16 @@ export function getBearerToken(req) {
 }
 
 export function isAllowedEmailDomain(email, configuredDomains) {
-  const domains = String(configuredDomains || '')
+  const configured = String(configuredDomains || '');
+  const domains = configured
     .split(',')
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
-  if (domains.length === 0) return false;
   const normalizedEmail = String(email || '').trim().toLowerCase();
   const separator = normalizedEmail.indexOf('@');
   if (separator <= 0 || separator !== normalizedEmail.lastIndexOf('@') || separator === normalizedEmail.length - 1) return false;
   const domain = normalizedEmail.slice(separator + 1);
-  return domains.includes(domain);
+  return configured.trim().length === 0 || domains.includes(domain);
 }
 
 export function accessError(code) {

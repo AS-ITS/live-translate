@@ -119,7 +119,7 @@ export function buildLocalEnvironment(local, baseEnv = process.env) {
     SUPABASE_REALTIME_SIGNING_PRIVATE_JWK: '', SUPABASE_WORKER_USER_ID: '',
     SUPABASE_JWKS_URL: `${local.apiUrl}/auth/v1/.well-known/jwks.json`,
     VITE_SUPABASE_URL: local.apiUrl, VITE_SUPABASE_PUBLISHABLE_KEY: local.anonKey,
-    AUTH_ALLOWED_EMAIL_DOMAINS: 'as.edu.tw',
+    AUTH_ALLOWED_EMAIL_DOMAINS: String(baseEnv.AUTH_ALLOWED_EMAIL_DOMAINS || '').trim(),
     WEBRTC_SIGNALING_REDIS_URL: redisUrl, WEBRTC_SIGNALING_REDIS_TOKEN: '',
     REDIS_URL: redisUrl, UPSTASH_REDIS_REST_URL: '', UPSTASH_REDIS_REST_TOKEN: '',
     dev_frontend_origin: 'http://127.0.0.1:5173', dev_backend_origin: 'http://127.0.0.1:3000',

@@ -651,8 +651,9 @@ Malformed session identifiers return `400 invalid_request`.
 
 Private `/api/*` routes require `Authorization: Bearer <supabase-access-token>`.
 The same Supabase access token is used for HTTP and execution-events WebSocket authentication.
-Supabase validation checks signature, issuer, audience, expiry, the
-`authenticated` role, and `AUTH_ALLOWED_EMAIL_DOMAINS`, returning fixed
+Supabase validation checks signature, issuer, audience, expiry, and
+`authenticated` role. Optional `AUTH_ALLOWED_EMAIL_DOMAINS` restricts exact
+email domains when set; unset or blank adds no domain restriction. The gate returns
 `401 auth_required`, `401 auth_invalid`, or `403 auth_forbidden` errors.
 `GET /api/profile` returns only the current user's profile. With
 `P1_PROFILE_ONLY=true`, unimplemented capabilities return
@@ -981,7 +982,7 @@ Successful and failed invite, remove, enable, disable, and transfer operations w
 
 ## Domain auto-activation access gate
 
-After the backend verifies the Supabase JWT and exact `AUTH_ALLOWED_EMAIL_DOMAINS` match, it invokes the service-role-only `activate_pending_profile` RPC. The RPC performs only `pending -> active`, preserves role, and returns the current profile when a concurrent operation already changed it. New and existing pending profiles therefore enter the application without administrator approval. Missing profiles or failed activation return `503`; disabled profiles remain `403 auth_forbidden`. `POST /api/admin/users/:id/approve` is removed. Administrator `active -> disabled` and `disabled -> active` controls remain available.
+After the backend verifies the Supabase JWT and any configured `AUTH_ALLOWED_EMAIL_DOMAINS` restriction, it invokes the service-role-only `activate_pending_profile` RPC. The RPC performs only `pending -> active`, preserves role, and returns the current profile when a concurrent operation already changed it. New and existing pending profiles therefore enter the application without administrator approval. Missing profiles or failed activation return `503`; disabled profiles remain `403 auth_forbidden`. `POST /api/admin/users/:id/approve` is removed. Administrator `active -> disabled` and `disabled -> active` controls remain available.
 
 ## Session End Event
 

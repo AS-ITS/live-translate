@@ -2,7 +2,7 @@
 
 ## Google Workspace account provisioning
 
-Users sign in with Google OAuth through Supabase; Live Translate has no password flow. The backend validates the Supabase JWT signature, issuer, audience, expiry, authenticated role, and `AUTH_ALLOWED_EMAIL_DOMAINS`. Domain comparison is case-normalized and exact. An empty allowlist, a subdomain, or a suffix lookalike is rejected.
+Users sign in with Google OAuth through Supabase; Live Translate has no password flow. The backend validates Supabase JWT signature, issuer, audience, expiry, and authenticated role. `AUTH_ALLOWED_EMAIL_DOMAINS` is optional: unset or blank adds no domain restriction; a configured list uses case-insensitive exact matching and rejects subdomain or suffix lookalikes.
 
 The Supabase Auth trigger creates a `member` profile with transient `pending` status. On the first authenticated backend request, the trusted service-role-only `activate_pending_profile` RPC conditionally changes only `pending -> active`. The same flow activates existing pending profiles after their next valid sign-in. The RPC never changes `role`; a `super_admin` remains a `super_admin`.
 
@@ -14,7 +14,7 @@ The Auth trigger and profile default remain `pending` so an Auth user is never a
 
 Active system administrators can change another profile between `member` and `super_admin` through `PATCH /api/admin/users/:userId/role`. The API keeps JWT/profile authorization and calls the service-role-only `public.update_account_role` RPC. That RPC acquires a transaction-scoped advisory lock before re-reading actor and target profiles, requires the actor to still be an active `super_admin`, rejects self-demotion and last-admin demotion, updates only `role`/`updated_at`, and inserts the successful role-change audit row in the same transaction. Same-role requests return `changed=false` without updating the profile or inserting an audit row.
 
-Role changes do not alter `status`, `disabled_at`, Meeting ownership, Meeting membership, or Viewer permissions. `AUTH_ALLOWED_EMAIL_DOMAINS` continues to control only trusted `pending -> active` activation and never grants `super_admin`.
+Role changes do not alter `status`, `disabled_at`, Meeting ownership, Meeting membership, or Viewer permissions. `AUTH_ALLOWED_EMAIL_DOMAINS`, when configured, restricts authenticated access before trusted `pending -> active` activation and never grants `super_admin`.
 
 `GET /api/admin/users?page=1&pageSize=12&query=&status=all` returns the requested page. `pageSize` accepts `12`, `24`, or `48`; `status` accepts `all`, `active`, or `disabled`. The account page has no approval action. It retains enable, disable, asset transfer, search, pagination, and current-account display. A transient pending row can appear in an unfiltered list and is labeled as waiting for first login.
 

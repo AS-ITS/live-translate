@@ -1063,7 +1063,7 @@ smoke-test Live clients use `v1alpha` because the current `@google/genai` SDK
 requires `v1alpha` for ephemeral-token connections. The SDK may still print its
 experimental ephemeral-token warning; that warning is expected.
 
-Direct two-hour run:
+這個測試專用的伺服器端 `GEMINI_API_KEY` 不屬於一般 Meeting 安裝；一般 Meeting 由 Host 在介面輸入 key。環境變數載入方式見[本機開發指南](development.md#方式-b手動-dev-server)。若獲准執行兩小時測試，命令如下：
 
 ```bash
 ./scripts/live-meeting-smoke.sh

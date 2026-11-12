@@ -32,9 +32,12 @@ Host 瀏覽器使用後端核發的短效 token 直接連接 Gemini Live API。�
 | 想做的事 | 文件 |
 | --- | --- |
 | 安裝與本機開發 | [本機開發](docs/development.md) · [Google OAuth](docs/GOOGLE_OAUTH_SETUP.md) · [本機 OAuth Sample](supabase/.env.local.example) |
-| 設定雲端環境 | [環境變數 Sample](.env.example) · [部署](docs/DEPLOYMENT.md) |
+| 手動啟動 Dev Server | [本機環境變數 Sample](.env.example) · [本機開發](docs/development.md#方式-b手動-dev-server) |
+| 設定雲端環境 | [部署](docs/DEPLOYMENT.md) |
 | 使用與驗證 | [使用指南](docs/USER_GUIDE.md) · [測試與驗收](docs/TESTING.md) |
 | 理解與維護 | [架構總覽](docs/architecture/architecture-overview.md) · [API](docs/api.md) · [功能規格](docs/features/) · [貢獻指南](CONTRIBUTING.md) |
+
+`AUTH_ALLOWED_EMAIL_DOMAINS` 為選填。未設定時不限制 Google 帳號的電子郵件網域；設定後只允許指定網域登入。Google OAuth Audience／Testing 限制仍由 Google 控制；設定方式見[本機開發指南](docs/development.md#環境變數盤點)。
 
 ## 授權與作者
 

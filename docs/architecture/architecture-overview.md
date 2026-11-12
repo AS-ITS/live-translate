@@ -86,7 +86,7 @@ Relevant background docs:
 
 Supabase Google OAuth uses PKCE in the browser. The backend validates the
 Supabase access JWT before private dispatch, including issuer, audience,
-expiry, authenticated role, and `AUTH_ALLOWED_EMAIL_DOMAINS`. Matching pending
+expiry, and authenticated role. Optional `AUTH_ALLOWED_EMAIL_DOMAINS` restricts exact email domains when configured. Matching pending
 profiles are conditionally activated by a service-role-only RPC before private
 dispatch; disabled profiles are never auto-activated. Profile data is served by
 `GET /api/profile`; the service-role key is server-only. P1

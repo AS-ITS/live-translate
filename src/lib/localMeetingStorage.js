@@ -1335,19 +1335,19 @@ export function createIndexedDbLocalMeetingManifestStore({
 export function createOpfsChunkStore({ rootDirectory = null } = {}) {
   return Object.freeze({
     async write(path, bytes) {
-      const { directory, name } = await parentDirectory(rootDirectory, path, true);
+      const { directory, name } = await opfsWriteStep('PARENT_DIRECTORY', () => parentDirectory(rootDirectory, path, true));
       try {
-        await directory.getFileHandle(name, { create: false });
+        await opfsWriteStep('FILE_LOOKUP', () => directory.getFileHandle(name, { create: false }));
         throw conflict('local_chunk_file_exists');
       } catch (error) {
         if (error?.code === 'local_chunk_file_exists') throw error;
         if (error?.name !== 'NotFoundError') throw error;
       }
-      const file = await directory.getFileHandle(name, { create: true });
-      const writable = await file.createWritable();
+      const file = await opfsWriteStep('FILE_CREATE', () => directory.getFileHandle(name, { create: true }));
+      const writable = await opfsWriteStep('WRITABLE_CREATE', () => file.createWritable());
       try {
-        await writable.write(bytes);
-        await writable.close();
+        await opfsWriteStep('WRITABLE_WRITE', () => writable.write(bytes));
+        await opfsWriteStep('WRITABLE_CLOSE', () => writable.close());
       } catch (error) {
         try { await writable.abort?.(); } catch { /* best effort */ }
         throw error;
@@ -1395,6 +1395,15 @@ export function createOpfsChunkStore({ rootDirectory = null } = {}) {
       }
     }
   });
+}
+
+async function opfsWriteStep(operation, work) {
+  try {
+    return await work();
+  } catch (error) {
+    try { if (error && typeof error === 'object') error.opfsOperation = operation; } catch { /* Preserve the original error. */ }
+    throw error;
+  }
 }
 
 function projectLocalChunk(value) {

@@ -1,5 +1,7 @@
 # Changelog
 
+- Issue #41 iPhone Safari 定向 RCA：翻譯 PCM 的 `AUDIO_CHUNK_WRITE` 確認包覆 OPFS Chunk write；音訊診斷新增固定 OPFS 步驟與 DOMException 分類，供實機定位 `UnknownError`。底層 Safari 失敗步驟尚待實機複測，保存流程未改。
+
 - Issue #41 iPhone 音訊診斷：在開發／明確啟用診斷的選單提供可截圖面板，顯示瀏覽器 MIME 宣告、實際錄製結果及頁面記憶體中最近 10 筆安全分類錯誤；不改錄音保存流程。
 
 - Issue #41 Audio Failure Diagnostic: original audio, PCM Journal, and translated audio failures now emit `ISSUE41_AUDIO_FAILURE` with an explicit path, failure stage, allowlisted error class, and pseudonymous Segment code. The WebM unsupported and MediaRecorder error branches are covered; real iPhone Safari verification remains pending.

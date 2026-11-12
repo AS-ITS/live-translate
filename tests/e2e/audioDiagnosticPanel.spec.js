@@ -14,6 +14,9 @@ test('audio diagnostics show safe recent errors after reopening on desktop and i
         error: { code: 'WEBM_UNSUPPORTED', message: 'secret subtitle token', stack: 'private stack' },
         segmentId: 'private-meeting-id' });
     }
+    const error = new DOMException('private storage path', 'UnknownError');
+    error.opfsOperation = 'WRITABLE_CREATE';
+    recordAudioFailure({ audioPath: 'TRANSLATED_AUDIO', stage: 'AUDIO_CHUNK_WRITE', error });
   });
 
   const menuButton = page.getByRole('button', { name: '開啟導覽選單' });
@@ -29,6 +32,8 @@ test('audio diagnostics show safe recent errors after reopening on desktop and i
   await expect(panel.getByText('已收到非空音訊區塊')).toBeVisible();
   await expect(panel.locator('.audio-diagnostic-events li')).toHaveCount(10);
   await expect(panel.getByText('WEBM_UNSUPPORTED').first()).toBeVisible();
+  await expect(panel.getByText('WRITABLE_CREATE')).toBeVisible();
+  await expect(panel.getByText('DOM_EXCEPTION')).toBeVisible();
   const panelText = await panel.innerText();
   expect(panelText).not.toMatch(/secret|subtitle|token|private|owner@example.com|meeting-id|stack/iu);
   await panel.getByRole('button', { name: '複製診斷摘要' }).click();

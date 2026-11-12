@@ -20,6 +20,10 @@ const ERROR_NAMES = new Set([
 ]);
 const segmentCodes = new Map();
 const AUDIO_PATHS = new Set(['ORIGINAL_AUDIO', 'PCM_JOURNAL', 'TRANSLATED_AUDIO']);
+const OPFS_WRITE_OPERATIONS = new Set([
+  'PARENT_DIRECTORY', 'FILE_LOOKUP', 'FILE_CREATE',
+  'WRITABLE_CREATE', 'WRITABLE_WRITE', 'WRITABLE_CLOSE'
+]);
 const listeners = new Set();
 let snapshot = { events: [], recorderMimeType: '', recordedChunk: false };
 
@@ -64,6 +68,9 @@ export function recordAudioFailure({ audioPath, stage, operation, error, writerS
     audioPath: AUDIO_PATHS.has(audioPath) ? audioPath : null,
     stage,
     operation: safeWord(operation),
+    storageOperation: OPFS_WRITE_OPERATIONS.has(error?.opfsOperation) ? error.opfsOperation : null,
+    errorOrigin: typeof globalThis.DOMException === 'function' && error instanceof globalThis.DOMException
+      ? 'DOM_EXCEPTION' : 'OTHER',
     errorName: ERROR_CODES.has(error?.code) || ERROR_NAMES.has(error?.code) ? error.code
       : ERROR_NAMES.has(error?.name) ? error.name : 'UNCLASSIFIED',
     writerState: safeWord(writerState),
@@ -76,6 +83,8 @@ export function recordAudioFailure({ audioPath, stage, operation, error, writerS
     audioPath: detail.audioPath,
     stage: detail.stage,
     code: detail.errorName,
+    storageOperation: detail.storageOperation,
+    errorOrigin: detail.errorOrigin,
     at: new Date().toISOString()
   }].slice(-10) });
   try { console.info('ISSUE41_AUDIO_FAILURE', detail); } catch { /* Diagnostics must not affect recording. */ }

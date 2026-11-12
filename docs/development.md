@@ -304,15 +304,18 @@ Frontend testing scope for MVP:
 
 ## Runtime capability matrix
 
-| Capability | Local Node runtime | Vercel/Supabase runtime |
-| --- | --- | --- |
-| Meeting, Segment, Session, Cue persistence | Supabase configuration required; JSON files are test-only fixtures | Owner-scoped Supabase repositories |
-| Checkpoint path IDs | UUIDs for newly created records; legacy test adapters may opt out of strict path validation | UUIDs required |
-| Translation execution | Local worker runtime | Bounded `/api/internal/worker` Cron batches |
-| Viewer delivery | Local SSE/WebSocket adapters | Supabase Realtime and signed Storage URLs |
-| Readiness | `/readyz` reports required runtime configuration | `/readyz` also requires Supabase auth configuration |
+現行正式 Meeting 的錄製內容一律為 Host Local-only。下表只列目前產品路徑；下方舊 worker／file-backed／Cloud Recording 說明屬歷史或其他能力，不可視為 Meeting 雲端錄製承諾。
 
-For the safe deployment preflight, set `SMOKE_BASE_URL` and run `npm run test:deployment-preflight`. It verifies `/healthz`, `/readyz`, unauthenticated private API rejection, metrics auth rejection, and worker auth rejection without calling Gemini or processing queue items. For the full staging smoke check, separately verify a valid owner-scoped API request and one authenticated worker request with `Authorization: Bearer $CRON_SECRET`. A successful `/healthz` response alone does not prove that Supabase migrations, RLS, Storage, Realtime, or the worker are ready.
+| Capability | Local | Preview／Production |
+| --- | --- | --- |
+| Meeting 錄製內容 | Host OPFS／IndexedDB 保存 PCM、音訊、Cue、Transcript、Checkpoint、Journal、Recovery | 同為 Host OPFS／IndexedDB；換裝置或清除網站資料無法依賴 Supabase 還原 |
+| Meeting metadata／設定／字典／授權 | 本機 Supabase，透過受權 API | 各環境獨立 Supabase，透過受權 API；僅保存必要協調 metadata |
+| Viewer 字幕 | WebRTC DataChannel，Redis signaling | WebRTC DataChannel，Redis signaling；跨網路 TURN 需實機驗收 |
+| Readiness | `/readyz` 檢查本機設定 | `/readyz` 檢查 Supabase 等部署設定，不代表 RC1 實機驗收通過 |
+
+歷史 Cloud Recording、SSE／WebSocket Viewer adapter、Supabase Realtime 與 signed Storage URL 設計保留作遷移背景；它們不是現行正式 Meeting 的字幕或錄製內容交付能力。下文提及的雲端音訊、Cue、Transcript、Checkpoint 或 export worker 若未註明，均應依本段界定為歷史／其他能力，不可用來推定 Local-only Meeting 會上傳內容。
+
+For the safe deployment preflight, set `SMOKE_BASE_URL` and run `npm run test:deployment-preflight`. It verifies `/healthz`, `/readyz`, unauthenticated private API rejection, metrics auth rejection, and worker auth rejection without calling Gemini or processing queue items. For the full staging smoke check, separately verify a valid owner-scoped API request and one authenticated worker request with `Authorization: Bearer $CRON_SECRET`. A successful `/healthz` response alone does not prove that Supabase migrations, RLS, or the worker are ready; legacy Storage／Realtime readiness checks, where still present, do not make those services the current Meeting content path.
 ## Production Gemini Smoke Test
 
 For the first Production Gemini smoke test, keep the request short and avoid
@@ -332,6 +335,8 @@ available to the smoke runner. Do not place that key in browser-exposed
 
 Google OAuth can complete successfully while `GET /api/profile` rejects a personal-domain or disabled account with `403 auth_forbidden`. `AUTH_ALLOWED_EMAIL_DOMAINS` remains the backend authority; Google `hd` hints are optional UI guidance only and are not an authorization control. The access-denied screen keeps the session long enough to show the current email, and users must choose “切換 Google 帳號” to sign out and reopen the Google account picker with `prompt=select_account`.
 ## Supabase request boundaries
+
+本節以下的 P7／P8 Cloud Recording、signed Storage URL、雲端音訊清理及 legacy Session export 敘述是歷史／其他能力紀錄；不可作為 Issue #41 正式 Meeting 錄製內容或 Viewer 字幕來源的現行能力說明。現行資料邊界以[架構總覽](architecture/architecture-overview.md#現行正式產品架構local-only)與上方 capability matrix 為準。
 
 Private owner CRUD may use the authenticated Supabase access token through the user-scoped REST client. Worker, admin, Vault, readiness, and other explicitly privileged operations use the service-role client. The two clients must not be interchangeable.
 

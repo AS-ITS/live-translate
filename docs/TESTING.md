@@ -31,6 +31,8 @@ Local acceptance path.
 
 ### Issue #41 RC1 acceptance status (2026-11-09)
 
+本節為截至 2026-11-09 的歷史測試紀錄，不代表目前工作樹已重新執行 40／130 分鐘測試。功能測試、RAM Gate、mobile WebKit 回歸與 Safari 實機驗收分別判定；任一項不得以另一項的 PASS 代替。
+
 Audit modes: `--zero-write-audit` retains five-channel coverage, metadata allowlist, Database/RPC/Storage negative controls, coverage matrix, and Cloud Zero archive. `--ram-gate-40` and `--ram-gate-130` retain normal-flow Cloud Content Write monitoring across browser requests, server fetches, database triggers, and before/after inventories without running those negative controls. RAM archives include `server-fetch-audit.ndjson`; a RAM-mode monitoring result does not certify the separate Cloud Zero audit.
 
 P1 End／Pause 競態定向 Chromium E2E：End 後立即返回、Pause 後立即 End、End 快速連點、Pause checkpoint 故障注入皆通過；回讀 Local-only Recording、OPFS PCM Journal、Cue、Checkpoint 與完成 API 次數。原有停止錄音→繼續→End、End 後禁錄、Cue flush 失敗回讀短版測試通過。`stopping` 故障恢復定向驗證：Checkpoint barrier 失敗不導頁、不完成 Meeting；重載後再次注入失敗時不啟動 Provider、不建立後繼 Segment；移除故障後經本機 Cue／Checkpoint 與 Journal receipt 驗證，可繼續錄音、再暫停並正常 End。這只解除 Lifecycle 已知阻擋；RC-M1／RC-M3 實機驗收及既有 RAM Gate 阻擋仍須依各自驗收完成。
@@ -43,7 +45,7 @@ Run `2026-11-08t15-51-28-836z-27302` remains unchanged: 40-minute recording `PAS
 
 `RC1_FUNCTION_GATE_STATUS=PARTIAL`: targeted Local evidence covers member Meeting creation, owner/member isolation, Viewer metadata authorization, mock Viewer reconnection, and the 40-minute Local-only PCM/Journal/Cue/Checkpoint, Cloud Zero Write, End/Reload contract. An ordinary member browser flow, second-device Viewer network loss/reconnect, real-microphone Local-only integrity, and an RC1 Chrome/Safari device matrix remain unverified. The RC-M1 through RC-M6 full manual cases below remain `NOT_TESTED`; reuse passed automated evidence without rerunning those Gates.
 
-Latest 130-minute run `2026-11-09t04-29-36-305z-60018`: `RECORDING_130MIN_VERDICT=PASS` (`7,800,033 ms`); 8/8 rollovers and 9 Segments completed and ended with ownership verified. PCM／Journal／Cue／Checkpoint integrity is `PASS`: 9 Journal epochs have zero gaps and overlaps and valid ledger／PCM hashes; End and Reload readback retained 7,646 audio chunks, 9 Cues, and 9 Checkpoints in `stopped_local`. `CLOUD_ZERO_WRITE_VERDICT=PASS` (0 DB violations, 0 recording HTTP write violations; 7,783 allowed metadata writes). `EVIDENCE_AUDIT_VERDICT=PASS` (11/11 checks). The runner's top-level `EVIDENCE_VERDICT=FAIL` reflects the RAM Gate failure, not a failed evidence check. `RAM_GATE_VERDICT=FAIL`: last-30-minute RSS slope 1.999 MiB/min exceeds the provisional 0.5 MiB/min limit; the other five RAM checks pass. `RC1_RELEASE_VERDICT=BLOCKED`. Source: [`summary.json`](../test-results/issue41-runner/2026-11-09t04-29-36-305z-60018/summary.json), [`evidence.json`](../test-results/issue41-runner/2026-11-09t04-29-36-305z-60018/evidence.json), and [`resources.ndjson`](../test-results/issue41-runner/2026-11-09t04-29-36-305z-60018/resources.ndjson).
+Latest 130-minute run `2026-11-09t04-29-36-305z-60018`: `RECORDING_130MIN_VERDICT=PASS` (`7,800,033 ms`); 8/8 rollovers and 9 Segments completed and ended with ownership verified. PCM／Journal／Cue／Checkpoint integrity is `PASS`: 9 Journal epochs have zero gaps and overlaps and valid ledger／PCM hashes; End and Reload readback retained 7,646 audio chunks, 9 Cues, and 9 Checkpoints in `stopped_local`. `CLOUD_ZERO_WRITE_VERDICT=PASS` (0 DB violations, 0 recording HTTP write violations; 7,783 allowed metadata writes). `EVIDENCE_AUDIT_VERDICT=PASS` (11/11 checks). The runner's top-level `EVIDENCE_VERDICT=FAIL` reflects the RAM Gate failure, not a failed evidence check. `RAM_GATE_VERDICT=FAIL`: last-30-minute RSS slope 1.999 MiB/min exceeds the provisional 0.5 MiB/min limit; the other five RAM checks pass. `RC1_RELEASE_VERDICT=BLOCKED`. Historical run ID: `2026-11-09t04-29-36-305z-60018`. The original summary/evidence/resources reports are unavailable in this workdir; these recorded results cannot be independently reverified from raw artifacts in this workdir.
 
 RAM attribution for this run remains `UNDETERMINED`: renderer PID 60244 stayed stable, the 30-minute Gate window has 61 complete samples (largest gap 30.011 seconds), and End +0/+30/+60-second samples are present. Logs and browser errors show no OOM or browser crash. CDP backing storage, embedder heap, DOM, and Worker snapshots show no clear sustained growth; no heap snapshot was captured. The preceding 130-minute run `2026-11-09t00-54-35-131z-38411` is documented with RSS slope 0.850 MiB/min, but its raw report and observer configuration are absent from this worktree. `RAM_CROSS_RUN_COMPARABILITY=NOT_ESTABLISHED`; neither value proves product improvement or regression. Do not change the RAM threshold or infer a memory owner from these snapshots.
 
@@ -654,6 +656,8 @@ npm run db:lint
 ```
 
 ## Realtime subtitle pipeline strategy (P0 and P1 implemented)
+
+以下 P0／P1、Issue #29 與 Session sharing 的 snapshot／SSE 測試敘述為當時版本的測試紀錄；不代表 Issue #41 整合後正式 Viewer 仍使用 SSE。現行 Viewer 透過 WebRTC DataChannel，現行驗證邊界見上方「WebRTC 正式流程」及 RC1 矩陣。
 
 The four-stage pipeline is documented as a deterministic, mockable boundary.
 P0 currently implements the voice transcription and finalized Cue stages;

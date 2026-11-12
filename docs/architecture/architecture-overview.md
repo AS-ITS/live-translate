@@ -42,7 +42,9 @@ after its IndexedDB transaction completes; if that write fails, the live status
 reports the failure. A queued PCM range is never presented as an OPFS durable
 claim until the Journal worker confirms its commit.
 
-## Phase 0 contract delta, 2026-10-01
+## Phase 0 contract delta, 2026-10-01（歷史設計）
+
+以下本機服務、待傳佇列與雲端 ACK 設計不是 Issue #41 正式 Meeting 錄製路徑；現行內容由 Host OPFS／IndexedDB 保存。
 
 The browser is the only owner of page storage. It writes immutable audio
 chunks to page OPFS, then explicitly sends each chunk to the local service;
@@ -77,7 +79,9 @@ Phase 1 real-device acceptance remains pending: Mac and Windows microphones,
 reload/crash queue recovery, OPFS quota/offline resend, audio loss/recovery,
 and approved Preview/Production Origin/CORS checks.
 
-## Meeting lifecycle v2
+## Meeting lifecycle v2（歷史 Cloud Recording 契約）
+
+以下雲端 Session／Segment／lease／lifecycle RPC 僅說明切換前契約。現行 Meeting 只在 Supabase 維護 metadata、設定、字典、授權及必要協調 metadata；錄製生命週期與內容由 Host 本機管理。
 
 Current expiry policy: `purge_at` is an immutable visibility deadline, not an
 automatic deletion trigger. Ordinary users and Viewer shares lose access at the
@@ -226,12 +230,10 @@ Gemini/browser-specific
 by `src/layouts/AppLayout.jsx`. These layout components own presentation
 composition only and do not own Session lifecycle or API state.
 
-Session-first implementation now creates a persisted `created` Session before
-opening Gemini Live, keeps lifecycle and transcript snapshots keyed by
-`sessionId` and `segmentId`, and exposes a read-only Viewer path through opaque
-share tokens and per-Session SSE events. The current broadcaster is
-process-local; production Meeting Viewer delivery uses Supabase Realtime. Share token
-records are file-backed and survive backend restart.
+The historical Session-first implementation persisted `created` Sessions and
+exposed per-Session SSE sharing. Those SSE and Supabase Realtime paths do not
+carry current Meeting Viewer subtitles. Current Meeting Viewer shares authorize
+a WebRTC DataChannel connection to the Host.
 
 Meeting-first recorder sharing creates a configurable Meeting draft and its
 first empty Segment before recording. The creator saves the name, languages,
@@ -312,17 +314,12 @@ When opened with `#live?meetingId=...`, the live UI reads ordered Segment
 checkpoints, restores confirmed transcript content, and lets the user manually
 continue recording in the next recovered Segment.
 
-Issue #29 specifies the next Meeting-centered UI boundary and a Meeting-level
-Viewer broadcast path. The specification keeps the existing Meeting/Segment
-checkpoint as the durable source of complete final Cues, while a process-local
-Meeting broadcaster delivers finalized `cue.append` events without waiting for
-checkpoint persistence. Viewer reconnect uses a Meeting snapshot plus Cue
-cursor merge; it does not change the direct browser-to-Gemini path or Recorder
-authorization model. Milestone 5 implements this path with an independent Cue
-publish endpoint, bounded in-memory replay, SSE gap recovery, and deterministic
-Viewer latency validation. Those SSE/replay details remain only for local
-fallback; cloud delivery and durable replay are provided by Supabase Realtime
-and persisted Final Cues.
+Historical Issue #29 specified a Meeting-level Viewer broadcast path with
+checkpoint-backed Cues, a process-local broadcaster, and snapshot/cursor
+reconnect. Milestone 5 historically implemented Cue publish,
+in-memory replay, and SSE gap recovery. Current Meeting Viewer snapshots,
+updates, and replay come from the Host over WebRTC DataChannel; Supabase
+Realtime and cloud Final Cue rows are not a Meeting subtitle fallback.
 
 ## 3. Runtime Architecture
 
@@ -1130,7 +1127,9 @@ service-role request.
 
 ## 15. 歷史 Cloud Recording 儲存模型（非現行正式錄製路徑）
 
-Current state:
+本節的雲端 Cue／音訊／事件、Realtime、SSE 與 file-backed Session 敘述僅記錄舊契約；現行 Meeting 的本機錄製與 Viewer 字幕以本文開頭的 Local-only 架構為準。其他仍使用的執行事件 WebSocket 等功能不受此切換說明影響。
+
+Historical cloud mode:
 
 - Supabase cloud mode stores owner-scoped Meetings, Segments, Sessions, Final
   Cues, shares, audio metadata, glossary data, translation queue/DLQ records,
@@ -1294,4 +1293,4 @@ glossary management UI/API, or cross-session history.
 - [docs/features/session-records-history.md](../features/session-records-history.md)
 - [docs/TESTING.md](../TESTING.md)
 - [docs/releases/v0.6.0-foundation.md](../releases/v0.6.0-foundation.md)
-- Meeting Viewer production delivery now stores sanitized finalized Cue events in owner-scoped Supabase `meeting_events`; reconnect replays events after the prior cursor before applying buffered Realtime broadcasts. Local SSE remains the development fallback.
+- Historical Meeting Viewer delivery stored Cue events in Supabase `meeting_events` and used Realtime／SSE replay. Current Meeting Viewer receives Host snapshots and replay over WebRTC DataChannel.

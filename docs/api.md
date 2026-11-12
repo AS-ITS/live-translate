@@ -15,13 +15,20 @@ the new lifecycle version. Meeting settings, glossary, membership, sharing,
 and WebRTC signaling APIs remain available. Older recording routes below describe
 historical behavior and are no longer writable.
 
+For current Meeting recording, `GET /api/shared-meetings/:token/metadata` (or
+the short-code variant) returns authorized Meeting metadata only. The Viewer
+receives Cue snapshots, updates, and replay from the Host over WebRTC
+DataChannel. Supabase Realtime, Meeting SSE, cloud Cue／Transcript／Checkpoint,
+and cloud recovery are not current recording or Viewer subtitle transports.
+The historical request／response examples below do not override this contract.
+
 ## Host Local-only Start/Stop token boundary
 
 The Host creates and persists recording Session and Segment identities in IndexedDB. `POST /api/live-token` accepts `x-host-local-recording: 1` with matching `x-meeting-session-id` and `x-meeting-segment-id` headers for this path. It validates the authenticated actor's Meeting `canRecord` permission and uses cloud Meeting language and glossary settings; it does not read or write a cloud recording Session, Segment, lease, or Checkpoint. The token endpoint retains its origin gate and rate limit. Host Start, Pause, Continue, Stop, and End persist recording state locally. Rollover and interrupted recovery use local durable records; Viewer metadata supplies only Meeting state.
 
-## Issue #41 Local-only Cutover contract (pending isolated acceptance)
+## Issue #41 Local-only Cutover contract
 
-Meeting Cue, Checkpoint, transcript, translated output, audio upload, and Cloud Export content endpoints return `410 meeting_content_local_only`. Legacy shared Session content endpoints are closed. Meeting settings, glossary, sharing, Meeting completion metadata and Viewer WebRTC signaling remain available. Meeting detail and Segment list responses omit historical content; Host local IndexedDB/OPFS supplies transcript and audio exports after Reload. The isolated Cutover Migration also rejects direct table/RPC/Storage writes, while preserving existing historical rows for separate controlled cleanup. No Production Migration has run.
+Meeting Cue, Checkpoint, transcript, translated output, audio upload, and Cloud Export content reads／writes return `410 meeting_content_local_only`; authorized deletion methods are separate from these content routes. Legacy shared Session content reads are closed. Meeting settings, glossary, sharing, Meeting completion metadata and Viewer WebRTC signaling remain available. Meeting detail and Segment list responses omit historical content; Host local IndexedDB/OPFS supplies transcript and audio exports after Reload. The isolated Cutover Migration also rejects direct table/RPC/Storage writes, while preserving existing historical rows for separate controlled cleanup. No Production Migration has run.
 
 ## Current Meeting expiry policy (2026-10-07)
 
@@ -86,7 +93,7 @@ cannot be labelled `baseline passed`. Phase 1 physical acceptance remains
 pending for Mac/Windows microphones, reload/crash recovery, OPFS quota/offline
 resend, audio loss/recovery, and Preview/Production Origin/CORS.
 
-## Meeting recording lifecycle v2 (Issue #37 Phase 1)
+## Meeting recording lifecycle v2 (Issue #37 Phase 1, historical cloud contract)
 
 New Meetings use a Supabase-owned lifecycle. Vercel Functions only validate the
 request and invoke a transactional RPC; they do not retain recorder state.
@@ -184,7 +191,11 @@ all Segments or expose Meeting glossary, private settings, audio metadata, or
 live session identifiers. Cursor pages are merged by `cueId` and ordered by
 Segment sequence plus Cue sequence, so Realtime delivery remains idempotent.
 
-## Meeting export lifecycle (P7)
+## Meeting export lifecycle (P7, historical cloud content contract)
+
+For current Local-only Meetings, content export creation and download routes
+return `410 meeting_content_local_only`; Host export is generated from its own
+OPFS／IndexedDB data. The routes below describe the earlier cloud artifact flow.
 
 Assigned members can read the meeting data explicitly covered by RLS and can
 write recording data only while active with `can_record=true`. They cannot
@@ -378,7 +389,13 @@ The Meeting-scoped Viewer API, private glossary fields, Storage upload, and
 Realtime contracts are documented in
 [Meeting Center and Live Viewer](features/meeting-center-live-viewer.md).
 
-### P3 Storage and Realtime override
+### P3 Storage and Realtime override (historical cloud contract)
+
+The following P3 cloud Cue, audio Storage, Realtime, and Meeting SSE flow is
+retired for current Local-only Meetings. Meeting Cue／audio write routes and
+Meeting event GET routes return `410 meeting_content_local_only`; the
+share-scoped Realtime token route may remain for legacy compatibility but is
+not used by the current Viewer. Other execution-event streaming is separate.
 
 The following cloud contract supersedes the older process-local SSE contract
 below. `POST /api/meetings/:meetingId/segments/:segmentId/cues` persists a Final
@@ -429,7 +446,11 @@ only within the bounded in-memory history when the durable event repository is
 unavailable. When an SSE cursor is too old, the stream emits `meeting.gap` and
 the Viewer refetches the REST snapshot.
 
-## Session sharing
+## Session sharing (historical Session content contract)
+
+Current `/api/shared-sessions/*` content reads and SSE return
+`410 meeting_content_local_only`. Current Meeting shares use metadata for
+authorization and WebRTC DataChannel for subtitles.
 
 Share creation accepts `role: "viewer" | "recorder"` and defaults to Viewer.
 Recorder creation also returns a `recorderUrl`. Recorder lease claim,
@@ -486,7 +507,13 @@ execution). The original failed execution and DLQ item are retained. Disabled
 storage returns `503 dead_letter_queue_unavailable`; an unknown item returns
 `404 dead_letter_item_not_found`.
 
-## Long Meeting Checkpoints
+## Long Meeting Checkpoints (historical cloud content examples)
+
+The Meeting list/detail content examples and Segment／Checkpoint mutation
+examples below describe the earlier cloud recording model. Current Meeting
+list/detail APIs supply metadata and settings; Host-local OPFS／IndexedDB
+supplies recorded Cue and audio content. Meeting settings, glossary, shares,
+completion metadata, and authorized deletion remain server APIs.
 
 ## `GET /api/meetings`
 
@@ -1369,7 +1396,12 @@ The endpoint is read-only and does not wake or process the translation worker.
 It does not expose execution IDs, request IDs, provider keys, or provider error
 messages.
 
-## Session-first commands
+## Session-first commands (historical Session recording contract)
+
+The Session audio, transcript, and shared-Session content routes described
+below are retired for current Local-only Meetings; the current Viewer does
+not open a shared-Session SSE stream. This does not describe the separate
+authenticated execution-events WebSocket.
 
 ### `POST /api/sessions`
 

@@ -1,5 +1,13 @@
 # Live Translate Product Spec
 
+## 現行 Meeting 資料邊界（Issue #41）
+
+正式 Meeting 由 Host 瀏覽器以 OPFS／IndexedDB 保存 PCM、原始與翻譯音訊、Cue、Transcript、Checkpoint、Journal 與 Recovery 資料。Supabase 僅持久化 Meeting metadata、設定、字典、授權及必要協調 metadata，不保存上述錄製內容。Viewer 透過 WebRTC DataChannel 收取即時字幕；Viewer 不從 Supabase 取得 Host 的錄音或正式字幕歷史。
+
+清除瀏覽器網站資料、改用另一裝置或使用私密瀏覽後，Host 本機內容可能無法讀回。私密瀏覽的儲存可能在關閉視窗後消失，Safari 私密瀏覽也可能無法完成本機音訊寫入。必要匯出應在保留資料的原 Host、原瀏覽器及一般瀏覽模式中完成；音訊下載仍須確認內容完整保存。
+
+下文 Session／MVP 與目標 pipeline 段落記錄早期設計背景；現行 Meeting 行為以本節與[架構總覽](architecture/architecture-overview.md#現行正式產品架構local-only)為準。
+
 ## Project Overview
 
 Live Translate is a Session-oriented Real-time Multilingual Translation
@@ -74,15 +82,12 @@ refinement values are the fields that may be updated.
   compatibility check is required before implementation; this documentation
   update does not upgrade the SDK.
 
-Current scope:
+Historical Session scope (pre-Issue #41; not the current Meeting storage contract):
 
 - Each user translation run creates one Session.
 - The current session produces one selected target-language translation output.
 - The Session preserves source transcript items for review and export.
-- Saved Sessions are persisted through backend file storage by default under
-  `DATA_DIR`; `SESSION_RECORDS_FILE` can override the exact path.
-- Saved Session audio artifacts are persisted under `DATA_DIR/session-audio`;
-  `SESSION_AUDIO_DIR` can override the exact directory.
+- Historical Session file-backed flow used `DATA_DIR`／`SESSION_RECORDS_FILE` for Session records and `DATA_DIR/session-audio`／`SESSION_AUDIO_DIR` for audio. This is not the current Meeting persistence path.
 - The same saved SourceTranscript can produce additional TranslationOutput
   records through re-translation without new audio input or re-recording.
 

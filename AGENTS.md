@@ -27,9 +27,9 @@ Core architecture:
 
 - Read `docs/spec.md` first.
 - Read `docs/architecture/architecture-overview.md` after the spec.
-- Read `docs/architecture.md` after the architecture overview.
+- Use `docs/architecture/architecture-overview.md` as the main architecture entry; consult `docs/architecture.md` only for older detailed design notes.
 - Read `docs/api.md` before changing APIs.
-- Read `TESTING.md` before making or validating test-related changes.
+- Read `docs/TESTING.md` before making or validating test-related changes.
 - Check `CHANGELOG.md` before starting milestone-related work.
 - Follow `CONTRIBUTING.md` for development workflow.
 - Do not add features that were not requested.

@@ -23,3 +23,5 @@ supabase/.branches/
 supabase/.temp/
 .vercel
 .env*
+!.env.example
+!supabase/.env.local.example

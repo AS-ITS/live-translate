@@ -2,7 +2,6 @@ import {
   ArrowRight,
   ChevronDown,
   ClipboardList,
-  AudioLines,
   KeyRound,
   LogOut,
   Menu,
@@ -15,12 +14,9 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { useAuth } from '../components/AuthGate.jsx';
 import { GEMINI_SETTINGS_HASH, pageFromLocation, rememberGeminiSettingsReturnLocation } from '../app/routes.js';
 import { hasLiveCredential, subscribeToLiveCredentialClear } from '../lib/liveCredentialHolder.js';
-import { AudioDiagnosticPanel } from '../components/AudioDiagnosticPanel.jsx';
 
 const MOBILE_MENU_MEDIA_QUERY = '(min-width: 1200px)';
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
-const AUDIO_DIAGNOSTICS_ENABLED = Boolean(import.meta.env?.DEV || import.meta.env?.VITE_AUDIO_DIAGNOSTICS_ENABLED === 'true'
-  || (typeof __LIVE_TRANSLATE_DIAGNOSTICS__ !== 'undefined' && __LIVE_TRANSLATE_DIAGNOSTICS__));
 
 export function AppLayout({
   children,
@@ -41,7 +37,6 @@ export function AppLayout({
   const wasMobileMenuOpenRef = useRef(false);
   const mobileMenuId = useId();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [audioDiagnosticOpen, setAudioDiagnosticOpen] = useState(false);
   const [hasGeminiCredential, setHasGeminiCredential] = useState(hasLiveCredential);
   const currentPage = pageFromLocation();
 
@@ -136,7 +131,6 @@ export function AppLayout({
       {profile && currentPage !== 'settings' ? <a className={`button secondary header-key-action${hasGeminiCredential ? '' : ' is-missing'}`} href={GEMINI_SETTINGS_HASH} onClick={() => { rememberGeminiSettingsReturnLocation(); closeMobileMenu(); }}><KeyRound size={16} aria-hidden="true" />Gemini Key</a> : null}
       {profile?.role === 'super_admin' && currentPage !== 'admin' ? <a className="button secondary header-key-action" href="#admin" onClick={closeMobileMenu}><UsersRound size={16} aria-hidden="true" />帳號管理</a> : null}
       {profile?.role === 'super_admin' && currentPage !== 'audit' ? <a className="button secondary header-key-action" href="#audit" onClick={closeMobileMenu}><ClipboardList size={16} aria-hidden="true" />稽核紀錄</a> : null}
-      {AUDIO_DIAGNOSTICS_ENABLED && profile ? <button className="button secondary header-key-action" type="button" onClick={() => { closeMobileMenu(); setAudioDiagnosticOpen(true); }}><AudioLines size={16} aria-hidden="true" />音訊診斷</button> : null}
     </>
   );
 
@@ -214,7 +208,6 @@ export function AppLayout({
         </aside>
       </> : null}
       {children}
-      {audioDiagnosticOpen ? <AudioDiagnosticPanel onClose={() => setAudioDiagnosticOpen(false)} /> : null}
     </main>
   );
 }

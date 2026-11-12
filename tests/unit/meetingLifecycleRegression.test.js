@@ -102,6 +102,21 @@ test('end meeting awaits every local write before metadata and stays idempotent 
   ]);
 });
 
+test('unavailable translated audio permits End only after core local and metadata completion', async () => {
+  const calls = [];
+  const result = await completeMeetingAfterRecordingFinalize({
+    flushAudio: async () => { calls.push('audio'); return { status: 'sealed' }; },
+    flushTranslatedAudio: async () => { calls.push('translated-unavailable'); return { status: 'unavailable' }; },
+    closePcmJournal: async () => { calls.push('journal'); },
+    flushCues: async () => { calls.push('cues'); },
+    flushCheckpoint: async () => { calls.push('checkpoint'); },
+    completeMeeting: async () => { calls.push('local-end'); },
+    completeMeetingMetadata: async () => { calls.push('metadata'); }
+  });
+  assert.equal(result, true);
+  assert.deepEqual(calls, ['audio', 'translated-unavailable', 'journal', 'cues', 'checkpoint', 'local-end', 'metadata']);
+});
+
 test('local audio, translated audio, transcript, Cue, and checkpoint failures prevent metadata completion', async () => {
   const failures = [
     { flushAudio: async () => ({ status: 'error' }) },

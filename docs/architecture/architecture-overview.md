@@ -18,6 +18,8 @@ Stop 先封存本機錄製與必要的 Cue／Checkpoint 寫入，Meeting metadat
 
 ## Issue #41 Host Local-only vertical slice
 
+翻譯音訊 OPFS／manifest 保存失敗時，該 Meeting 的翻譯音訊單向降級為 unavailable；後續翻譯音訊寫入停止，字幕、原始音訊、PCM Journal 與本機生命週期仍各自完成。IndexedDB 保存 pending／sealed／unavailable 狀態；pending 或 unavailable 不提供翻譯音訊播放、下載或匯出，既有 Chunk 與 manifest 保留。Reload 後的 pending 採保守不可用判定，避免狀態寫入失敗時誤封存。核心 Flush、Checkpoint、本機封存或 metadata completion 失敗仍會阻擋 End。
+
 For local-only Meetings, cloud share metadata authorizes Viewer access and coordinates signaling. The Host DataChannel supplies all Cue snapshots, updates, and replay; Viewer does not require cloud recording Segment or Cue rows.
 
 For a new Host recording, the Meeting and glossary remain cloud settings, while the browser creates the recording Session and Segment in its IndexedDB manifest. The MediaRecorder OPFS chunks, PCM Journal, Cue, transcript, and Checkpoint use existing local durability barriers. Pause and Continue operate on that same local recording identity; Stop and End seal locally before reporting completion. The backend issues an ephemeral Gemini token after Meeting membership authorization without requiring a cloud recording Session or Segment. Rollover drains and seals the old Segment, flushes local Checkpoint and PCM Journal, then commits the successor Segment and operationId together in IndexedDB. Provider readiness resumes audio after the local commit; Reload reads the committed local Segment. Viewer handoff uses Host DataChannel Segment transition and Cue events. No cloud Recording lifecycle reconciliation or mutation is used.

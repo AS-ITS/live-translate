@@ -28,7 +28,7 @@ function bundledLocalStorageSource() {
   return storageBundle;
 }
 
-test('browser IndexedDB initializes v13 and upgrades v12 Cue Authority stores', async (t) => {
+test('browser IndexedDB initializes v14 and upgrades v12/v13 Cue Authority and audio availability stores', async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage();
@@ -36,11 +36,11 @@ test('browser IndexedDB initializes v13 and upgrades v12 Cue Authority stores', 
   await page.goto('https://local-schema.test/');
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(await bundledLocalStorageSource()).toString('base64')}`;
 
-  for (const previousVersion of [0, 12]) {
+  for (const previousVersion of [0, 12, 13]) {
     const result = await page.evaluate(async ({ moduleUrl, dbName, previousVersion }) => {
-      if (previousVersion === 12) {
+      if (previousVersion > 0) {
         const oldDatabase = await new Promise((resolve, reject) => {
-          const opening = indexedDB.open(dbName, 12);
+          const opening = indexedDB.open(dbName, previousVersion);
           opening.onupgradeneeded = () => opening.result.createObjectStore('recordings', { keyPath: 'meetingId' });
           opening.onsuccess = () => resolve(opening.result);
           opening.onerror = () => reject(opening.error);
@@ -74,7 +74,7 @@ test('browser IndexedDB initializes v13 and upgrades v12 Cue Authority stores', 
       return { before, pendingBefore, committed: committed.status, pendingAfter: pendingAfter.length,
         authorityAfter, version, names, pendingKeyPath, pendingIndexes, authorityKeyPath };
     }, { moduleUrl, dbName: `local-schema-${previousVersion}-${Date.now()}`, previousVersion });
-    assert.equal(result.version, 13);
+    assert.equal(result.version, 14);
     assert.equal(result.before, 'new');
     assert.deepEqual(result.pendingBefore, []);
     assert.equal(result.committed, 'pending');

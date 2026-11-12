@@ -1,5 +1,3 @@
-import { recordAudioFailure, recordAudioRecorderState } from './audioFailureDiagnostic.js';
-
 const PREFERRED_MIME_TYPES = [
   'audio/webm;codecs=opus',
   'audio/webm',
@@ -29,7 +27,6 @@ export function createMicrophoneRecordingController(options = {}) {
   const onStateChange = typeof options.onStateChange === 'function' ? options.onStateChange : null;
   const diagnostics = options.diagnostics || null;
   const onChunk = typeof options.onChunk === 'function' ? options.onChunk : null;
-  const segmentId = typeof options.segmentId === 'function' ? options.segmentId : () => null;
 
   let recorder = null;
   let chunks = [];
@@ -39,9 +36,7 @@ export function createMicrophoneRecordingController(options = {}) {
   let chunkSequence = 0;
   let chunkWriteQueue = Promise.resolve();
   let chunkWriteError = null;
-  let pendingChunkWrites = 0;
   let captureEpoch = 0;
-  let recorderStartedAt = 0;
   let state = { ...IDLE_STATE };
 
   function setState(patch) {
@@ -90,7 +85,6 @@ export function createMicrophoneRecordingController(options = {}) {
   }
 
   async function resume(input = {}) {
-    recorderStartedAt = now();
     if (state.status === 'recording') {
       return getState();
     }
@@ -169,19 +163,16 @@ export function createMicrophoneRecordingController(options = {}) {
 
   function resetRecordingMetadata(input) {
     recorder = null;
-    recorderStartedAt = now();
     sessionId = input.sessionId || '';
     startedAt = input.startedAt ?? now();
     selectedMimeType = chooseSupportedMimeType(MediaRecorderImpl, preferredMimeTypes);
     chunkSequence = 0;
     chunkWriteQueue = Promise.resolve();
     chunkWriteError = null;
-    pendingChunkWrites = 0;
     state = { ...IDLE_STATE };
   }
 
   function startRecorder(stream, { beginDiagnostics = false } = {}) {
-    recorderStartedAt = now();
     try {
       recorder = selectedMimeType
         ? new MediaRecorderImpl(stream, { mimeType: selectedMimeType })
@@ -198,7 +189,6 @@ export function createMicrophoneRecordingController(options = {}) {
     recorder.ondataavailable = (event) => {
       if (recorderEpoch !== captureEpoch) return;
       if (event?.data && dataHasContent(event.data)) {
-        recordAudioRecorderState({ mimeType: recorderMimeType, chunkRecorded: true });
         diagnostics?.recordRecorderChunk?.(event.data);
         if (collectChunks) chunks.push(event.data);
         if (onChunk) {
@@ -208,15 +198,10 @@ export function createMicrophoneRecordingController(options = {}) {
             mimeType: recorderMimeType,
             receivedAt: now()
           };
-        pendingChunkWrites += 1;
-        const queuedAt = now();
         chunkWriteQueue = chunkWriteQueue.then(() => recorderEpoch === captureEpoch ? onChunk(payload) : undefined).catch((error) => {
             chunkWriteError = error;
-            recordAudioFailure({ audioPath: 'ORIGINAL_AUDIO', stage: 'AUDIO_ERROR_MAPPING', operation: 'RECORDER_CHUNK_CALLBACK',
-              error, writerState: state.status, queueDepth: pendingChunkWrites,
-              chunkBytes: event.data.size, segmentId: segmentId(), elapsedMs: now() - queuedAt });
             fail(error?.message || '本機音訊分塊寫入失敗。', null);
-          }).finally(() => { pendingChunkWrites -= 1; });
+          });
         }
       }
     };
@@ -232,8 +217,6 @@ export function createMicrophoneRecordingController(options = {}) {
       recorder = null;
       return fail(error?.message || '無法啟動本機錄音。', error);
     }
-
-    recordAudioRecorderState({ mimeType: recorderMimeType });
 
     return setState({
       status: 'recording',
@@ -277,9 +260,6 @@ export function createMicrophoneRecordingController(options = {}) {
   }
 
   function fail(message, error = null) {
-    if (error !== null) recordAudioFailure({ audioPath: 'ORIGINAL_AUDIO', stage: 'PCM_CAPTURE', operation: 'MEDIA_RECORDER',
-      error, writerState: state.status, queueDepth: pendingChunkWrites, chunkBytes: 0,
-      segmentId: segmentId(), elapsedMs: now() - recorderStartedAt });
     return setState({
       status: 'error',
       blob: null,

@@ -7,7 +7,7 @@ import { checkCheckpointOperation, checkpointConflict, recordCheckpointOperation
 import { lifecycleIntentKey, projectLifecycleOperationIntent, sameLifecycleIntentIdentity } from './lifecycleOperationIntent.js';
 
 export const LOCAL_MEETING_SCHEMA_VERSION = 6;
-export const LOCAL_MEETING_DATABASE_VERSION = 13;
+export const LOCAL_MEETING_DATABASE_VERSION = 14;
 const UNASSIGNED_CUE_SCHEMA_VERSION = 1;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
@@ -164,6 +164,7 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
   const checkpoints = new Map();
   const transcripts = new Map();
   const translatedAudioChunks = new Map();
+  const translatedAudioAvailability = new Map();
   const deletedMeetings = new Set();
   for (const rawRecord of initial) {
     const record = projectLocalChunk(rawRecord);
@@ -518,7 +519,7 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     async clearMeetingContent(meetingId) {
       deletedMeetings.add(meetingId);
-    for (const collection of [records, recordings, operations, checkpointFailures, segments, cues, cueOperations, cueConflicts, legacyCueBackups, pendingCues, cueAuthorities, unassignedCues, checkpoints, transcripts, translatedAudioChunks]) {
+    for (const collection of [records, recordings, operations, checkpointFailures, segments, cues, cueOperations, cueConflicts, legacyCueBackups, pendingCues, cueAuthorities, unassignedCues, checkpoints, transcripts, translatedAudioChunks, translatedAudioAvailability]) {
         for (const [key, value] of collection) {
           if (value.meetingId === meetingId) collection.delete(key);
         }
@@ -535,6 +536,15 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     async listTranslatedAudioChunks(meetingId) {
       return [...translatedAudioChunks.values()].filter((chunk) => chunk.meetingId === meetingId)
         .sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.sequence - right.sequence);
+    },
+    async getTranslatedAudioAvailability(meetingId) {
+      return translatedAudioAvailability.get(meetingId)?.status ?? null;
+    },
+    async setTranslatedAudioAvailability(meetingId, status) {
+      const previous = translatedAudioAvailability.get(meetingId)?.status;
+      const next = translatedAudioAvailabilityTransition(previous, status);
+      translatedAudioAvailability.set(meetingId, { meetingId, status: next });
+      return next;
     },
     async reserve(input) {
       const record = reserveLocalChunk(input);
@@ -631,8 +641,8 @@ export function createIndexedDbLocalMeetingManifestStore({
     },
     async listLocalMeetingIds() {
       const database = await openDatabase();
-      return runNamedTransaction(database, ['recordings', 'segments', 'chunks', 'cues', 'pendingCues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readonly', async (transaction) => {
-        const records = await Promise.all(['recordings', 'segments', 'chunks', 'cues', 'pendingCues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']
+      return runNamedTransaction(database, ['recordings', 'segments', 'chunks', 'cues', 'pendingCues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks', 'translatedAudioAvailability'], 'readonly', async (transaction) => {
+        const records = await Promise.all(['recordings', 'segments', 'chunks', 'cues', 'pendingCues', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks', 'translatedAudioAvailability']
           .map((name) => request(transaction.objectStore(name).getAll())));
         return [...new Set(records.flat().map((row) => row.meetingId).filter(Boolean))];
       });
@@ -640,9 +650,9 @@ export function createIndexedDbLocalMeetingManifestStore({
     async clearMeetingContent(meetingId) {
       const database = await openDatabase();
       return runNamedTransaction(database,
-      ['recordings', 'segments', 'chunks', 'operations', 'cues', 'cueOperations', 'cueConflicts', 'legacyCueBackups', 'pendingCues', 'cueAuthorities', 'checkpoints', 'retentions', 'unassignedCues', 'transcripts', 'translatedAudioChunks'], 'readwrite',
+        ['recordings', 'segments', 'chunks', 'operations', 'cues', 'cueOperations', 'cueConflicts', 'legacyCueBackups', 'pendingCues', 'cueAuthorities', 'checkpoints', 'retentions', 'unassignedCues', 'transcripts', 'translatedAudioChunks', 'translatedAudioAvailability'], 'readwrite',
         async (transaction) => {
-        for (const name of ['recordings', 'segments', 'chunks', 'operations', 'cues', 'cueOperations', 'cueConflicts', 'legacyCueBackups', 'pendingCues', 'cueAuthorities', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks']) {
+          for (const name of ['recordings', 'segments', 'chunks', 'operations', 'cues', 'cueOperations', 'cueConflicts', 'legacyCueBackups', 'pendingCues', 'cueAuthorities', 'checkpoints', 'unassignedCues', 'transcripts', 'translatedAudioChunks', 'translatedAudioAvailability']) {
             const store = transaction.objectStore(name);
             const records = await request(store.getAll());
             for (const row of records) {
@@ -1170,6 +1180,24 @@ export function createIndexedDbLocalMeetingManifestStore({
           .map(projectTranslatedAudioChunk)
           .sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.sequence - right.sequence));
     },
+    async getTranslatedAudioAvailability(meetingId) {
+      normalizeRequiredString(meetingId, 'meetingId');
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'translatedAudioAvailability', 'readonly', async (transaction) =>
+        (await request(transaction.objectStore('translatedAudioAvailability').get(meetingId)))?.status ?? null);
+    },
+    async setTranslatedAudioAvailability(meetingId, status) {
+      normalizeRequiredString(meetingId, 'meetingId');
+      const database = await openDatabase();
+      return runNamedTransaction(database, ['translatedAudioAvailability', 'retentions'], 'readwrite', async (transaction) => {
+        assertLocalRetentionWritable(await request(transaction.objectStore('retentions').get(meetingId)));
+        const store = transaction.objectStore('translatedAudioAvailability');
+        const previous = (await request(store.get(meetingId)))?.status;
+        const next = translatedAudioAvailabilityTransition(previous, status);
+        await request(store.put({ meetingId, status: next }));
+        return next;
+      });
+    },
     async getCheckpoint(meetingId, segmentId) {
       const key = localCheckpointKey(meetingId, segmentId);
       const database = await openDatabase();
@@ -1313,6 +1341,9 @@ export function createIndexedDbLocalMeetingManifestStore({
             const store = database.createObjectStore('translatedAudioChunks', { keyPath: 'key' });
             store.createIndex('meetingId', 'meetingId');
           }
+          if (!database.objectStoreNames.contains('translatedAudioAvailability')) {
+            database.createObjectStore('translatedAudioAvailability', { keyPath: 'meetingId' });
+          }
           if (!database.objectStoreNames.contains('retentions')) {
             database.createObjectStore('retentions', { keyPath: 'meetingId' });
           }
@@ -1335,19 +1366,19 @@ export function createIndexedDbLocalMeetingManifestStore({
 export function createOpfsChunkStore({ rootDirectory = null } = {}) {
   return Object.freeze({
     async write(path, bytes) {
-      const { directory, name } = await opfsWriteStep('PARENT_DIRECTORY', () => parentDirectory(rootDirectory, path, true));
+      const { directory, name } = await parentDirectory(rootDirectory, path, true);
       try {
-        await opfsWriteStep('FILE_LOOKUP', () => directory.getFileHandle(name, { create: false }));
+        await directory.getFileHandle(name, { create: false });
         throw conflict('local_chunk_file_exists');
       } catch (error) {
         if (error?.code === 'local_chunk_file_exists') throw error;
         if (error?.name !== 'NotFoundError') throw error;
       }
-      const file = await opfsWriteStep('FILE_CREATE', () => directory.getFileHandle(name, { create: true }));
-      const writable = await opfsWriteStep('WRITABLE_CREATE', () => file.createWritable());
+      const file = await directory.getFileHandle(name, { create: true });
+      const writable = await file.createWritable();
       try {
-        await opfsWriteStep('WRITABLE_WRITE', () => writable.write(bytes));
-        await opfsWriteStep('WRITABLE_CLOSE', () => writable.close());
+        await writable.write(bytes);
+        await writable.close();
       } catch (error) {
         try { await writable.abort?.(); } catch { /* best effort */ }
         throw error;
@@ -1397,15 +1428,6 @@ export function createOpfsChunkStore({ rootDirectory = null } = {}) {
   });
 }
 
-async function opfsWriteStep(operation, work) {
-  try {
-    return await work();
-  } catch (error) {
-    try { if (error && typeof error === 'object') error.opfsOperation = operation; } catch { /* Preserve the original error. */ }
-    throw error;
-  }
-}
-
 function projectLocalChunk(value) {
   const record = value || {};
   return Object.freeze({
@@ -1447,6 +1469,19 @@ function projectLocalRecording(value = {}) {
     terminal: value.terminal === true,
     finalized: value.finalized === true
   });
+}
+
+function translatedAudioAvailabilityTransition(previous, next) {
+  if (!['pending', 'sealed', 'unavailable'].includes(next)) {
+    throw new TypeError('Invalid translated audio availability.');
+  }
+  if (previous === 'unavailable') return previous;
+  if (previous === next) return previous;
+  if (next === 'pending') return previous || next;
+  if (next === 'sealed' && previous !== 'pending') {
+    throw new Error('Translated audio was not pending.');
+  }
+  return next;
 }
 
 function segmentKey(meetingId, segmentId) {
@@ -1983,32 +2018,16 @@ async function fileHandle(rootDirectory, path, create) {
 
 async function parentDirectory(rootDirectory, path, create) {
   let resolvedRoot = rootDirectory;
-  if (!resolvedRoot) {
-    try {
-      resolvedRoot = await globalThis.navigator?.storage?.getDirectory?.();
-    } catch (error) {
-      tagOpfsApi(error, 'GET_DIRECTORY');
-      throw error;
-    }
-  }
+  if (!resolvedRoot) resolvedRoot = await globalThis.navigator?.storage?.getDirectory?.();
   if (!resolvedRoot || typeof resolvedRoot.getDirectoryHandle !== 'function') throw new Error('OPFS is unavailable.');
   const parts = String(path || '').split('/').filter(Boolean);
   const name = parts.pop();
   if (!name || parts.some((part) => part === '.' || part === '..')) throw invalid('Invalid OPFS path.');
   let directory = resolvedRoot;
   for (const part of parts) {
-    try {
-      directory = await directory.getDirectoryHandle(part, { create });
-    } catch (error) {
-      tagOpfsApi(error, 'GET_DIRECTORY_HANDLE');
-      throw error;
-    }
+    directory = await directory.getDirectoryHandle(part, { create });
   }
   return { directory, name };
-}
-
-function tagOpfsApi(error, api) {
-  try { if (error && typeof error === 'object') error.opfsApi = api; } catch { /* Preserve the original error. */ }
 }
 
 const transactionFailureStates = new WeakMap();

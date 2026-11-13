@@ -16,11 +16,33 @@
 
 ## Local Google OAuth
 
-1. 在 [Google Cloud Console](https://console.cloud.google.com/) 自行建立 **Web application** OAuth Client，取得**自己的** Client ID 與 Client Secret。Authorized JavaScript origin 設為 `http://127.0.0.1:5173`；Authorized redirect URI 使用本機 Supabase API URL 加 `/auth/v1/callback`，預設為 `http://127.0.0.1:54321/auth/v1/callback`。若 Google 專案仍在 Testing，將自己的登入帳號加入測試使用者。
-2. 從 [`supabase/.env.example`](../supabase/.env.example)建立 `supabase/.env.local`，填入同一個 OAuth Client 的 `GOOGLE_CLIENT_ID` 與 `GOOGLE_CLIENT_SECRET`。這兩個值由 `supabase/config.toml` 的 `env(...)` 讀取；公開設定沒有預設 Client ID。若私人檔案已存在，請自行補上新變數，不要覆蓋其中其他設定或把憑證寫回公開檔案。
-3. `supabase/.env.local` 已被 Git 忽略。macOS／Linux 執行 `chmod 600 supabase/.env.local`；本機啟動器要求一般檔案且權限恰為 `600`。不要提交、記錄或貼出 Client Secret。
-4. **首次啟動 Supabase 前**，macOS／Linux 可在目前終端執行 `set -a; . ./supabase/.env.local; set +a`，再執行 `supabase start`（專案 npm 版為 `npx supabase start`）。請確保檔案內容符合 shell 變數語法。也可執行 `npm run start -- --check`，由啟動器讀取私人檔案並在需要時啟動本機 Supabase；它不會使用原作者的 ID 或缺少的變數。Windows PowerShell 可把這兩個變數載入目前終端後啟動 CLI，避免把 Secret 寫入命令歷史。
-5. 執行 `supabase status -o json`（npm 版加 `npx`），以實際 `API_URL` 核對 Google redirect URI。`supabase/config.toml` 的 Site URL／Redirect URLs 應允許實際前端 Origin；預設 `http://127.0.0.1:5173` 已設定。`npm run start -- --check` 會檢查兩個變數、權限、Google provider、URL 與 migration；缺少或仍是範本值時會指出需設定的變數。最後依[本機安裝流程](DEPLOYMENT.md#全新安裝本機-supabase)登入；真實 Google 登入仍需人工驗證。
+1. 在 [Google Cloud Console](https://console.cloud.google.com/)建立自己的 Web application OAuth Client。Authorized JavaScript origin 使用 `http://127.0.0.1:5173`；Authorized redirect URI 預設為 `http://127.0.0.1:54321/auth/v1/callback`（若本機 API port 不同，依實際 URL 調整）。Google 專案仍在 Testing 時，加入自己的測試帳號。
+2. 從 [`supabase/.env.example`](../supabase/.env.example)建立私人 `supabase/.env.local`，填入同一個 Client 的 `GOOGLE_CLIENT_ID` 與 `GOOGLE_CLIENT_SECRET`。Windows PowerShell 使用 `Copy-Item supabase/.env.example supabase/.env.local`；Linux Bash 與 macOS Terminal 使用 `cp supabase/.env.example supabase/.env.local`。私人檔案已存在時不要覆寫。
+3. `supabase/config.toml` 只使用 `env(GOOGLE_CLIENT_ID)` 與 `env(GOOGLE_CLIENT_SECRET)`，沒有作者的預設值。啟動器使用 Node dotenv 解析，接受正常引號、等號周圍空白、LF 與 CRLF；缺檔、不可讀、缺變數、格式錯誤會分別報錯。不要提交、記錄或貼出憑證。
+
+Linux／macOS：
+
+```bash
+chmod 600 supabase/.env.local
+npm run start -- --check
+```
+
+Windows PowerShell：NTFS 不使用 `chmod 600`。先檢查 ACL，再限制檔案只由本人與必要的系統管理帳號讀取；以下命令移除繼承並移除常見廣泛群組的授權，執行後仍須人工檢查自訂群組。
+
+```powershell
+$oauthFile = (Resolve-Path .\supabase\.env.local).Path
+icacls $oauthFile /inheritance:r
+icacls $oauthFile /grant:r "$($env:USERNAME):(R,W)"
+icacls $oauthFile /remove:g '*S-1-1-0' '*S-1-5-11' '*S-1-5-32-545' '*S-1-5-32-546'
+Get-Acl $oauthFile | Select-Object -ExpandProperty Access | Format-Table IdentityReference, AccessControlType, FileSystemRights, IsInherited
+npm run start -- --check
+```
+
+啟動器會拒絕符號連結與一般檔案以外的檔案。Windows 自動 ACL 檢查只辨識 Everyone、Authenticated Users、Users、Guests 等常見廣泛群組；若 PowerShell 無法驗證 ACL，啟動會停止並提示使用 `Get-Acl`／`icacls` 修正。自訂群組的成員與間接權限需人工審查；啟動器不會聲稱它們已通過完整驗證。
+
+執行 `npm run start -- --check` 可讓啟動器將私人設定傳給本機 Supabase CLI，必要時啟動服務並核對 Google provider、URL 與 migration。確認本機 Supabase 的 URL Configuration 允許前端 origin，然後在應用程式進行登入。Preview／Production 必須使用各自的 OAuth 憑證與設定。
+
+本機安裝預設不限制 Google 帳號的 Email 網域。如有組織使用需求，可自行設定允許的網域。`AUTH_ALLOWED_EMAIL_DOMAINS` 未設定或空白時，已通過 Google OAuth 與 Supabase JWT 驗證的帳號可通過後端網域檢查；明確設定後只允許列出的網域。新帳號仍是 `member`，Meeting Ownership 與 RLS 不受影響。
 
 ## Preview 與 Production
 
@@ -32,7 +54,7 @@ Google 登入成功後，後端仍檢查 Profile 與 Meeting 權限。`AUTH_ALLO
 
 1. Google 提示 `redirect_uri_mismatch`：比對**實際** Supabase API URL 的 callback、Google Client ID，以及該 Client 的 redirect URI；不要拿前端 `/auth/callback` 代替。
 2. Supabase 登入後沒有回到網站：核對 Supabase Site URL／Redirect URLs 與實際前端 Origin，包括 scheme 與 port；Preview 網址改變時更新允許清單。
-3. `npm run start -- --check` 拒絕啟動：核對 `supabase/.env.local` 存在、Secret 與 ID 相配、權限 `600`，再看 Local Supabase provider 是否啟用。
+3. `npm run start -- --check` 拒絕啟動：先看錯誤中的 `Expected path`，核對 `supabase/.env.local` 位於目前 clone，ID 與 Secret 非空且相配；macOS／Linux 檢查 `600`，Windows 檢查 NTFS ACL，再看 Local Supabase provider 是否啟用。
 4. Google 登入成功但 API 回 `403 auth_forbidden`：核對 `AUTH_ALLOWED_EMAIL_DOMAINS`、使用者 email、Profile 狀態與 Meeting membership；Google Audience 設定不能取代後端授權。
 
 參考：[Supabase Google 登入](https://supabase.com/docs/guides/auth/social-login/auth-google)、[Supabase Redirect URLs](https://supabase.com/docs/guides/auth/redirect-urls)。

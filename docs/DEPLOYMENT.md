@@ -2,58 +2,69 @@
 
 ## 全新安裝：本機 Supabase
 
-此節只操作本機服務。從儲存庫全新 clone 後，在專案根目錄執行 `npm install`；需 Node.js 22、npm、Git、Redis CLI／Server、Docker 與 Supabase CLI。先安裝並啟動 [Docker Desktop](https://docs.docker.com/desktop/)（macOS、Windows、Linux），等程式顯示已啟動，再用 `docker info` 確認 Docker daemon 可連線。第一次 `supabase start` 會下載容器映像，需要網路與足夠磁碟空間。[Supabase CLI 官方安裝說明](https://supabase.com/docs/guides/local-development/cli/getting-started)列出支援的平台與安裝方式。
+本節只使用已提交的 `supabase/config.toml` 與 `supabase/migrations/`，不需 `supabase init` 或 `supabase link`。需要 Node.js 22、npm、Git、Docker 與 Supabase CLI。第一次啟動會下載 Docker 映像；請先確認 Docker daemon 可連線。
 
-### 安裝與驗證 CLI
+| 系統 | Docker | 全域 Supabase CLI |
+| --- | --- | --- |
+| Windows 10／11 | 安裝並啟動 [Docker Desktop for Windows](https://docs.docker.com/desktop/setup/install/windows-install/)（Linux containers） | 依 [Supabase CLI 安裝說明](https://supabase.com/docs/guides/local-development/cli/getting-started)使用 Scoop |
+| Ubuntu／Debian | 安裝並啟動 [Docker Engine](https://docs.docker.com/engine/install/) 或 [Docker Desktop for Linux](https://docs.docker.com/desktop/setup/install/linux/) | 依官方說明安裝 Linux 套件或 Homebrew 版本 |
+| macOS Apple Silicon／Intel | 安裝並啟動 [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/) | `brew install supabase/tap/supabase` |
 
-選一種安裝方式；下文以全域 `supabase` 為例。**macOS** 使用 Homebrew：
+若已安裝 Scoop，Windows PowerShell 執行 `scoop bucket add supabase https://github.com/supabase/scoop-bucket.git`、`scoop install supabase`。若 Ubuntu／Debian 已安裝 Homebrew，可執行 `brew install supabase/tap/supabase`；其他 Linux 安裝方式見 [Supabase CLI Releases](https://github.com/supabase/cli/releases)與官方安裝說明，下載對應架構的 `.deb` 後執行 `sudo dpkg -i <下載的檔名>.deb`。macOS Terminal 執行 `brew install supabase/tap/supabase`。Docker 依表中的官方安裝頁完成安裝並啟動 daemon，再執行下列驗證命令。
 
-```bash
-brew install supabase/tap/supabase
-supabase --version
-```
+三平台均在專案根目錄執行 `docker info` 與 `supabase --version` 確認安裝。也可使用專案 npm 版 `npm install --save-dev supabase`；其 CLI 由 `npx supabase` 執行，啟動器會從 npm 提供的 `node_modules/.bin` 尋找它。請勿使用 `npm install -g supabase`。
 
-**Windows** 在 PowerShell 使用 Scoop：
+### Windows PowerShell
 
 ```powershell
-scoop bucket add supabase https://github.com/supabase/scoop-bucket.git
-scoop install supabase
+git clone https://github.com/pochun1021/live-translate.git
+Set-Location live-translate
+npm ci
+Copy-Item supabase/.env.example supabase/.env.local
+# 編輯私人檔案，填入自己的 GOOGLE_CLIENT_ID 與 GOOGLE_CLIENT_SECRET
+# 依 Google OAuth 指南檢查並限制 NTFS ACL；不要用 chmod 600
+docker info
 supabase --version
+docker run -d --name live-translate-redis -p 127.0.0.1:6379:6379 redis:7-alpine
+npm run start -- --check
+supabase status
+npm run start
 ```
 
-**Linux** 可用 Homebrew 執行 `brew install supabase/tap/supabase`；或從 [Supabase CLI Releases](https://github.com/supabase/cli/releases)下載與發行版、CPU 架構相符的套件，再依套件類型執行 `sudo dpkg -i <下載檔>.deb`、`sudo rpm -i <下載檔>.rpm` 或 `sudo apk add --allow-untrusted <下載檔>.apk`。安裝後執行 `supabase --version`。
-
-三種作業系統也可選**專案 npm 版**：
+### Ubuntu／Debian Bash 與 macOS Terminal
 
 ```bash
-npm install --save-dev supabase
-npx supabase --version
+git clone https://github.com/pochun1021/live-translate.git
+cd live-translate
+npm ci
+cp supabase/.env.example supabase/.env.local
+# 編輯私人檔案，填入自己的 GOOGLE_CLIENT_ID 與 GOOGLE_CLIENT_SECRET
+chmod 600 supabase/.env.local
+docker info
+supabase --version
+docker run -d --name live-translate-redis -p 127.0.0.1:6379:6379 redis:7-alpine
+npm run start -- --check
+supabase status
+npm run start
 ```
 
-npm 版只安裝在此專案，後續手動 CLI 指令一律加 `npx`，例如 `npx supabase start`、`npx supabase status`、`npx supabase stop`。`package.json` 的 `db:start`／`db:stop` 本來就使用 `npx supabase`；`npm run start` 會將專案的 `node_modules/.bin` 加入 PATH，因此兩種安裝方式都可供啟動器使用。不要使用 `npm install -g supabase`。此儲存庫已有 `supabase/config.toml` 與 `supabase/migrations/`，**不要執行 `supabase init`**；本機服務也**不需要 `supabase link`**。
+`docker run` 只在尚無 loopback Redis 時執行；已有 Redis 可略過。依[Redis 官方安裝說明](https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/)也可在 macOS／Linux 安裝原生 Redis。Windows 請使用 Docker Redis。`npm run start -- --check` 與正常啟動共用檢查流程，會在必要時呼叫 `supabase start`，並以 `supabase status` 取得本機 URL／金鑰；它不是純唯讀命令。不要公開 `supabase status` 的金鑰輸出。
 
-### 首次啟動與 migration 核對
+啟動器會比較資料庫已套用版本與儲存庫的 54 個 migration；版本不同時會停止，**不會重設或遷移既有資料庫**。新資料庫的 54 個 migration 由 Supabase CLI 首次 `start` 套用。若需要手動執行 CLI，請先在目前終端載入自己的 OAuth 變數，或直接使用啟動器代為注入；不要把憑證寫進命令歷史。
 
-1. 先在 Google Cloud 建立自己的 OAuth Web Client，再依[本機 Google OAuth 設定](GOOGLE_OAUTH_SETUP.md#local-google-oauth)從 `supabase/.env.example` 建立 `supabase/.env.local`，填入 `GOOGLE_CLIENT_ID` 與 `GOOGLE_CLIENT_SECRET`。公開 `config.toml` 只引用環境變數，沒有預設 Client ID。首次啟動前，macOS／Linux 執行 `chmod 600 supabase/.env.local`；Windows 請將檔案限制為目前使用者可讀，並在支援 POSIX 權限的環境執行啟動器。
-2. 依 OAuth 指南將兩個變數載入目前終端，確認 `docker info` 成功後，在專案根目錄執行 `supabase start`（npm 版為 `npx supabase start`），再執行 `supabase status`。直接使用 CLI 時不應假設它會讀取 `supabase/.env.local`；也可用 `npm run start -- --check` 讓啟動器從該檔載入並啟動 Stack。第一次啟動會套用 `supabase/migrations/` 的 migration；不得把 `supabase db reset` 當成一般啟動步驟，該指令會重建本機資料庫並刪除既有資料。
-3. 執行 `supabase migration list --local`，核對每個 `supabase/migrations/*.sql` 的版本在本機資料庫欄皆有對應紀錄，沒有僅存在於檔案的版本。npm 版使用 `npx supabase migration list --local`。再執行 `npm run start -- --check`；啟動器會比較 migration 檔案與 `supabase_migrations.schema_migrations` 的完整版本序列，並檢查本機 URL、Google provider 與 Redis。`--check` 可能啟動本機 Redis。若檢查失敗，先閱讀錯誤與 migration 紀錄，**不要以 `db reset` 排錯**。
-4. 執行 `supabase status -o json`（npm 版加 `npx`），讀取本機 `API_URL`、`ANON_KEY`、`SERVICE_ROLE_KEY`；不要把輸出中的金鑰貼到 issue、文件或版本控制。依 [`.env.example`](../.env.example)建立根目錄 `.env`：`SUPABASE_URL` 和 `VITE_SUPABASE_URL` 使用 `API_URL`；`VITE_SUPABASE_PUBLISHABLE_KEY` 使用 `ANON_KEY`；`SUPABASE_SECRET_KEY` 使用 `SERVICE_ROLE_KEY`；`SUPABASE_JWKS_URL` 使用 `<API_URL>/auth/v1/.well-known/jwks.json`。本機 WebRTC signaling 使用 `WEBRTC_SIGNALING_REDIS_URL=redis://127.0.0.1:6379`；Redis 啟動方式見[本機開發指南](development.md)。
-5. 執行 `npm run start`，開啟 `http://127.0.0.1:5173`，以自己的 Google 帳號登入並檢查頁面可載入；若要驗證會議翻譯，在 Host 介面提供自己的 Gemini API key。此步只驗證本機，不會修改 Preview 或 Production。
+本機安裝預設不限制 Google 帳號的 Email 網域。如有組織使用需求，可自行設定允許的網域。`npm run start` 只採用啟動終端明確設定的 `AUTH_ALLOWED_EMAIL_DOMAINS`；空白或未設定時不限制網域，設定後由後端嚴格檢查。Preview／Production 的設定各自獨立。
 
 ### 安全停止與重新啟動
 
-先在執行 `npm run start` 的終端按 `Ctrl+C`，再執行 `supabase stop`（npm 版為 `npx supabase stop`）。保留本機資料的日常停止**不要加 `--no-backup` 或 `--all`**。下次先啟動 Docker，執行 `supabase start`、`supabase status`，確認 Redis 可用後再執行 `npm run start -- --check` 和 `npm run start`。如只需重啟應用程式，按 `Ctrl+C` 後再執行 `npm run start` 即可；不必重建資料庫。[Supabase CLI stop 說明](https://supabase.com/docs/reference/cli/supabase-stop)。
+以 Ctrl+C 結束 `npm run start` 啟動的 API 與 Vite；本機 Supabase 與 Redis 不會因此被重設。下次先啟動 Docker，再執行 `npm run start -- --check` 與 `npm run start`。不要在既有資料庫執行 `npm run db:reset`。
 
 ### 常見故障
 
-| 現象 | 處理方式 |
-| --- | --- |
-| 顯示 `not linked` | 確認目前位於此儲存庫根目錄並使用 `supabase start`／`status`；若是 `migration list`，明確加 `--local`。本機不需 `supabase link`，不要改用遠端 migration 指令。 |
-| Docker 未啟動／無法連線 | 開啟 Docker Desktop，等引擎完成啟動；`docker info` 成功後重試 `supabase start`。Linux 也要確認目前使用者有權存取 Docker daemon。 |
-| Port 已占用 | `config.toml` 的 DB port 是 `54322`、Studio 是 `54323`；API 預設 `54321`，應用程式使用 `3000`／`5173`，Redis 使用 `6379`。先停止佔用該埠的其他本機服務或另一組 Supabase stack；若修改本機 port，Google callback、`.env` 和啟動器檢查必須同步核對。勿為排錯重設資料庫。 |
-| migration 未全部套用 | 確認在正確的專案根目錄啟動，查 `supabase migration list --local` 與 `supabase start` 的錯誤；保留原有資料並修正失敗原因後再啟動。 |
-
-若同一台電腦已有使用相同 `project_id` 的本機 stack，CLI 可能沿用既有資料。驗證全新安裝時，先確認沒有另一份同名專案在運行；勿為取得空白資料庫而停止或重設不屬於本次安裝的服務。
+- `Create supabase/.env.local`：看錯誤中的 `Expected path`，確認執行的 clone 與私人檔案位於同一專案；路徑含空白或中文可用。
+- `not readable`／`mode 600`：macOS／Linux 檢查檔案擁有者並執行 `chmod 600 supabase/.env.local`。
+- Windows ACL 錯誤：用 `Get-Acl .\supabase\.env.local | Format-List` 與 `icacls .\supabase\.env.local` 檢查。限制繼承及廣泛群組的讀取權；啟動器只自動辨識常見廣泛群組，仍須人工檢查自訂群組。
+- `docker info`／`supabase status` 失敗：確認 Docker 已啟動、Supabase CLI 在 PATH，並使用此儲存庫的 `supabase/config.toml`。
+- Redis 不可用：確認 `127.0.0.1:6379` 有 Docker Redis 或原生 Redis；不要把 Redis 暴露到公網。
 
 ## Preview／Production
 

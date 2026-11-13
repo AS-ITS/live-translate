@@ -2,6 +2,14 @@
 
 本文件是測試命令、回歸條件與 RC1 驗收程序的主要入口。首次安裝請先看[本機開發](development.md)；實際操作見[使用指南](USER_GUIDE.md)。下方保留尚有效的驗收程序與既有證據，歷史測試結果不代表目前版本已完成實機驗收。
 
+## v1.0.0 跨平台本機啟動驗收
+
+在目標系統的專案根目錄執行；先依[安裝指南](DEPLOYMENT.md#全新安裝本機-supabase)安裝並啟動 Docker、Supabase CLI 與 loopback Redis，並依[OAuth 指南](GOOGLE_OAUTH_SETUP.md#local-google-oauth)建立私人設定。Windows PowerShell 使用 `Copy-Item supabase/.env.example supabase/.env.local` 與 NTFS ACL 檢查；Ubuntu／Debian Bash、macOS Terminal 使用 `cp supabase/.env.example supabase/.env.local` 與 `chmod 600 supabase/.env.local`。已存在的私人檔案不得覆寫。
+
+三平台均執行 `docker info`、`supabase --version`、`node --test tests/unit/startLocal.test.mjs`、`npm run check`、`npm run build`、`npm run start -- --check`，再執行 `npm run start` 並確認 `http://127.0.0.1:5173/` 可載入、後端受保護路由要求登入。`--check` 可能啟動本機 Supabase；執行前確認不是需要保留原狀的測試資料庫。`supabase status` 會顯示本機金鑰，不要貼出原始輸出。
+
+macOS 上用 `fileURLToPath(..., { windows: true })` 和假 ACL／CLI 的單元測試只能列為 Windows **TEST PASS**；Windows 10／11、Ubuntu／Debian 的 **REAL PASS** 必須在相應系統實際安裝、啟動與 HTTP 驗收後才能標示。Windows 自訂 NTFS 群組權限仍需人工審查。54 個 migration 的既有資料庫版本比對不等同全新資料庫安裝驗收。
+
 ## 現行 Local-only 回歸契約
 
 未解決回歸驗證缺口：mobile WebKit E2E 因找不到「繼續」按鈕而失敗；該流程尚未通過，不能計為 PASS。
@@ -23,7 +31,7 @@ For current Issue #41 Local acceptance, use only this repository and run
 `npm run start -- --check`, then `npm run start`. The launcher checks the
 repository's Local Supabase migrations, Google Provider, and loopback Redis.
 在 `supabase/.env.local` 設定測試用的 `GOOGLE_CLIENT_ID` 與
-`GOOGLE_CLIENT_SECRET`（權限 600、Git 忽略）。本機啟動器會在啟動時將兩者傳給
+`GOOGLE_CLIENT_SECRET`（macOS／Linux 權限 600；Windows 檢查 NTFS ACL；Git 忽略）。本機啟動器會在啟動時將兩者傳給
 Supabase CLI；不要放入 Production 的 `.env`。
 The isolated fallback procedure below is historical and is not the current
 Local acceptance path.

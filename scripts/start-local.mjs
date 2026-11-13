@@ -1,15 +1,26 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { lstatSync, readFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { createConnection } from 'node:net';
+import { dirname, join, posix, resolve, win32 } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 
-const project = new URL('../', import.meta.url).pathname;
+export function projectDirectoryFromModuleUrl(moduleUrl, windows = process.platform === 'win32') {
+  const pathApi = windows ? win32 : posix;
+  return pathApi.resolve(pathApi.dirname(fileURLToPath(moduleUrl, { windows })), '..');
+}
+
+const project = projectDirectoryFromModuleUrl(import.meta.url);
 const redisUrl = process.env.LOCAL_REDIS_URL || 'redis://127.0.0.1:6379';
 const localOAuthEnvFile = join(project, 'supabase/.env.local');
 const hostEnvironment = (env) => Object.fromEntries(Object.entries(env).filter(([key]) =>
-  ['PATH', 'HOME', 'TMPDIR', 'USER', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'CI',
-    'DOCKER_HOST', 'DOCKER_CONTEXT'].includes(key)));
+  ['PATH', 'HOME', 'TMPDIR', 'TEMP', 'TMP', 'USER', 'USERNAME', 'USERPROFILE',
+    'SHELL', 'LANG', 'LC_ALL', 'TERM', 'CI', 'SYSTEMROOT', 'WINDIR', 'COMSPEC',
+    'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PSMODULEPATH',
+    'HOMEDRIVE', 'HOMEPATH', 'XDG_CONFIG_HOME', 'XDG_RUNTIME_DIR',
+    'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'DOCKER_HOST', 'DOCKER_CONTEXT',
+    'DOCKER_CONFIG'].includes(key.toUpperCase())));
 export function resolveLocalSupabaseWorkdir(value) {
   if (String(value || '').trim() && resolve(value) !== resolve(project)) {
     throw new Error('Local Supabase must use the main project directory.');
@@ -30,25 +41,94 @@ export function readConfigPort(config, sectionName, fallback = null) {
   return section?.match(/^port\s*=\s*(\d+)/mu)?.[1] || fallback;
 }
 
-export function readLocalGoogleOAuthCredentials(path = localOAuthEnvFile) {
+const windowsAclScript = [
+  "$ErrorActionPreference = 'Stop'",
+  '$acl = Get-Acl -LiteralPath $env:LOCAL_OAUTH_ENV_FILE',
+  "$broad = @('S-1-1-0', 'S-1-5-7', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-32-546')",
+  'foreach ($ace in $acl.Access) {',
+  '  $sid = $ace.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value',
+  "  if ($ace.AccessControlType -eq 'Allow' -and ($sid -in $broad -or $sid -match '^S-1-5-21-(?:[0-9]+-){3}513$') -and ($ace.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::ReadData)) { 'BROAD'; exit 0 }",
+  '}',
+  "'COMMON_SAFE'"
+].join('; ');
+
+export function assertLocalOAuthFileSecurity(path, file, platform = process.platform, aclRunner = spawnSync) {
+  if (!file.isFile()) throw new Error('supabase/.env.local must be a regular file, not a symlink or directory.');
+  if (platform !== 'win32') {
+    if ((file.mode & 0o777) !== 0o600) throw new Error('supabase/.env.local must be a regular file with mode 600.');
+    return;
+  }
+  const result = aclRunner('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', windowsAclScript], {
+    cwd: project, encoding: 'utf8', windowsHide: true,
+    env: { ...hostEnvironment(process.env), LOCAL_OAUTH_ENV_FILE: path }
+  });
+  if (result.error || result.status !== 0 || !['BROAD', 'COMMON_SAFE'].includes(result.stdout?.trim())) {
+    throw new Error('Windows ACL could not be verified for supabase/.env.local; inspect it with Get-Acl and restrict access with icacls.');
+  }
+  if (result.stdout.trim() === 'BROAD') {
+    throw new Error('supabase/.env.local grants read access to a broad Windows group; restrict its ACL with icacls.');
+  }
+  console.warn('Windows ACL check covers common broad groups only; review custom group permissions with Get-Acl.');
+}
+
+export function readLocalGoogleOAuthCredentials(path = localOAuthEnvFile, options = {}) {
   let file;
-  try { file = lstatSync(path); } catch (error) {
+  try { file = (options.lstatSync || lstatSync)(path); } catch (error) {
     if (error.code === 'ENOENT') {
-      throw new Error('Create supabase/.env.local from supabase/.env.example and set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.');
+      throw new Error(`Create supabase/.env.local from supabase/.env.example and set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET. Expected path: ${path}`);
     }
+    if (error.code === 'EACCES' || error.code === 'EPERM') throw new Error('supabase/.env.local is not readable; check file access permissions.');
     throw error;
   }
-  if (!file.isFile() || (file.mode & 0o777) !== 0o600) {
-    throw new Error('supabase/.env.local must be a regular file with mode 600.');
+  assertLocalOAuthFileSecurity(path, file, options.platform, options.aclRunner);
+  let source;
+  try { source = (options.readFileSync || readFileSync)(path, 'utf8'); } catch (error) {
+    if (error.code === 'EACCES' || error.code === 'EPERM') throw new Error('supabase/.env.local is not readable; check file access permissions.');
+    throw error;
   }
-  const values = parseEnv(readFileSync(path, 'utf8'));
+  let values;
+  try { values = parseEnv(source); } catch {
+    throw new Error('Invalid dotenv format in supabase/.env.local.');
+  }
+  const requiredKeys = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'];
+  const malformedKeys = requiredKeys.filter((key) =>
+    !Object.hasOwn(values, key) && new RegExp(`^\\s*${key}\\b`, 'mu').test(source));
+  if (malformedKeys.length) {
+    throw new Error(`Malformed ${malformedKeys.join(' and ')} assignment in supabase/.env.local.`);
+  }
   const clientId = values.GOOGLE_CLIENT_ID?.trim();
   const clientSecret = values.GOOGLE_CLIENT_SECRET?.trim();
-  if (!clientId || !clientSecret || clientId === 'YOUR_GOOGLE_CLIENT_ID'
-    || clientSecret === 'YOUR_GOOGLE_CLIENT_SECRET') {
-    throw new Error('Set your own GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in supabase/.env.local.');
+  const missingKeys = requiredKeys.filter((key) => !values[key]?.trim());
+  if (missingKeys.length) {
+    throw new Error(`Missing ${missingKeys.join(' and ')} in supabase/.env.local.`);
+  }
+  if (clientId === 'YOUR_GOOGLE_CLIENT_ID' || clientSecret === 'YOUR_GOOGLE_CLIENT_SECRET'
+    || /\s|[\x00-\x1f\x7f]/u.test(clientId + clientSecret)
+    || /^["']|["']$/u.test(clientId) || /^["']|["']$/u.test(clientSecret)) {
+    throw new Error('Invalid GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET format in supabase/.env.local.');
   }
   return { clientId, clientSecret };
+}
+
+export function localCliInvocation(name, platform = process.platform, env = process.env, fileExists = existsSync) {
+  if (platform !== 'win32') return { file: name, shell: false };
+  const pathValue = Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1] || '';
+  for (const directory of pathValue.split(win32.delimiter).filter(Boolean)) {
+    for (const extension of ['.exe', '.cmd', '.bat']) {
+      const file = win32.join(directory, `${name}${extension}`);
+      if (fileExists(file)) return { file, shell: extension !== '.exe' };
+    }
+  }
+  return { file: name, shell: false };
+}
+
+export function cliSpawnArguments(cli, args) {
+  if (!cli.shell) return { file: cli.file, args };
+  const quote = (value) => {
+    if (/["\r\n]/u.test(value)) throw new Error('Unsupported quote or newline in Windows CLI path or argument.');
+    return `"${value.replace(/%/gu, '%%')}"`;
+  };
+  return { file: quote(cli.file), args: args.map(quote) };
 }
 
 function command(name, args, googleOAuth = null) {
@@ -57,12 +137,39 @@ function command(name, args, googleOAuth = null) {
     env.GOOGLE_CLIENT_ID = googleOAuth.clientId;
     env.GOOGLE_CLIENT_SECRET = googleOAuth.clientSecret;
   }
-  const result = spawnSync(name, args, { cwd: project, encoding: 'utf8', env });
+  const cli = localCliInvocation(name, process.platform, env);
+  const invocation = cliSpawnArguments(cli, args);
+  const result = spawnSync(invocation.file, invocation.args, {
+    cwd: project, encoding: 'utf8', env, shell: cli.shell, windowsHide: true
+  });
+  if (result.error) {
+    throw new Error(`${name} ${args[0]} could not run (${result.error.code || result.error.name}); check CLI installation and PATH.`);
+  }
   if (result.status !== 0) throw new Error(`${name} ${args[0]} failed; check the local service and CLI permissions.`);
   return result.stdout.trim();
 }
 
-function checkLocalServices() {
+export function pingLocalRedis(redisAddress, timeoutMs = 2000) {
+  const target = new URL(redisAddress);
+  return new Promise((resolve, reject) => {
+    const host = target.hostname.replace(/^\[|\]$/gu, '');
+    const socket = createConnection({ host, port: Number(target.port || 6379) });
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (error) reject(error); else resolve();
+    };
+    socket.setTimeout(timeoutMs, () => finish(new Error('Redis PING timed out.')));
+    socket.once('connect', () => socket.write('*1\r\n$4\r\nPING\r\n'));
+    socket.on('data', (chunk) => finish(chunk.toString('utf8').startsWith('+PONG\r\n')
+      ? null : new Error('Local Redis did not respond to PING.')));
+    socket.once('error', finish);
+  });
+}
+
+async function checkLocalServices() {
   const supabaseWorkdir = resolveLocalSupabaseWorkdir(process.env.LOCAL_SUPABASE_WORKDIR);
   const googleOAuth = readLocalGoogleOAuthCredentials();
   if (!isLoopbackUrl(redisUrl, 'redis:')) throw new Error('LOCAL_REDIS_URL must point to loopback Redis.');
@@ -90,7 +197,9 @@ function checkLocalServices() {
     || databaseUrl.port !== dbPort || !status.ANON_KEY || !status.SERVICE_ROLE_KEY) {
     throw new Error('Supabase CLI must report matching loopback API/DB endpoints and local keys.');
   }
-  const authSettings = JSON.parse(command('curl', ['-fsS', `${apiUrl}/auth/v1/settings`]));
+  const authResponse = await fetch(`${apiUrl}/auth/v1/settings`, { signal: AbortSignal.timeout(3000) });
+  if (!authResponse.ok) throw new Error('Local Supabase auth settings are unavailable.');
+  const authSettings = await authResponse.json();
   if (authSettings.external?.google !== true) throw new Error('Local Supabase Google provider is disabled.');
   const databaseContainer = `supabase_db_${projectId}`;
   const applied = command('docker', ['exec', databaseContainer, 'psql', '-U', 'postgres', '-At', '-c',
@@ -101,14 +210,15 @@ function checkLocalServices() {
     || expectedVersions.some((version, index) => version !== appliedVersions[index])) {
     throw new Error('Local Supabase migration history differs from the repository.');
   }
-  let ping;
-  try { ping = command('redis-cli', ['-u', redisUrl, 'PING']); } catch {
+  try { await pingLocalRedis(redisUrl); } catch {
+    if (process.platform === 'win32') {
+      throw new Error('Local Redis is unavailable; start a loopback Redis Docker container, then retry.');
+    }
     const port = new URL(redisUrl).port || '6379';
     command('redis-server', ['--daemonize', 'yes', '--bind', '127.0.0.1', '--port', port,
       '--save', '', '--appendonly', 'no']);
-    ping = command('redis-cli', ['-u', redisUrl, 'PING']);
+    await pingLocalRedis(redisUrl);
   }
-  if (ping !== 'PONG') throw new Error('Local Redis did not respond to PING.');
   return { apiUrl, anonKey: status.ANON_KEY, serviceKey: status.SERVICE_ROLE_KEY };
 }
 
@@ -134,16 +244,20 @@ export function buildLocalEnvironment(local, baseEnv = process.env) {
   };
 }
 
-if (process.argv[1] && new URL(`file://${process.argv[1]}`).pathname === new URL(import.meta.url).pathname) {
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   try {
-    const local = checkLocalServices();
+    const local = await checkLocalServices();
     const env = buildLocalEnvironment(local);
     if (process.argv.includes('--check')) {
       console.log('Local Supabase, migrations, Redis, and environment: ready.');
     } else {
+      const npm = localCliInvocation('npm', process.platform, env);
+      const npmInvocation = cliSpawnArguments(npm, ['run', 'dev']);
       const children = [
         spawn(process.execPath, ['server/index.js'], { cwd: project, env, stdio: 'inherit' }),
-        spawn('npm', ['run', 'dev'], { cwd: project, env, stdio: 'inherit' })
+        spawn(npmInvocation.file, npmInvocation.args, {
+          cwd: project, env, stdio: 'inherit', shell: npm.shell, windowsHide: true
+        })
       ];
       let stopping = false;
       const stop = () => {

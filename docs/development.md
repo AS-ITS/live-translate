@@ -4,21 +4,42 @@
 
 ## 準備
 
-需要 Node.js 22 以上、npm、Docker、Supabase CLI、`redis-cli`、`redis-server`，以及支援麥克風、Web Audio、OPFS／IndexedDB、WebRTC 的瀏覽器。先在專案根目錄執行 `npm ci`。依 [OAuth 教學](GOOGLE_OAUTH_SETUP.md#local-google-oauth)從 [`supabase/.env.example`](../supabase/.env.example)建立 `supabase/.env.local`，填入自己 Google OAuth Client 的 `GOOGLE_CLIENT_ID` 與 `GOOGLE_CLIENT_SECRET`，並執行 `chmod 600 supabase/.env.local`。實際檔案已被 Git 忽略，Sample 不含 Secret。
+需要 Node.js 22、npm、Git、已啟動的 Docker、Supabase CLI 與 loopback Redis。Windows 10／11、Ubuntu／Debian、macOS Apple Silicon／Intel 的安裝命令見[本機安裝指南](DEPLOYMENT.md#全新安裝本機-supabase)。瀏覽器需支援麥克風、Web Audio、OPFS／IndexedDB 與 WebRTC。專案已提交 `supabase/config.toml`，不需 `supabase init` 或 `supabase link`。
 
 ## 方式 A：完整本機啟動
 
-```bash
+先建立自己的 Google OAuth Client；設定方式與 Windows NTFS ACL 指令見[Google OAuth 指南](GOOGLE_OAUTH_SETUP.md#local-google-oauth)。私人檔案已存在時不要覆寫。
+
+Windows PowerShell：
+
+```powershell
 npm ci
+Copy-Item supabase/.env.example supabase/.env.local
+# 編輯憑證並依 OAuth 指南檢查 ACL
+docker info
+supabase --version
+docker run -d --name live-translate-redis -p 127.0.0.1:6379:6379 redis:7-alpine
 npm run start -- --check
 npm run start
 ```
 
-`scripts/start-local.mjs` 會檢查或啟動 Local Supabase 與 loopback Redis，核對 Google OAuth Secret、API／DB URL、金鑰和 migration 版本，再同時啟動 API（預設 `127.0.0.1:3000`）與 Vite（預設 `127.0.0.1:5173`）。`--check` 可能啟動服務，不是純唯讀；migration 不符會停止，不會重設資料庫。啟動器從 Supabase CLI 取得本機 URL、anon／service-role key，設定前後端環境變數並隔離雲端設定；**不讀取根目錄 `.env`**。若需限制本機登入網域，先在啟動命令的 shell 明確 `export AUTH_ALLOWED_EMAIL_DOMAINS=as.edu.tw,gmail.com`；未 export 時不限制網域。Google Client Secret 仍須自行準備。首次建立可拋棄的空白本機資料庫可用 `npm run db:start`；`npm run db:reset` 會清除本機資料。
+Ubuntu／Debian Bash 與 macOS Terminal：
 
-`npm run start` 會注入固定的前端 Origin `http://127.0.0.1:5173`，不會偵測 Vite 實際綁定的 Origin；本機若改用其他前端 Origin，手動啟動時須設定對應的 `dev_frontend_origin`。
+```bash
+npm ci
+cp supabase/.env.example supabase/.env.local
+# 編輯憑證
+chmod 600 supabase/.env.local
+docker info
+supabase --version
+docker run -d --name live-translate-redis -p 127.0.0.1:6379:6379 redis:7-alpine
+npm run start -- --check
+npm run start
+```
 
-正式 Meeting 的 Gemini key 由 Host 在介面輸入。啟動器刻意清空伺服器 `GEMINI_API_KEY`；已退役的獨立 Translation Worker 相關變數僅在下方盤點歷史用途。
+已有 `supabase/.env.local` 或可用的 Redis 時，略過對應建立命令。啟動器以腳本所在路徑推算專案根目錄，從 `supabase/.env.local` 讀取 OAuth 變數；不讀根目錄 `.env`。`--check` 與一般啟動共用 Docker、Supabase status/start、Google provider、54 個 migration 與 Redis 檢查；它可能啟動本機 Supabase，但不重設資料庫。正常啟動另啟動 API（`127.0.0.1:3000`）與 Vite（`127.0.0.1:5173`）。
+
+路徑錯誤請看 `Expected path`，核對執行的 clone；Windows ACL 錯誤使用 `Get-Acl`／`icacls`，Unix 權限錯誤使用 `chmod 600`。Windows 若有自訂群組權限，仍須人工審查。若需限制本機登入網域，在啟動前設定 `AUTH_ALLOWED_EMAIL_DOMAINS`；未設定時不限制。
 
 ## 方式 B：手動 Dev Server
 
@@ -31,7 +52,7 @@ npm run start
 
 手動方式不執行啟動器的 migration、OAuth 與 Redis 檢查；若遇登入或資料庫錯誤，先執行方式 A 的 `--check` 查原因。不要把 `SUPABASE_SECRET_KEY` 或 Google Secret 寫成 `VITE_*`。
 
-`AUTH_ALLOWED_EMAIL_DOMAINS` 為選填。未設定時不限制 Google 帳號的電子郵件網域；設定後只允許指定網域登入。可在手動 Dev Server 的根目錄 `.env` 寫 `AUTH_ALLOWED_EMAIL_DOMAINS=as.edu.tw,gmail.com`；API 由上述 `--env-file` 載入。Google OAuth Audience／Testing 限制不受此變數影響。
+本機安裝預設不限制 Google 帳號的 Email 網域。如有組織使用需求，可自行設定允許的網域。`AUTH_ALLOWED_EMAIL_DOMAINS` 未設定或空白時不限制網域；明確設定後只允許列出的網域。`npm run start` 僅繼承啟動終端的值：Windows PowerShell 用 `$env:AUTH_ALLOWED_EMAIL_DOMAINS='example.com'`，Linux Bash／macOS Terminal 用 `export AUTH_ALLOWED_EMAIL_DOMAINS=example.com`。手動 Dev Server 可在根目錄 `.env` 寫 `AUTH_ALLOWED_EMAIL_DOMAINS=example.com`，API 由上述 `--env-file` 載入。Google OAuth Audience／Testing 限制不受此變數影響。
 
 ## 環境變數盤點
 

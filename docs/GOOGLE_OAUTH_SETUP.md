@@ -18,7 +18,7 @@
 
 1. 查 `supabase/config.toml` 的 `[auth.external.google].client_id`。它必須等於剛建立的 Local Client ID；不要把 Secret 寫進這個檔案。
 2. 參照 [`supabase/.env.local.example`](../supabase/.env.local.example)建立 `supabase/.env.local`；若已存在就直接編輯，避免覆蓋。填入**同一 Client**的 `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET`，執行 `chmod 600 supabase/.env.local`。實際檔案由 `.gitignore` 忽略；啟動器要求一般檔案且權限恰為 `600`。
-3. 執行 `npx supabase status -o json`，用實際 `API_URL` 加上 `/auth/v1/callback` 設定 Google redirect URI。預設 API port 是 `54321`，若已更改，以 CLI 回報為準。Supabase Local 的 Site URL／Redirect URLs 應允許實際前端 Origin；同時核對 [`APP_ORIGIN`](development.md#方式-b手動-dev-server)。
+3. 執行 `npx supabase status -o json`，用實際 `API_URL` 加上 `/auth/v1/callback` 設定 Google redirect URI。預設 API port 是 `54321`，若已更改，以 CLI 回報為準。Supabase Local 的 Site URL／Redirect URLs 應允許實際前端 Origin；`npm run start` 不需手動設定 `APP_ORIGIN`，手動 Dev Server 改用其他前端 Origin 時依[開發指南](development.md#方式-b手動-dev-server)核對。
 4. 執行 `npm run start -- --check`；它會驗證 Secret 權限、Local Supabase Google provider、URL 與 migration。再依 [完整啟動或 Dev Server 步驟](development.md)登入。
 
 ## Preview 與 Production

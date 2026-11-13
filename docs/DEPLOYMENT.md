@@ -19,7 +19,7 @@
 
 | 變數 | 必要性與來源 | 說明 |
 | --- | --- | --- |
-| `APP_ORIGIN` | 必填，各環境各自設定 | 該前端完整 HTTPS Origin，供 CORS 與 token API 使用；Preview 須對應實際網址。 |
+| `APP_ORIGIN` | 必填，各環境各自設定 | 在部署平台明確設定可信任的前端完整 HTTPS Origin，供 CORS 與 token API 使用；Preview 須對應實際網址，Production 須使用正確的正式網址。不得從請求的 Host／Origin Header 自動加入 allowlist。 |
 | `SUPABASE_URL` | 必填，各環境各自設定 | 對應 Supabase Project URL，後端使用。 |
 | `SUPABASE_SECRET_KEY` | 必填，**後端 Secret** | 對應 Project 的 service／secret key，不得加 `VITE_` 前綴。 |
 | `SUPABASE_JWKS_URL` | 必填，後端 URL | `<SUPABASE_URL>/auth/v1/.well-known/jwks.json`；須與同一 Project 一致。 |
@@ -31,8 +31,8 @@
 | `WEBRTC_ICE_SERVERS_JSON` | 網路需 STUN／TURN 時條件必填 | `RTCIceServer[]` JSON；含 TURN credential 時列為 Secret。 |
 | `NODE_ENV`, `VERCEL_ENV`, `VERCEL_URL`, `VERCEL_BRANCH_URL` | 平台自動 | Vercel 提供環境與部署網址，無需手填；`VERCEL_BRANCH_URL` 視部署而有。 |
 
-`SUPABASE_PUBLISHABLE_KEY` 是後端公開 REST 讀取的可選 fallback；已有 `VITE_SUPABASE_PUBLISHABLE_KEY` 時可省略。一般 Meeting 的 Gemini API key 由 Host 在介面輸入；**不需**將 `GEMINI_API_KEY` 當作所有部署的必填項。若另外啟用獨立 Gemini 翻譯／重譯 Worker，須在後端設定 `GEMINI_API_KEY`；若呼叫 `/api/internal/worker`，另需 `CRON_SECRET` 作 Bearer 授權，可選設 `WORKER_BATCH_SIZE` 與 `SUPABASE_WORKER_USER_ID`。這些都不得放前端。
+`SUPABASE_PUBLISHABLE_KEY` 是後端公開 REST 讀取的可選 fallback；已有 `VITE_SUPABASE_PUBLISHABLE_KEY` 時可省略。一般 Meeting 的 Gemini API key 由 Host 在介面輸入；**不需**將 `GEMINI_API_KEY` 當作所有部署的必填項。舊 `/api/internal/worker` API 及其 `CRON_SECRET` 授權檢查仍存在，但獨立 Translation Worker 已退役，相關變數不是目前部署的安裝必需項。
 
-其他模型、rate limit、診斷、路徑覆寫及歷史相容變數的用途與未設行為，統一見 [環境變數盤點](development.md#環境變數盤點)。已退役 Cloud Recording、Cloud Cue、Meeting SSE 不列入雲端主要安裝清單。舊 Supabase Realtime viewer 的簽署 JWK 僅供歷史路徑，不是目前 DataChannel Viewer 的必填項。
+其他模型、rate limit、診斷、路徑覆寫及歷史相容變數的用途與未設行為，統一見 [環境變數盤點](development.md#環境變數盤點)。已退役 Cloud Recording、Cloud Cue、Meeting SSE 與舊 Realtime Viewer 不列入雲端主要安裝清單。Vercel 仍有 `SUPABASE_REALTIME_SIGNING_PRIVATE_JWK`、`SAVED_RETRANSLATION_MODEL`、`SESSION_SUMMARY_MODEL` 等歷史變數；它們不是目前 DataChannel Viewer 的必填項，移除狀態尚待確認。
 
 部署前仍須以 [測試與驗收](TESTING.md)及 [WebRTC 驗證指南](verification/webrtc-browser-deployment.md)確認實際行為；請勿把 Secret、短效 token 或 TURN credential 貼到文件、CLI 輸出或提交紀錄。

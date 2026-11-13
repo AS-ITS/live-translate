@@ -16,15 +16,17 @@ npm run start
 
 `scripts/start-local.mjs` 會檢查或啟動 Local Supabase 與 loopback Redis，核對 Google OAuth Secret、API／DB URL、金鑰和 migration 版本，再同時啟動 API（預設 `127.0.0.1:3000`）與 Vite（預設 `127.0.0.1:5173`）。`--check` 可能啟動服務，不是純唯讀；migration 不符會停止，不會重設資料庫。啟動器從 Supabase CLI 取得本機 URL、anon／service-role key，設定前後端環境變數並隔離雲端設定；**不讀取根目錄 `.env`**。若需限制本機登入網域，先在啟動命令的 shell 明確 `export AUTH_ALLOWED_EMAIL_DOMAINS=as.edu.tw,gmail.com`；未 export 時不限制網域。Google Client Secret 仍須自行準備。首次建立可拋棄的空白本機資料庫可用 `npm run db:start`；`npm run db:reset` 會清除本機資料。
 
-正式 Meeting 的 Gemini key 由 Host 在介面輸入。啟動器刻意清空伺服器 `GEMINI_API_KEY`；獨立翻譯 Worker 見[進階功能](#進階功能與歷史相容)。
+`npm run start` 會注入固定的前端 Origin `http://127.0.0.1:5173`，不會偵測 Vite 實際綁定的 Origin；本機若改用其他前端 Origin，手動啟動時須設定對應的 `dev_frontend_origin`。
+
+正式 Meeting 的 Gemini key 由 Host 在介面輸入。啟動器刻意清空伺服器 `GEMINI_API_KEY`；已退役的獨立 Translation Worker 相關變數僅在下方盤點歷史用途。
 
 ## 方式 B：手動 Dev Server
 
 1. 啟動 Docker，在專案根目錄執行 `npx supabase start`，再執行 `npx supabase status -o json`。只使用輸出的 loopback `API_URL`、`ANON_KEY`、`SERVICE_ROLE_KEY`；不要使用 Preview／Production Supabase URL 或 Secret。核對 `API_URL` 的 port 與 `supabase/config.toml` 的 `[api].port` 相同。
 2. 在另一終端執行 `redis-server --bind 127.0.0.1 --port 6379`，以 `redis-cli -u redis://127.0.0.1:6379 PING` 確認回應 `PONG`。本機 signaling 使用 TCP `redis://`；Vercel 使用 HTTPS REST URL 與 token，不能把此本機 URL 貼到雲端。
-3. 從 [Sample](../.env.example)建立根目錄 `.env`，填入上述本機值：`API_URL` → `SUPABASE_URL` 和 `VITE_SUPABASE_URL`；`SERVICE_ROLE_KEY` → `SUPABASE_SECRET_KEY`；`ANON_KEY` → `VITE_SUPABASE_PUBLISHABLE_KEY`。`SUPABASE_JWKS_URL` 設為 `<API_URL>/auth/v1/.well-known/jwks.json`。`APP_ORIGIN` 與 `dev_frontend_origin` 必須等於實際前端完整 Origin，例如 `http://127.0.0.1:5173`；若更改 port，三處都要同步。一般 HTTPS 網址如 `https://translate.example.com` 不需寫 port。
+3. 從 [Sample](../.env.example)建立根目錄 `.env`，填入上述本機值：`API_URL` → `SUPABASE_URL` 和 `VITE_SUPABASE_URL`；`SERVICE_ROLE_KEY` → `SUPABASE_SECRET_KEY`；`ANON_KEY` → `VITE_SUPABASE_PUBLISHABLE_KEY`。`SUPABASE_JWKS_URL` 設為 `<API_URL>/auth/v1/.well-known/jwks.json`。預設前端 Origin `http://127.0.0.1:5173` 不需設定 `APP_ORIGIN` 或 `dev_frontend_origin`；若手動改用其他前端 Origin，設定相符的 `dev_frontend_origin`。
 4. API 終端執行 `node --env-file=.env "$(command -v npm)" run server`；它執行的 npm script 就是 `npm run server`（`node server/index.js`）。Node 不會因 npm script 自動讀 `.env`，且目前 Node 的 `NODE_OPTIONS` 不允許 `--env-file`。此寫法讓 npm 與其子行程繼承 `.env`；也可直接執行 `node --env-file=.env server/index.js`。已存在的 shell 變數優先於 `.env`，啟動前請避免殘留雲端 Supabase 值。
-5. Vite 終端執行 `npm run dev`。Vite 自動載入根目錄 `.env` 的 `VITE_*`，並由 `vite.config.js` 的 `loadEnv` 讀 `dev_backend_origin`。確認前端網址、`APP_ORIGIN`、`dev_frontend_origin` 一致；前端向 `/api` 發請求時，Vite proxy 應轉到 `dev_backend_origin`，預設 `http://127.0.0.1:3000`。可在前端開啟後查 `http://127.0.0.1:5173/api/healthz` 是否由 API 回應。
+5. Vite 終端執行 `npm run dev`。Vite 自動載入根目錄 `.env` 的 `VITE_*`，並由 `vite.config.js` 的 `loadEnv` 讀 `dev_backend_origin`。若前端 Origin 不同於預設值，確認 `dev_frontend_origin` 與實際網址一致；前端向 `/api` 發請求時，Vite proxy 預設轉到 `http://127.0.0.1:3000`，只有後端目標不同時才需設定 `dev_backend_origin`。可在前端開啟後查 `http://127.0.0.1:5173/api/healthz` 是否由 API 回應。
 6. 核對 Google OAuth：`supabase/config.toml` 的 Local Client ID 要對應 `supabase/.env.local` 的 Secret；Google Authorized redirect URI 是實際 `API_URL/auth/v1/callback`，Supabase URL Configuration 需允許目前前端 Origin。詳見 [OAuth 教學](GOOGLE_OAUTH_SETUP.md#local-google-oauth)。
 
 手動方式不執行啟動器的 migration、OAuth 與 Redis 檢查；若遇登入或資料庫錯誤，先執行方式 A 的 `--check` 查原因。不要把 `SUPABASE_SECRET_KEY` 或 Google Secret 寫成 `VITE_*`。
@@ -57,7 +59,7 @@ npm run start
 
 | 變數 | 位置與用途 | 適用／必要性 | Secret | 未設時 |
 | --- | --- | --- | --- | --- |
-| `APP_ORIGIN`, `dev_frontend_origin` | `server/index.js`；網站 Origin／CORS | Dev Server／條件：實際網址偏離預設時必填 | 否 | 使用預設 localhost Origin；自訂網址可能被拒絕 |
+| `APP_ORIGIN`, `dev_frontend_origin` | `server/index.js`；網站 Origin／CORS | Dev Server／預設免填；非預設前端 Origin 設 `dev_frontend_origin`，`APP_ORIGIN` 選填 | 否 | 使用預設 `http://127.0.0.1:5173`；兩者皆設時，開發模式優先使用 `dev_frontend_origin` |
 | `dev_backend_origin` | `vite.config.js`；API proxy | Dev Server／條件：API 非預設網址時必填 | 否 | proxy 到 `127.0.0.1:3000` |
 | `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_JWKS_URL` | `server/compositionRoot.js`、`server/accessControl.js`；資料與 JWT | Dev Server／正式登入與 Meeting 必填 | URL 否；key 是 | 雲端 repository／Auth gate 不可用 |
 | `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` | `src/lib/supabaseAuth.js`；瀏覽器 Auth | Dev Server／正式登入必填 | 否 | 前端 Supabase client 不可用 |
@@ -85,8 +87,8 @@ npm run start
 | --- | --- | --- | --- | --- |
 | `LOCAL_REDIS_URL`, `LOCAL_SUPABASE_WORKDIR` | `scripts/start-local.mjs`；本機 TCP／工作路徑覆寫 | Local Start／選填 | 否 | Redis `127.0.0.1:6379`、目前專案目錄 |
 | `WEBRTC_ICE_SERVERS_JSON` | `server/index.js`、`api/webrtc/[...path].js`；STUN／TURN | Local、Preview、Production／網路需 TURN 時條件必填 | 視內容 | 使用程式預設 ICE；跨網路連線可能失敗 |
-| `GEMINI_API_KEY` | `src/infrastructure/geminiEnvironment.js`、`server/compositionRoot.js`；獨立翻譯／重譯 Worker provider | 進階 Worker／使用 Gemini provider 時條件必填 | 是 | Worker 無法建立 Gemini provider；正式 Meeting 仍可由 Host 輸入 key |
-| `TRANSLATION_PROVIDER` | `src/infrastructure/translationProviderConfiguration.js`；獨立翻譯 provider 選擇 | 獨立翻譯／選填 | 否 | 預設 `gemini` |
+| `GEMINI_API_KEY` | `src/infrastructure/geminiEnvironment.js`、`server/compositionRoot.js`；舊獨立翻譯／重譯 provider | 歷史路徑／非目前安裝必需 | 是 | 舊 provider 無法建立；正式 Meeting 仍可由 Host 輸入 key |
+| `TRANSLATION_PROVIDER` | `src/infrastructure/translationProviderConfiguration.js`；舊獨立翻譯 provider 選擇 | 歷史路徑／非目前安裝必需 | 否 | 預設 `gemini` |
 | `LIVE_TRANSLATE_MODEL`, `LIVE_TRANSCRIPTION_MODEL` | `server/tokenService.js`；Live model | Local、Preview、Production／選填 | 否 | 使用程式預設模型 |
 | `SAVED_RETRANSLATION_GEMINI_MODEL`, `SAVED_RETRANSLATION_TIMEOUT_MS` | `src/infrastructure/geminiSavedTranscriptTranslationComposition.js`；重譯模型／逾時 | 獨立重譯／選填 | 否 | 使用程式預設模型／逾時 |
 | `TRANSCRIPT_POLISHING_MODEL`, `TRANSCRIPT_POLISHING_MAX_RPM` | `server/compositionRoot.js`；潤稿模型／速率 | 潤稿／選填 | 否 | 使用預設模型／15 RPM |
@@ -95,8 +97,8 @@ npm run start
 | `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX` | `server/index.js`；API rate limit | 所有環境／選填 | 否 | 60 秒／20 次 |
 | `LIVE_TRANSLATE_DIAGNOSTICS`, `LIVE_PIPELINE_TRACE_ENABLED` | `vite.config.js`、`server/publicRuntimeConfig.js`；診斷 | Local、隔離 Preview／選填 | 否 | 關閉 |
 | `OBSERVABILITY_INSTANCE_ID` | `src/infrastructure/structuredLogger.js`；日誌 instance | 所有環境／選填 | 否 | `instance-<pid>` |
-| `CRON_SECRET`, `WORKER_BATCH_SIZE` | `api/internal/worker.js`；獨立 Worker 授權／批次 | Preview、Production Worker／呼叫端須有 Secret；batch 選填 | Secret 是；batch 否 | 無 Secret 回 401；batch 預設 3 |
-| `SUPABASE_WORKER_USER_ID` | `src/infrastructure/supabaseGlossary.js` 等；Worker ownership fallback | 獨立 Worker／條件 | 否 | 無 request owner 時操作失敗 |
+| `CRON_SECRET`, `WORKER_BATCH_SIZE` | `api/internal/worker.js`；舊 Worker API 授權／批次 | 歷史路徑／非目前安裝必需；舊 API 呼叫端仍須有 Secret | Secret 是；batch 否 | 無 Secret 回 401；batch 預設 3 |
+| `SUPABASE_WORKER_USER_ID` | `src/infrastructure/supabaseGlossary.js` 等；舊 Worker ownership fallback | 歷史路徑／非目前安裝必需 | 否 | 無 request owner 時操作失敗 |
 | `SESSION_SNAPSHOT_MAX_BYTES`, `TRANSLATION_OUTPUT_MAX_BYTES`, `MEETING_CHECKPOINT_MAX_BYTES`, `SESSION_AUDIO_MAX_BYTES` | `server/index.js`；payload 上限 | 所有環境／選填 | 否 | 預設 25、25、25、50 MiB |
 | `DATA_DIR`, `SESSION_RECORDS_FILE`, `MEETING_RECORDS_FILE`, `SESSION_SHARES_FILE`, `RECORDER_LEASES_FILE`, `SESSION_AUDIO_DIR`, `TRANSLATION_GLOSSARY_FILE`, `TRANSLATION_DURABLE_QUEUE_FILE`, `TRANSLATION_DEAD_LETTER_QUEUE_FILE` | `server/compositionRoot.js` 與檔案 repository；儲存路徑覆寫 | 本機／選填；雲端勿依賴本機檔案持久性 | 否 | 使用各 repository 預設路徑 |
 | `P1_PROFILE_ONLY` | `server/index.js`；舊 profile-only gate | 歷史相容／選填 | 否 | false |

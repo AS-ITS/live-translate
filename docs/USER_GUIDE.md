@@ -16,7 +16,7 @@ Host 在錄製頁按開始並允許麥克風存取；真實 Gemini Live 翻譯�
 - **Continue**：從暫停處恢復錄製。
 - **End**：完成會議並固定本機內容的存取期限。
 
-PCM、原始與翻譯音訊、Cue、Transcript、Checkpoint、Journal、Recovery 保存在 Host 瀏覽器的 OPFS／IndexedDB。請使用原裝置、相同瀏覽器及相同網站來源查看或匯出；清除網站資料、換裝置或使用私密瀏覽，可能無法讀回內容。Safari 私密瀏覽可能無法保存音訊，建議使用一般瀏覽模式，並在離開前確認下載檔案可用。
+PCM、原始與翻譯音訊、Cue、Transcript、Segment、Checkpoint、Journal、Recovery 保存在 Host 瀏覽器的 OPFS／IndexedDB。請使用原裝置、相同瀏覽器及相同網站來源查看或匯出；清除網站資料、換裝置或使用私密瀏覽，可能無法讀回內容。Safari 私密瀏覽可能無法保存音訊，建議使用一般瀏覽模式，並在離開前確認下載檔案可用。
 
 ## 4. Viewer 看字幕
 

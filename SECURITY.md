@@ -1,14 +1,17 @@
-# Security Policy
+# 安全性政策
 
-## Supported Versions
+## 維護版本
 
-本專案目前為 `0.1.0` 開發階段，尚未承諾正式發布版或固定安全維護期限。維護者會視開發中的風險處理目前版本；舊版與未發布版本沒有支援承諾。
-
-| Version | Maintenance status |
+| 版本 | 維護狀態 |
 | --- | --- |
-| `0.1.0` (development) | Current development version; no published security support SLA |
-| Other versions | No stated support policy |
+| `1.0.x` | 正式版維護系列；維護者會評估並處理適用的安全漏洞。尚無公開承諾的修補期限或 SLA。 |
+| `0.1.0` | 早期開發版本，不再維護。 |
+| 其他版本 | 未宣布維護政策。 |
 
-## Reporting a Vulnerability
+`1.0.0` 目前處於正式發布準備階段；版本號與此維護政策不代表已完成正式驗收或已發布。實際驗收狀態見[測試與驗收](docs/TESTING.md)。
 
-目前未確認可用的私人安全通報管道。儲存庫目前為 private；GitHub Private Vulnerability Reporting 查詢未取得已啟用狀態，因此不可將 GitHub Security Advisory 表單寫成既有通報方式。請向專案維護者詢問私下通報方式；在取得管道前不要在公開 issue 貼漏洞細節、金鑰或個資。正式通報管道及回覆時限須由維護者確認後再公布。
+## 私密通報漏洞
+
+請先向維護者 Po-Chun Ruan 洽詢可用的**非公開通報管道**，再私下提供漏洞資訊。尚未確認 GitHub Private Vulnerability Reporting 已啟用，因此不將 GitHub Security Advisory 表單列為現有通報管道；也沒有已確認的安全通報信箱、回覆期限或修補 SLA。
+
+**禁止在公開 GitHub Issues 張貼 API Key、Token、音訊、逐字稿、漏洞利用細節，以及其他敏感資訊。**如已意外公開，請立即依所屬服務的流程撤銷相關憑證，並以非公開方式通知維護者。

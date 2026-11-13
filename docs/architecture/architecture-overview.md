@@ -14,7 +14,7 @@ Host 字幕 → WebRTC DataChannel → Viewer（即時字幕）
            ↖ Node.js signaling → Redis；跨網路依 ICE／TURN 設定
 ```
 
-Host 的瀏覽器取得後端核發的短效 Gemini token 後，直接連接 Gemini Live API；後端不代理即時麥克風音訊。Supabase 只持久化會議設定／metadata、字典、帳號與必要的授權、分享及連線協調資料。PCM、原始／翻譯錄音、Final Cue、Transcript、Checkpoint、Journal 與 Recovery 由 Host 的 OPFS／IndexedDB 保存。Viewer 經授權後透過 WebRTC DataChannel 接收 Host 的 Cue 快照、更新與重播；Redis 用於 signaling，TURN 僅協助連線，兩者都不提供雲端錄音內容下載。Viewer 無法從雲端恢復或下載其他 Host 的會議內容。跨 NAT／實機 TURN 行為仍待 RC1 實機驗收，見[WebRTC 驗證文件](../verification/webrtc-browser-deployment.md)。
+Host 的瀏覽器取得後端核發的短效 Gemini token 後，直接連接 Gemini Live API；後端不代理即時麥克風音訊。Supabase 只持久化會議設定／metadata、字典、帳號與必要的授權、分享及連線協調資料。PCM、原始／翻譯錄音、Final Cue、Transcript、Segment、Checkpoint、Journal 與 Recovery 由 Host 的 OPFS／IndexedDB 保存。Viewer 經授權後透過 WebRTC DataChannel 接收 Host 的 Cue 快照、更新與重播；Redis 用於 signaling，TURN 僅協助連線，兩者都不提供雲端錄音內容下載。Viewer 無法從雲端恢復或下載其他 Host 的會議內容。跨 NAT／實機 TURN 行為仍待 RC1 實機驗收，見[WebRTC 驗證文件](../verification/webrtc-browser-deployment.md)。
 
 Stop 先封存本機錄製與必要的 Cue／Checkpoint 寫入，Meeting metadata 保持開啟，可再 Start；End 先完成本機耐久化，再提交雲端 `completed` metadata，固定本機內容的 30 分鐘期限。期限前 Host 僅能在同一瀏覽器及同一來源讀取與匯出本機內容；期限到達後普通使用者／Viewer 的內容存取失效，Host 的 OPFS／IndexedDB 清理可在重新開啟時補償重試。到期是存取期限，不代表雲端自動刪除 Meeting 設定與字典，也不保證瀏覽器關閉時立即完成實體清理。詳見[Session lifecycle](../features/session-lifecycle.md)與[RC1 測試狀態](../TESTING.md#issue-41-rc1-acceptance-status-2026-11-09)。
 

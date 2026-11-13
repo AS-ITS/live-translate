@@ -1,5 +1,7 @@
 # Phase 2B Application Foundation
 
+> 範圍註記：本文記錄 Phase 2B Session／翻譯歷史設計與當時的實作狀態，不是 v1.0.0 Meeting 錄製流程。現行 Meeting 內容由 Host OPFS／IndexedDB 保存；Supabase 僅保存 metadata、字典、帳號、授權與必要協調資料；Viewer 字幕由 WebRTC DataChannel 傳送。現行契約見[架構總覽](architecture-overview.md)。
+
 ## 1. Purpose
 
 This document defines the Phase 2B Architecture Foundation for the

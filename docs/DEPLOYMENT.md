@@ -2,7 +2,7 @@
 
 本指南列出各雲端環境必須準備的設定。Local 請依 [開發指南](development.md)使用 Local Supabase，不要用 Production URL 或 Secret 測試。Google OAuth 的建立與 callback 步驟見 [OAuth 教學](GOOGLE_OAUTH_SETUP.md)。
 
-正式 Meeting 的音訊、Cue、Transcript、Checkpoint、Journal 與 Recovery 留在 Host 瀏覽器 OPFS／IndexedDB；Supabase 保存會議 metadata、授權及必要協調資料，Viewer 由 WebRTC DataChannel 接收字幕。部署不會備份 Host 錄製內容。
+正式 Meeting 的PCM、音訊、Cue、Transcript、Segment、Checkpoint、Journal 與 Recovery 留在 Host 瀏覽器 OPFS／IndexedDB；Supabase 保存會議 metadata、字典、帳號、授權及必要協調資料，Viewer 由 WebRTC DataChannel 接收字幕。部署不會備份 Host 錄製內容。
 
 目前 [RC1 驗收](TESTING.md#issue-41-rc1-acceptance-status-2026-11-09)仍有外部設定待完成；文件列出配置方式，不代表跨網路／Safari 驗收已通過。
 

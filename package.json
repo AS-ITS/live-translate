@@ -1,6 +1,6 @@
 {
   "name": "live-translate",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -49,5 +49,12 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1"
+  },
+  "description": "Browser-based live speech translation and meeting subtitles with host-local recording and WebRTC viewer delivery.",
+  "author": "Po-Chun Ruan",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pochun1021/live-translate.git"
   }
 }

@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] — 1.0.0 正式發布準備（2026-11-13 整理）
+
+以下為候選摘要，日期是文件整理日，**不是正式發布日**。保留後續各節的詳細開發紀錄；正式發布與驗收仍待完成。
+
+- 主要功能：Google 帳號授權、Meeting 建立與字典設定、Host 即時翻譯與本機錄製、Viewer WebRTC DataChannel 即時字幕、Host 本機內容檢視與 TXT／SRT／VTT 及可用音訊匯出。
+- 錄製生命週期：Stop 為 Pause、Continue 繼續錄製、End 正式結束 Meeting；修正 Pause／Continue 後 Segment 與 Cue 銜接、End 重試與本機恢復相關問題。
+- 資料與安全邊界：Supabase 僅保存 Meeting metadata、字典、帳號、授權與必要協調資料；PCM、音訊、Cue、Transcript、Segment、Checkpoint、Journal、Recovery 由 Host OPFS／IndexedDB 保存。舊 Cloud Recording 與雲端內容保存路徑不屬正式流程；憑證、短效 token 與敏感內容不得寫入日誌或前端持久資料。
+- 驗證狀態：Mock、單元測試與部分 E2E 證據只證明各自測試範圍，**不等於真實環境正式驗收**。[RC1 驗收紀錄](docs/TESTING.md#issue-41-rc1-acceptance-status-2026-11-09)目前仍標為 `BLOCKED`。
+- 已知限制：130 分鐘 RAM Gate 失敗且記憶體歸屬未確認；RC-M1～RC-M6 實機驗收未完成；mobile WebKit 繼續錄製回歸未通過；iPhone Safari 私密瀏覽可能無法保存本機音訊；跨網路與 Safari Viewer 行為仍須依部署環境驗證。Host 本機資料不會在其他裝置自動恢復。
+
 - Issue #41 音訊診斷清理：移除選單、面板、記憶體事件快照、固定 OPFS 步驟標記與專用測試；保留原始／翻譯音訊及 PCM Journal 錯誤處理、缺段匯出拒絕、Cue Retry、Pause／Continue／End 與 Local-only 資料邊界。Safari 私密瀏覽可能造成本機音訊保存失敗，建議使用一般瀏覽模式。
 
 - Issue #41 iPhone Safari 定向 RCA：翻譯 PCM 的 `AUDIO_CHUNK_WRITE` 確認包覆 OPFS Chunk write；音訊診斷新增固定 OPFS 步驟與 DOMException 分類，供實機定位 `UnknownError`。底層 Safari 失敗步驟尚待實機複測，保存流程未改。

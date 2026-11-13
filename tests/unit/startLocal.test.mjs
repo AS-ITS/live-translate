@@ -3,16 +3,28 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
-import { buildLocalEnvironment, isLoopbackUrl, readConfigPort, readLocalGoogleOAuthSecret, resolveLocalSupabaseWorkdir } from '../../scripts/start-local.mjs';
+import { buildLocalEnvironment, isLoopbackUrl, readConfigPort, readLocalGoogleOAuthCredentials, resolveLocalSupabaseWorkdir } from '../../scripts/start-local.mjs';
 
-test('local OAuth secret loads only from a mode-600 env file', (t) => {
+test('local OAuth credentials load only from a mode-600 env file', (t) => {
   const directory = mkdtempSync(join(new URL('../../test-results/', import.meta.url).pathname, 'local-oauth-'));
   const path = join(directory, '.env.local');
   t.after(() => { unlinkSync(path); rmdirSync(directory); });
-  writeFileSync(path, 'SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET=local-test-only\n', { mode: 0o600 });
-  assert.equal(readLocalGoogleOAuthSecret(path), 'local-test-only');
+  writeFileSync(path, 'GOOGLE_CLIENT_ID=local-test-id\nGOOGLE_CLIENT_SECRET=local-test-secret\n', { mode: 0o600 });
+  assert.deepEqual(readLocalGoogleOAuthCredentials(path), {
+    clientId: 'local-test-id', clientSecret: 'local-test-secret'
+  });
   chmodSync(path, 0o644);
-  assert.throws(() => readLocalGoogleOAuthSecret(path), /mode 600/u);
+  assert.throws(() => readLocalGoogleOAuthCredentials(path), /mode 600/u);
+});
+test('local OAuth setup fails clearly when credentials are absent or left as placeholders', (t) => {
+  const directory = mkdtempSync(join(new URL('../../test-results/', import.meta.url).pathname, 'local-oauth-'));
+  const path = join(directory, '.env.local');
+  t.after(() => { unlinkSync(path); rmdirSync(directory); });
+  assert.throws(() => readLocalGoogleOAuthCredentials(path), /Create supabase\/\.env\.local.*GOOGLE_CLIENT_ID.*GOOGLE_CLIENT_SECRET/u);
+  writeFileSync(path, 'GOOGLE_CLIENT_ID=YOUR_GOOGLE_CLIENT_ID\nGOOGLE_CLIENT_SECRET=YOUR_GOOGLE_CLIENT_SECRET\n', { mode: 0o600 });
+  assert.throws(() => readLocalGoogleOAuthCredentials(path), /Set your own GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET/u);
+  writeFileSync(path, 'GOOGLE_CLIENT_SECRET=missing-id\n', { mode: 0o600 });
+  assert.throws(() => readLocalGoogleOAuthCredentials(path), /Set your own GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET/u);
 });
 
 test('local startup accepts only loopback service URLs', () => {
@@ -62,7 +74,8 @@ test('local frontend and API override cloud Supabase configuration together', ()
   assert.equal(env.SUPABASE_JWKS_URL, `${env.SUPABASE_URL}/auth/v1/.well-known/jwks.json`);
   assert.equal(env.LOCAL_SUPABASE_MODE, 'true');
   assert.equal(env.AUTH_ALLOWED_EMAIL_DOMAINS, '');
-  assert.equal(env.SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET, undefined);
+  assert.equal(env.GOOGLE_CLIENT_ID, undefined);
+  assert.equal(env.GOOGLE_CLIENT_SECRET, undefined);
   assert.equal(env.SUPABASE_ACCESS_TOKEN, undefined);
   assert.equal(env.VERCEL_ENV, undefined);
 });

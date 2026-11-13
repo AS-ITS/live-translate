@@ -16,24 +16,21 @@ Host 瀏覽器使用後端核發的短效 token 直接連接 Gemini Live API。P
 
 ## 快速安裝與啟動
 
-1. 依[本機開發指南](docs/development.md)準備 Node.js、Docker、Supabase CLI、Redis，並完成[Google OAuth 設定](docs/GOOGLE_OAUTH_SETUP.md)。
-2. 在專案根目錄執行：
+首次安裝需 Node.js 22、npm、Git、Docker（已啟動）及 Redis CLI／Server。以下命令都在**專案根目錄**執行；各作業系統的安裝方式與排錯見[本機 Supabase 安裝指南](docs/DEPLOYMENT.md#全新安裝本機-supabase)。
 
-   ```bash
-   npm ci
-   npm run start -- --check
-   npm run start
-   ```
+1. `git clone https://github.com/pochun1021/live-translate.git`，進入 `live-translate` 後執行 `npm install`。
+2. 安裝並驗證 Supabase CLI：全域安裝執行 `supabase --version`；若選擇專案 npm 版，執行 `npm install --save-dev supabase`、`npx supabase --version`。先啟動 Docker，並以 `docker info` 確認可連線。
+3. 在 Google Cloud 建立自己的 OAuth Web Client，依[Google OAuth 設定](docs/GOOGLE_OAUTH_SETUP.md#local-google-oauth)將 `supabase/.env.example` 複製為 `supabase/.env.local`，填入 `GOOGLE_CLIENT_ID` 與 `GOOGLE_CLIENT_SECRET`，並讓 CLI 讀到這兩個變數；再執行 `supabase start`、`supabase status`，npm 版則加 `npx`。未設定時啟動器會停止並提示設定；此專案已有 `supabase/config.toml`，無須 `supabase init` 或 `supabase link`。
+4. 以 `supabase migration list --local`（npm 版為 `npx supabase migration list --local`）核對所有本機 migration 均已套用；從 `supabase status -o json` 取得 `API_URL`、`ANON_KEY`、`SERVICE_ROLE_KEY`，依[本機環境變數範例](.env.example)建立 `.env`。金鑰只留在本機，不要提交。
+5. 啟動 Redis，執行 `npm run start -- --check`，確認 Docker、Supabase、OAuth、migration 與 Redis 檢查通過，再執行 `npm run start`，開啟 `http://127.0.0.1:5173` 登入並驗證頁面。Host 使用真實 Gemini Live 翻譯時，須在介面提供該次請求的 API key。
 
-3. 開啟終端顯示的 Vite 網址。Host 如要使用真實 Gemini Live 翻譯，須在介面提供該次請求使用的 API key。
-
-`--check` 可能啟動本機 Supabase／Redis；詳見[本機開發指南](docs/development.md)。
+`--check` 在 Supabase 尚未啟動時也可能啟動本機 Supabase，並可能啟動 Redis；完整停止與重新啟動方式見[本機 Supabase 安裝指南](docs/DEPLOYMENT.md#安全停止與重新啟動)。
 
 ## 文件導覽
 
 | 想做的事 | 文件 |
 | --- | --- |
-| 安裝與本機開發 | [本機開發](docs/development.md) · [Google OAuth](docs/GOOGLE_OAUTH_SETUP.md) · [本機 OAuth Sample](supabase/.env.local.example) |
+| 安裝與本機開發 | [本機開發](docs/development.md) · [Google OAuth](docs/GOOGLE_OAUTH_SETUP.md) · [本機 OAuth 範本](supabase/.env.example) |
 | 手動啟動 Dev Server | [本機環境變數 Sample](.env.example) · [本機開發](docs/development.md#方式-b手動-dev-server) |
 | 設定雲端環境 | [部署](docs/DEPLOYMENT.md) |
 | 使用與驗證 | [使用指南](docs/USER_GUIDE.md) · [測試與驗收](docs/TESTING.md) |

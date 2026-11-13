@@ -2,9 +2,10 @@
 
 ## [1.0.0] - 發布日期待定
 
-本版本以 Production SHA `12cfec5c9002da58e045a5de66b34b8ff79c7289` 為功能基準；本機版本提交僅增加文件與版本 metadata。實際發布日期待定。保留後續各節的詳細開發紀錄；RC1 未全部通過，請依下列限制閱讀驗證結果。
+本版本以 Production SHA `12cfec5c9002da58e045a5de66b34b8ff79c7289` 為功能基準；公開本機安裝改由安裝者提供自己的 Google OAuth 憑證。實際發布日期待定。保留後續各節的詳細開發紀錄；RC1 未全部通過，請依下列限制閱讀驗證結果。
 
 - 主要功能：Google 帳號授權、Meeting 建立與字典設定、Host 即時翻譯與本機錄製、Viewer WebRTC DataChannel 即時字幕、Host 本機內容檢視與 TXT／SRT／VTT 及可用音訊匯出。
+- 本機安裝：公開 Supabase 設定以 `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` 讀取安裝者的 OAuth Web Client；缺少設定時啟動器明確停止，不提供預設 Client ID。
 - 錄製生命週期：Stop 為 Pause、Continue 繼續錄製、End 正式結束 Meeting；修正 Pause／Continue 後 Segment 與 Cue 銜接、End 重試與本機恢復相關問題。
 - 資料與安全邊界：Supabase 僅保存 Meeting metadata、字典、帳號、授權與必要協調資料；PCM、音訊、Cue、Transcript、Segment、Checkpoint、Journal、Recovery 由 Host OPFS／IndexedDB 保存。舊 Cloud Recording 與雲端內容保存路徑不屬正式流程；憑證、短效 token 與敏感內容不得寫入日誌或前端持久資料。
 - 驗證狀態：Mock、單元測試與部分 E2E 證據只證明各自測試範圍，**不等於真實環境正式驗收**。[RC1 驗收紀錄](docs/TESTING.md#issue-41-rc1-acceptance-status-2026-11-09)目前仍標為 `BLOCKED`。

@@ -4,7 +4,7 @@
 
 ## 準備
 
-需要 Node.js 22 以上、npm、Docker、Supabase CLI、`redis-cli`、`redis-server`，以及支援麥克風、Web Audio、OPFS／IndexedDB、WebRTC 的瀏覽器。先在專案根目錄執行 `npm ci`。依 [OAuth 教學](GOOGLE_OAUTH_SETUP.md#local-google-oauth)準備與 `supabase/config.toml` 的 Client ID 相配的 `supabase/.env.local`，並執行 `chmod 600 supabase/.env.local`。實際檔案已被 Git 忽略，Sample 不含 Secret。
+需要 Node.js 22 以上、npm、Docker、Supabase CLI、`redis-cli`、`redis-server`，以及支援麥克風、Web Audio、OPFS／IndexedDB、WebRTC 的瀏覽器。先在專案根目錄執行 `npm ci`。依 [OAuth 教學](GOOGLE_OAUTH_SETUP.md#local-google-oauth)從 [`supabase/.env.example`](../supabase/.env.example)建立 `supabase/.env.local`，填入自己 Google OAuth Client 的 `GOOGLE_CLIENT_ID` 與 `GOOGLE_CLIENT_SECRET`，並執行 `chmod 600 supabase/.env.local`。實際檔案已被 Git 忽略，Sample 不含 Secret。
 
 ## 方式 A：完整本機啟動
 
@@ -66,7 +66,7 @@ npm run start
 | `SUPABASE_PUBLISHABLE_KEY` | `src/infrastructure/supabaseRestClient.js`；後端 REST fallback | Dev Server／選填 | 否 | 使用 `VITE_SUPABASE_PUBLISHABLE_KEY`；兩者皆無則無公開 REST key |
 | `AUTH_ALLOWED_EMAIL_DOMAINS` | `server/accessControl.js`；email 白名單 | Dev Server／選填 | 否 | 不限制 Google 帳號的電子郵件網域 |
 | `WEBRTC_SIGNALING_REDIS_URL`, `WEBRTC_SIGNALING_REDIS_TOKEN` | `server/index.js`；Viewer signaling | Dev Server／有 Viewer 時 URL 必填，TCP token 可空 | URL 視內容；token 是 | signaling 不可用 |
-| `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET` | `supabase/config.toml`；Google provider | Dev Server／Google 登入必填，放 `supabase/.env.local` | 是 | Google provider 無法啟用 |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | `supabase/config.toml`；Google provider | Dev Server／Google 登入必填，放 `supabase/.env.local` | 是 | Google provider 無法啟用 |
 
 ### Preview／Production 必要設定
 

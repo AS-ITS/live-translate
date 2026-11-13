@@ -22,10 +22,9 @@ Pause → Reload → Continue 定向驗證：`tests/e2e/liveTranslate.spec.js` �
 For current Issue #41 Local acceptance, use only this repository and run
 `npm run start -- --check`, then `npm run start`. The launcher checks the
 repository's Local Supabase migrations, Google Provider, and loopback Redis.
-Keep the existing test Google OAuth client secret in `supabase/.env.local` as
-`SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET` (mode 600, ignored by Git).
-The Local launcher passes it to Supabase CLI on startup; do not put it in a
-production `.env` file.
+在 `supabase/.env.local` 設定測試用的 `GOOGLE_CLIENT_ID` 與
+`GOOGLE_CLIENT_SECRET`（權限 600、Git 忽略）。本機啟動器會在啟動時將兩者傳給
+Supabase CLI；不要放入 Production 的 `.env`。
 The isolated fallback procedure below is historical and is not the current
 Local acceptance path.
 

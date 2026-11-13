@@ -16,10 +16,11 @@
 
 ## Local Google OAuth
 
-1. 查 `supabase/config.toml` 的 `[auth.external.google].client_id`。它必須等於剛建立的 Local Client ID；不要把 Secret 寫進這個檔案。
-2. 參照 [`supabase/.env.local.example`](../supabase/.env.local.example)建立 `supabase/.env.local`；若已存在就直接編輯，避免覆蓋。填入**同一 Client**的 `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET`，執行 `chmod 600 supabase/.env.local`。實際檔案由 `.gitignore` 忽略；啟動器要求一般檔案且權限恰為 `600`。
-3. 執行 `npx supabase status -o json`，用實際 `API_URL` 加上 `/auth/v1/callback` 設定 Google redirect URI。預設 API port 是 `54321`，若已更改，以 CLI 回報為準。Supabase Local 的 Site URL／Redirect URLs 應允許實際前端 Origin；`npm run start` 不需手動設定 `APP_ORIGIN`，手動 Dev Server 改用其他前端 Origin 時依[開發指南](development.md#方式-b手動-dev-server)核對。
-4. 執行 `npm run start -- --check`；它會驗證 Secret 權限、Local Supabase Google provider、URL 與 migration。再依 [完整啟動或 Dev Server 步驟](development.md)登入。
+1. 在 [Google Cloud Console](https://console.cloud.google.com/) 自行建立 **Web application** OAuth Client，取得**自己的** Client ID 與 Client Secret。Authorized JavaScript origin 設為 `http://127.0.0.1:5173`；Authorized redirect URI 使用本機 Supabase API URL 加 `/auth/v1/callback`，預設為 `http://127.0.0.1:54321/auth/v1/callback`。若 Google 專案仍在 Testing，將自己的登入帳號加入測試使用者。
+2. 從 [`supabase/.env.example`](../supabase/.env.example)建立 `supabase/.env.local`，填入同一個 OAuth Client 的 `GOOGLE_CLIENT_ID` 與 `GOOGLE_CLIENT_SECRET`。這兩個值由 `supabase/config.toml` 的 `env(...)` 讀取；公開設定沒有預設 Client ID。若私人檔案已存在，請自行補上新變數，不要覆蓋其中其他設定或把憑證寫回公開檔案。
+3. `supabase/.env.local` 已被 Git 忽略。macOS／Linux 執行 `chmod 600 supabase/.env.local`；本機啟動器要求一般檔案且權限恰為 `600`。不要提交、記錄或貼出 Client Secret。
+4. **首次啟動 Supabase 前**，macOS／Linux 可在目前終端執行 `set -a; . ./supabase/.env.local; set +a`，再執行 `supabase start`（專案 npm 版為 `npx supabase start`）。請確保檔案內容符合 shell 變數語法。也可執行 `npm run start -- --check`，由啟動器讀取私人檔案並在需要時啟動本機 Supabase；它不會使用原作者的 ID 或缺少的變數。Windows PowerShell 可把這兩個變數載入目前終端後啟動 CLI，避免把 Secret 寫入命令歷史。
+5. 執行 `supabase status -o json`（npm 版加 `npx`），以實際 `API_URL` 核對 Google redirect URI。`supabase/config.toml` 的 Site URL／Redirect URLs 應允許實際前端 Origin；預設 `http://127.0.0.1:5173` 已設定。`npm run start -- --check` 會檢查兩個變數、權限、Google provider、URL 與 migration；缺少或仍是範本值時會指出需設定的變數。最後依[本機安裝流程](DEPLOYMENT.md#全新安裝本機-supabase)登入；真實 Google 登入仍需人工驗證。
 
 ## Preview 與 Production
 

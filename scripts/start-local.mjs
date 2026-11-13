@@ -30,22 +30,32 @@ export function readConfigPort(config, sectionName, fallback = null) {
   return section?.match(/^port\s*=\s*(\d+)/mu)?.[1] || fallback;
 }
 
-export function readLocalGoogleOAuthSecret(path = localOAuthEnvFile) {
+export function readLocalGoogleOAuthCredentials(path = localOAuthEnvFile) {
   let file;
   try { file = lstatSync(path); } catch (error) {
-    if (error.code === 'ENOENT') return null;
+    if (error.code === 'ENOENT') {
+      throw new Error('Create supabase/.env.local from supabase/.env.example and set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.');
+    }
     throw error;
   }
   if (!file.isFile() || (file.mode & 0o777) !== 0o600) {
     throw new Error('supabase/.env.local must be a regular file with mode 600.');
   }
-  return parseEnv(readFileSync(path, 'utf8')).SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET?.trim() || null;
+  const values = parseEnv(readFileSync(path, 'utf8'));
+  const clientId = values.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = values.GOOGLE_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret || clientId === 'YOUR_GOOGLE_CLIENT_ID'
+    || clientSecret === 'YOUR_GOOGLE_CLIENT_SECRET') {
+    throw new Error('Set your own GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in supabase/.env.local.');
+  }
+  return { clientId, clientSecret };
 }
 
-function command(name, args, googleClientSecret = null) {
+function command(name, args, googleOAuth = null) {
   const env = { ...hostEnvironment(process.env), SUPABASE_TELEMETRY_DISABLED: '1' };
-  if (name === 'supabase' && googleClientSecret) {
-    env.SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET = googleClientSecret;
+  if (name === 'supabase' && googleOAuth) {
+    env.GOOGLE_CLIENT_ID = googleOAuth.clientId;
+    env.GOOGLE_CLIENT_SECRET = googleOAuth.clientSecret;
   }
   const result = spawnSync(name, args, { cwd: project, encoding: 'utf8', env });
   if (result.status !== 0) throw new Error(`${name} ${args[0]} failed; check the local service and CLI permissions.`);
@@ -54,7 +64,7 @@ function command(name, args, googleClientSecret = null) {
 
 function checkLocalServices() {
   const supabaseWorkdir = resolveLocalSupabaseWorkdir(process.env.LOCAL_SUPABASE_WORKDIR);
-  const googleClientSecret = readLocalGoogleOAuthSecret();
+  const googleOAuth = readLocalGoogleOAuthCredentials();
   if (!isLoopbackUrl(redisUrl, 'redis:')) throw new Error('LOCAL_REDIS_URL must point to loopback Redis.');
   const config = readFileSync(join(supabaseWorkdir, 'supabase/config.toml'), 'utf8');
   const projectId = config.match(/^project_id\s*=\s*"([A-Za-z0-9_-]+)"/mu)?.[1];
@@ -66,13 +76,10 @@ function checkLocalServices() {
   command('docker', ['info', '--format', '{{.ServerVersion}}']);
   let status;
   try {
-    status = JSON.parse(command('supabase', ['status', '-o', 'json', '--workdir', supabaseWorkdir], googleClientSecret));
+    status = JSON.parse(command('supabase', ['status', '-o', 'json', '--workdir', supabaseWorkdir], googleOAuth));
   } catch {
-    if (!googleClientSecret) {
-      throw new Error('Set SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET in supabase/.env.local before restarting Local Supabase.');
-    }
-    command('supabase', ['start', '--workdir', supabaseWorkdir], googleClientSecret);
-    status = JSON.parse(command('supabase', ['status', '-o', 'json', '--workdir', supabaseWorkdir], googleClientSecret));
+    command('supabase', ['start', '--workdir', supabaseWorkdir], googleOAuth);
+    status = JSON.parse(command('supabase', ['status', '-o', 'json', '--workdir', supabaseWorkdir], googleOAuth));
   }
   const apiUrl = status.API_URL;
   let databaseUrl;

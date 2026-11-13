@@ -1,8 +1,8 @@
 # Changelog
 
-## [Unreleased] — 1.0.0 正式發布準備（2026-11-13 整理）
+## [1.0.0] - 發布日期待定
 
-以下為候選摘要，日期是文件整理日，**不是正式發布日**。保留後續各節的詳細開發紀錄；正式發布與驗收仍待完成。
+本版本以 Production SHA `12cfec5c9002da58e045a5de66b34b8ff79c7289` 為功能基準；本機版本提交僅增加文件與版本 metadata。實際發布日期待定。保留後續各節的詳細開發紀錄；RC1 未全部通過，請依下列限制閱讀驗證結果。
 
 - 主要功能：Google 帳號授權、Meeting 建立與字典設定、Host 即時翻譯與本機錄製、Viewer WebRTC DataChannel 即時字幕、Host 本機內容檢視與 TXT／SRT／VTT 及可用音訊匯出。
 - 錄製生命週期：Stop 為 Pause、Continue 繼續錄製、End 正式結束 Meeting；修正 Pause／Continue 後 Segment 與 Cue 銜接、End 重試與本機恢復相關問題。

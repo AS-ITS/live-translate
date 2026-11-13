@@ -1,6 +1,6 @@
 # Live Translate
 
-> 版本：1.0.0（正式發布準備中；驗收狀態見[測試與驗收](docs/TESTING.md)）
+> 版本：1.0.0。以目前 Production 的 `12cfec5c9002da58e045a5de66b34b8ff79c7289` 為功能基準；RC1 驗收狀態與已知限制見[測試與驗收](docs/TESTING.md)。
 
 Live Translate 是瀏覽器即時語音翻譯與會議字幕工具。Host 錄製與翻譯，Viewer 透過分享連結觀看即時字幕。
 

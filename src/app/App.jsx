@@ -824,9 +824,13 @@ const activeMeetingCheckpointRef = useRef(null);
       logger: (event) => { if (import.meta.env?.DEV) console.debug('[Cue refinement]', event); }
     });
     if (!refinement.changed) return;
-    const nextCues = refinement.cues.map((cue) => (
-      applyGlossaryCorrectionToCue(cue, correctionGlossaryEntriesForCue(cue), { refineOnly: true })
-    ));
+    const nextCues = refinement.cues.map((cue) => {
+      try {
+        return applyGlossaryCorrectionToCue(cue, correctionGlossaryEntriesForCue(cue), { refineOnly: true });
+      } catch {
+        return cue;
+      }
+    });
     const next = { ...previous, finalCues: nextCues };
     commitCueState(previous, next);
     setPolishedArticle({ text: refinement.articleText, items: nextCues.map((cue) => ({ cueId: cue.cueId, sequence: cue.sequence, polishedText: effectiveTranslationForCue(cue) })), version: null, updatedAt: new Date().toISOString() });

@@ -10,7 +10,63 @@ import {
   resolveIdleSubtitleCue
 } from '../../src/lib/subtitleCues.js';
 import { cueListForDisplay } from '../../src/lib/cueUi.js';
+import { applyGlossaryCorrectionsToCueState } from '../../src/lib/glossaryReplacement.js';
+import { effectiveTranslationForCue } from '../../src/lib/cueContent.js';
 import { applyMeetingCueEvent, mergeMeetingViewerSnapshot } from '../../src/lib/meetingViewerState.js';
+
+test('complete punctuated source and translation are available before Final Cue correction', () => {
+  const entries = [{ source: '你好', target: 'su3cl3' }];
+  let cueState = createSubtitleCueState();
+  let clock = 0;
+  const session = new LiveTranslateSession({
+    liveSessionId: 'dictionary-full-sentence', sessionId: 'session-full-sentence',
+    segmentId: 'segment-full-sentence', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
+    echoTargetLanguage: false, sessionClock: () => clock,
+    correctionGlossaryRegistry: { bindTurn: () => ({ revision: 'r1', entries }) },
+    onCueEvent(event) {
+      cueState = applyGlossaryCorrectionsToCueState(applySubtitleCueEvent(cueState, event), entries);
+    }
+  });
+  clock = 100;
+  session.handleMessage({ eventId: 'full-sentence', serverContent: {
+    inputTranscription: { text: '你好。' }, outputTranscription: { text: 'Hello.' }
+  } });
+  clock = 200;
+  session.handleMessage({ eventId: 'full-sentence-boundary', serverContent: { turnComplete: true } });
+  const pending = cueState.currentCue || cueState.pendingCues[0];
+  cueState = resolveIdleSubtitleCue(cueState, {
+    cueId: pending.cueId, updatedTimeMs: pending.updatedTimeMs, sessionTimeMs: pending.boundaryAtMs + 700
+  }).state;
+  cueState = applyGlossaryCorrectionsToCueState(cueState, entries);
+  assert.equal(cueState.finalCues.length, 1);
+  assert.equal(cueState.finalCues[0].rawSource, '你好。');
+  assert.equal(cueState.finalCues[0].rawTranslation, 'Hello.');
+  assert.equal(effectiveTranslationForCue(cueState.finalCues[0]), 'su3cl3');
+});
+
+test('dictionary correction failure keeps Gemini translation and source Cue events flowing', () => {
+  for (const [name, bindTurn, expected] of [
+    ['match', () => ({ revision: 'r1', entries: [{ source: '會議', target: 'session', replacementAliases: ['meeting'] }] }), 'The session starts.'],
+    ['no match', () => ({ revision: 'r1', entries: [{ source: '其他', target: 'other' }] }), 'The meeting starts.'],
+    ['malformed data', () => ({ revision: 'r1', entries: [{ source: '會議', target: 42 }] }), 'The meeting starts.'],
+    ['correction throws', () => ({ revision: 'r1', entries: [{ get source() { throw new Error('bad entry'); } }] }), 'The meeting starts.'],
+    ['exception', () => { throw new Error('dictionary failed'); }, 'The meeting starts.']
+  ]) {
+    const events = [];
+    const session = new LiveTranslateSession({
+      liveSessionId: `dictionary-${name}`,
+      sourceLanguageCode: 'zh-Hant',
+      targetLanguageCode: 'en',
+      echoTargetLanguage: true,
+      correctionGlossaryRegistry: { bindTurn },
+      onCueEvent: (event) => events.push(event)
+    });
+    session.handleMessage({ eventId: `${name}-source`, serverContent: { inputTranscription: { text: '會議開始' } } });
+    session.handleMessage({ eventId: `${name}-translation`, serverContent: { outputTranscription: { text: 'The meeting starts.' } } });
+    assert.equal(events.find((event) => event.stream === 'source')?.text, '會議開始', name);
+    assert.equal(events.find((event) => event.stream === 'translation')?.text, expected, name);
+  }
+});
 
 test('Gemini mock event flow produces one final cue from input/output partials', () => {
   let cueState = createSubtitleCueState();

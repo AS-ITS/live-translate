@@ -39,6 +39,32 @@ export function glossaryCorrectionForSource({ sourceText, translatedText } = {},
   if (typeof sourceText !== 'string' || typeof translatedText !== 'string' || !Array.isArray(glossaryEntries)) {
     return { translatedText, status: 'not_applicable', occurrences: [] };
   }
+  if (glossaryEntries.some((entry) => !entry || typeof entry.source !== 'string'
+    || !entry.source.trim() || typeof entry.target !== 'string' || !entry.target.trim()
+    || (entry.replacementAliases !== undefined
+      && (!Array.isArray(entry.replacementAliases)
+        || entry.replacementAliases.some((alias) => typeof alias !== 'string'))))) {
+    return { translatedText, status: 'not_applicable', occurrences: [] };
+  }
+
+  const sentence = comparableText(sourceText).trim().replace(/\p{P}+$/gu, '').trim();
+  const fullMatches = sentence && !/[\p{P}\s]/u.test(sentence) && glossaryEntries.filter((entry) =>
+    comparableText(entry.source).trim().replace(/\p{P}+$/gu, '').trim() === sentence
+  );
+  if (fullMatches?.length === 1) {
+    const corrected = fullMatches[0].target.trim();
+    onDiagnostic?.({ sourceMatchCount: 1, alignmentCandidateCount: 1,
+      correctionStatus: corrected === translatedText ? 'unchanged' : 'corrected',
+      reasonCode: 'full_source_match' });
+    return { translatedText: corrected, status: corrected === translatedText ? 'unchanged' : 'corrected',
+      occurrences: [{ start: 0, end: sourceText.length, entryOrder: glossaryEntries.indexOf(fullMatches[0]),
+        source: fullMatches[0].source, target: corrected }] };
+  }
+  if (fullMatches?.length > 1) {
+    onDiagnostic?.({ sourceMatchCount: fullMatches.length, alignmentCandidateCount: 0,
+      correctionStatus: 'correction_ambiguous', reasonCode: 'source_target_conflict' });
+    return { translatedText, status: 'correction_ambiguous', occurrences: [] };
+  }
 
   const { occurrences, ambiguous } = matchSourceOccurrences(sourceText, glossaryEntries);
   if (occurrences.length === 0) {

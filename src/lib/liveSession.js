@@ -1558,15 +1558,21 @@ export class LiveTranslateSession {
       const providerRawTranslation = content.outputTranscription?.text ?? null;
       const event = rawEvent.stream === 'translation'
         ? (() => {
-            const correctionSnapshot = this.correctionGlossarySnapshotFor(rawEvent);
-            const correction = glossaryCorrectionForSource({
-              sourceText: content.inputTranscription?.text
-                || content.interimInputTranscription?.text
-                || this.lastInputTranscriptText,
-              translatedText: rawEvent.text
-            }, correctionSnapshot?.entries || [], {
-              onDiagnostic: (diagnostic) => { this.lastGlossaryCorrectionDiagnostic = diagnostic; }
-            });
+            let correctionSnapshot;
+            let correction = { translatedText: rawEvent.text, status: 'not_applicable' };
+            try {
+              correctionSnapshot = this.correctionGlossarySnapshotFor(rawEvent);
+              correction = glossaryCorrectionForSource({
+                sourceText: content.inputTranscription?.text
+                  || content.interimInputTranscription?.text
+                  || this.lastInputTranscriptText,
+                translatedText: rawEvent.text
+              }, correctionSnapshot?.entries || [], {
+                onDiagnostic: (diagnostic) => { this.lastGlossaryCorrectionDiagnostic = diagnostic; }
+              });
+            } catch {
+              correction = { translatedText: rawEvent.text, status: 'not_applicable' };
+            }
             return {
               ...rawEvent,
               meetingId: this.meetingId,
@@ -1580,7 +1586,12 @@ export class LiveTranslateSession {
             };
           })()
           : (() => {
-            const correctionSnapshot = this.correctionGlossarySnapshotFor(rawEvent);
+            let correctionSnapshot;
+            try {
+              correctionSnapshot = this.correctionGlossarySnapshotFor(rawEvent);
+            } catch {
+              // Dictionary snapshot failures must not block source Cues.
+            }
             return {
               ...rawEvent,
               meetingId: this.meetingId,
@@ -1768,18 +1779,24 @@ export class LiveTranslateSession {
     }
 
     if (this.mode !== 'transcription' && content?.outputTranscription?.text) {
-      const correctionSnapshot = this.correctionGlossarySnapshotFor({
-        turnKey: `local:${this.activeOutputTranscriptAudioTurnId || boundaryAudioTurnId}`,
-        audioTurnId: this.activeOutputTranscriptAudioTurnId || boundaryAudioTurnId,
-        segmentId: sourceSegmentId,
-        providerEpoch: epoch
-      });
-      const correction = glossaryCorrectionForSource({
-        sourceText: content.inputTranscription?.text || content.interimInputTranscription?.text || this.lastInputTranscriptText,
-        translatedText: content.outputTranscription.text
-      }, correctionSnapshot?.entries || [], {
-        onDiagnostic: (diagnostic) => { this.lastGlossaryCorrectionDiagnostic = diagnostic; }
-      });
+      let correctionSnapshot;
+      let correction = { translatedText: content.outputTranscription.text, status: 'not_applicable' };
+      try {
+        correctionSnapshot = this.correctionGlossarySnapshotFor({
+          turnKey: `local:${this.activeOutputTranscriptAudioTurnId || boundaryAudioTurnId}`,
+          audioTurnId: this.activeOutputTranscriptAudioTurnId || boundaryAudioTurnId,
+          segmentId: sourceSegmentId,
+          providerEpoch: epoch
+        });
+        correction = glossaryCorrectionForSource({
+          sourceText: content.inputTranscription?.text || content.interimInputTranscription?.text || this.lastInputTranscriptText,
+          translatedText: content.outputTranscription.text
+        }, correctionSnapshot?.entries || [], {
+          onDiagnostic: (diagnostic) => { this.lastGlossaryCorrectionDiagnostic = diagnostic; }
+        });
+      } catch {
+        correction = { translatedText: content.outputTranscription.text, status: 'not_applicable' };
+      }
       const transcript = withTranscriptEventId({
         text: correction.translatedText,
         rawText: content.outputTranscription.text,

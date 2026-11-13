@@ -672,11 +672,15 @@ useEffect(() => {
           sourceLanguageCode
         });
       }
-      next = applyGlossaryCorrectionsToCueState(
-        next,
-        cue.getLiveGlossaryEntries?.() || [],
-        { entriesForCue: cue.getGlossaryEntriesForCue }
-      );
+      try {
+        next = applyGlossaryCorrectionsToCueState(
+          next,
+          cue.getLiveGlossaryEntries?.() || [],
+          { entriesForCue: cue.getGlossaryEntriesForCue }
+        );
+      } catch {
+        // Keep the uncorrected Cue transition; Writer failures remain outside this boundary.
+      }
       if (import.meta.env?.DEV) {
         const previousFinalIds = new Set((current.finalCues || []).map((item) => item.cueId));
         const nextFinalIds = new Set((next.finalCues || []).map((item) => item.cueId));

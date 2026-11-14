@@ -14,44 +14,92 @@ Live Translate 是瀏覽器即時語音翻譯與會議字幕工具。Host 錄製
 
 Host 瀏覽器使用後端核發的短效 token 直接連接 Gemini Live API。PCM、音訊、Cue、Transcript、Segment、Checkpoint、Journal 與 Recovery 保存在 Host 的 OPFS／IndexedDB；Supabase 保存會議 metadata、字典、帳號、授權及必要的協調資料。Viewer 透過 WebRTC DataChannel 接收字幕。詳見[架構總覽](docs/architecture/architecture-overview.md)。
 
-## 快速安裝與啟動
+## 快速安裝（本機部署）
 
-需要 Node.js 22、Git、npm、已啟動的 Docker，以及全域 Supabase CLI。安裝方式見[本機安裝指南](docs/DEPLOYMENT.md#全新安裝本機-supabase)。此儲存庫已提交 `supabase/config.toml` 與 54 個 migration；不需 `supabase init` 或 `supabase link`。
+以下步驟適用於 Windows、macOS 與 Linux。需要 Git、Node.js 22、npm、已啟動的 Docker，以及全域安裝的 Supabase CLI；Redis 使用 Docker 容器。安裝工具可參閱 [Git](https://git-scm.com/)、[Docker Desktop](https://www.docker.com/products/docker-desktop/)（Linux 可使用 Docker Engine）、[Node.js](https://nodejs.org/) 與 [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started)。
 
-Windows 10／11 PowerShell（在專案根目錄執行）：
+### 1. 檢查必要工具
 
-```powershell
-git clone https://github.com/pochun1021/live-translate.git
-Set-Location live-translate
-npm ci
-Copy-Item supabase/.env.example supabase/.env.local
-# 填入自己的 GOOGLE_CLIENT_ID、GOOGLE_CLIENT_SECRET，並依 OAuth 指南限制 NTFS ACL
-docker info
-supabase --version
-docker run -d --name live-translate-redis -p 127.0.0.1:6379:6379 redis:7-alpine
-npm run start -- --check
-npm run start
-```
-
-Linux Bash／macOS Terminal：
+在終端機執行，確認所有指令成功，且 Docker 已啟動：
 
 ```bash
-git clone https://github.com/pochun1021/live-translate.git
-cd live-translate
-npm ci
-cp supabase/.env.example supabase/.env.local
-# 填入自己的 GOOGLE_CLIENT_ID、GOOGLE_CLIENT_SECRET
-chmod 600 supabase/.env.local
+git --version
+node --version
+npm --version
 docker info
 supabase --version
+```
+
+### 2. 下載專案
+
+```bash
+git clone https://github.com/AS-ITS/live-translate.git
+cd live-translate
+```
+
+如果已在專案目錄，可略過這一步。
+
+### 3. 設定 Google OAuth
+
+macOS／Linux：
+
+```bash
+cp supabase/.env.example supabase/.env.local
+chmod 600 supabase/.env.local
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item supabase/.env.example supabase/.env.local
+```
+
+編輯 `supabase/.env.local`，填入自己建立的 `GOOGLE_CLIENT_ID` 與 `GOOGLE_CLIENT_SECRET`。Google Cloud Console 中的 OAuth Client 必須設定授權重新導向 URI；Windows 也需限制此檔案的 NTFS ACL。詳見 [Google OAuth 設定指南](docs/GOOGLE_OAUTH_SETUP.md#local-google-oauth)。
+
+### 4. 設定應用程式環境變數
+
+若要手動啟動 API／前端，先複製根目錄範本。macOS／Linux 使用 `cp .env.example .env`；Windows PowerShell 使用 `Copy-Item .env.example .env`。依範本填入本機 Supabase URL、API Key 與所需的 Gemini 設定。本機 Redis 設定採用範本值：
+
+```dotenv
+WEBRTC_SIGNALING_REDIS_URL=redis://127.0.0.1:6379
+```
+
+`npm run start` 會從本機 Supabase 取得 URL／金鑰並設定 Redis URL，不會使用根目錄 `.env` 作為這些值的來源；手動啟動方式見 [本機開發指南](docs/development.md#方式-b手動-dev-server)。請勿使用他人的 Supabase、Google OAuth 憑證或正式環境 Secret。
+
+### 5. 安裝專案依賴
+
+```bash
+npm ci
+```
+
+### 6. 啟動 Redis
+
+首次建立容器時執行：
+
+```bash
 docker run -d --name live-translate-redis -p 127.0.0.1:6379:6379 redis:7-alpine
+docker exec live-translate-redis redis-cli ping
+```
+
+`ping` 應回傳 `PONG`。如果容器已建立但已停止，執行 `docker start live-translate-redis`，再檢查 `ping`。若已有可用的本機 Redis，無需再建立容器。
+
+### 7. 檢查本機環境
+
+```bash
 npm run start -- --check
+```
+
+依結果修正缺少的設定或服務。此檢查會視需要啟動本機 Supabase，並驗證資料庫 migration、Google OAuth 與 Redis；不是純唯讀指令。
+
+### 8. 啟動系統
+
+```bash
 npm run start
 ```
 
-`docker run` 只需在本機尚無 Redis 時執行一次；已有可用的 loopback Redis 可略過。啟動器會使用私人 OAuth 檔案啟動或檢查本機 Supabase，再啟動 API 與 Vite。Google Cloud OAuth redirect URI、NTFS ACL 與故障排查見[Google OAuth 指南](docs/GOOGLE_OAUTH_SETUP.md#local-google-oauth)和[本機開發指南](docs/development.md)。
+用終端機顯示的本機網址開啟系統，透過 Google OAuth 登入，並允許瀏覽器使用麥克風。
 
-本機安裝預設不限制 Google 帳號的 Email 網域。如有組織使用需求，可自行設定允許的網域。此設定只決定已驗證帳號能否通過後端網域檢查；角色、Meeting Ownership 與 RLS 仍會執行。
+`.env` 與 `supabase/.env.local` 含敏感設定，請勿提交至 Git。本機資料庫應與正式 Supabase 專案隔離；會議音訊、字幕與本機逐字稿仍保存在 Host 瀏覽器。啟動失敗時，先檢查 Docker、Redis、Supabase、環境變數與終端機錯誤訊息。更多設定與排錯方式見 [部署指南](docs/DEPLOYMENT.md)。
 
 ## 文件導覽
 
@@ -70,4 +118,4 @@ npm run start
 - 作者暨維護者：Po-Chun Ruan（阮柏鈞），Academia Sinica（中央研究院）。
 - 著作權人：Academia Sinica。
 - 授權：MIT，詳見 [LICENSE](LICENSE)。
-- 儲存庫：[pochun1021/live-translate](https://github.com/pochun1021/live-translate)。
+- 儲存庫：[AS-ITS/live-translate](https://github.com/AS-ITS/live-translate.git)。

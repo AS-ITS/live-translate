@@ -17,7 +17,7 @@
 ### Windows PowerShell
 
 ```powershell
-git clone https://github.com/pochun1021/live-translate.git
+git clone https://github.com/AS-ITS/live-translate.git
 Set-Location live-translate
 npm ci
 Copy-Item supabase/.env.example supabase/.env.local
@@ -34,7 +34,7 @@ npm run start
 ### Ubuntu／Debian Bash 與 macOS Terminal
 
 ```bash
-git clone https://github.com/pochun1021/live-translate.git
+git clone https://github.com/AS-ITS/live-translate.git
 cd live-translate
 npm ci
 cp supabase/.env.example supabase/.env.local

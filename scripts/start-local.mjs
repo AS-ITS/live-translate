@@ -169,10 +169,68 @@ export function pingLocalRedis(redisAddress, timeoutMs = 2000) {
   });
 }
 
-async function checkLocalServices() {
+export function authContainerGoogleOAuth(inspectOutput) {
+  let entries;
+  try { entries = JSON.parse(inspectOutput); } catch { /* fail closed below */ }
+  if (!Array.isArray(entries) || !entries.every((entry) => typeof entry === 'string')) {
+    throw new Error('Local Supabase Auth container OAuth settings could not be inspected.');
+  }
+  const values = new Map();
+  for (const entry of entries) {
+    const separator = entry.indexOf('=');
+    if (separator < 1) continue;
+    const key = entry.slice(0, separator);
+    if (key !== 'GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID' && key !== 'GOTRUE_EXTERNAL_GOOGLE_SECRET') continue;
+    if (values.has(key)) throw new Error('Local Supabase Auth container has ambiguous Google OAuth settings.');
+    values.set(key, entry.slice(separator + 1));
+  }
+  const clientId = values.get('GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID');
+  const clientSecret = values.get('GOTRUE_EXTERNAL_GOOGLE_SECRET');
+  if (!clientId || !clientSecret) {
+    throw new Error('Local Supabase Auth container Google OAuth settings could not be compared.');
+  }
+  return { clientId, clientSecret };
+}
+
+export function ensureLocalSupabase(projectId, supabaseWorkdir, googleOAuth, runCommand = command) {
+  const container = `supabase_auth_${projectId}`;
+  const names = runCommand('docker', ['ps', '-a', '--format', '{{.Names}}'], null).split('\n');
+  const exists = names.includes(container);
+  const state = exists ? runCommand('docker', ['inspect', '--format', '{{.State.Running}}', container], null) : 'false';
+  if (state !== 'true' && state !== 'false') {
+    throw new Error('Local Supabase Auth container state could not be verified.');
+  }
+  const running = state === 'true';
+  const start = () => runCommand('supabase', ['start', '--workdir', supabaseWorkdir], googleOAuth);
+  const inspectOAuth = () => authContainerGoogleOAuth(runCommand('docker', [
+    'inspect', '--format', '{{json .Config.Env}}', container
+  ], null));
+  if (!running) {
+    start();
+  } else {
+    const current = inspectOAuth();
+    if (current.clientId !== googleOAuth.clientId || current.clientSecret !== googleOAuth.clientSecret) {
+      runCommand('supabase', ['stop', '--workdir', supabaseWorkdir], googleOAuth);
+      start();
+    }
+  }
+  const updated = inspectOAuth();
+  if (updated.clientId !== googleOAuth.clientId || updated.clientSecret !== googleOAuth.clientSecret) {
+    throw new Error('Local Supabase Auth container Google OAuth settings still differ after startup.');
+  }
+  let status;
+  try {
+    status = JSON.parse(runCommand('supabase', ['status', '-o', 'json', '--workdir', supabaseWorkdir], googleOAuth));
+  } catch {
+    throw new Error('Local Supabase status could not be verified after OAuth check.');
+  }
+  return status;
+}
+
+async function checkLocalServices(dbOnly = false) {
   const supabaseWorkdir = resolveLocalSupabaseWorkdir(process.env.LOCAL_SUPABASE_WORKDIR);
   const googleOAuth = readLocalGoogleOAuthCredentials();
-  if (!isLoopbackUrl(redisUrl, 'redis:')) throw new Error('LOCAL_REDIS_URL must point to loopback Redis.');
+  if (!dbOnly && !isLoopbackUrl(redisUrl, 'redis:')) throw new Error('LOCAL_REDIS_URL must point to loopback Redis.');
   const config = readFileSync(join(supabaseWorkdir, 'supabase/config.toml'), 'utf8');
   const projectId = config.match(/^project_id\s*=\s*"([A-Za-z0-9_-]+)"/mu)?.[1];
   const apiPort = readConfigPort(config, 'api', '54321');
@@ -181,13 +239,7 @@ async function checkLocalServices() {
   const repoMigrations = readdirSync(join(project, 'supabase/migrations'))
     .filter((name) => /^\d{14}_.*\.sql$/u.test(name)).sort();
   command('docker', ['info', '--format', '{{.ServerVersion}}']);
-  let status;
-  try {
-    status = JSON.parse(command('supabase', ['status', '-o', 'json', '--workdir', supabaseWorkdir], googleOAuth));
-  } catch {
-    command('supabase', ['start', '--workdir', supabaseWorkdir], googleOAuth);
-    status = JSON.parse(command('supabase', ['status', '-o', 'json', '--workdir', supabaseWorkdir], googleOAuth));
-  }
+  const status = ensureLocalSupabase(projectId, supabaseWorkdir, googleOAuth);
   const apiUrl = status.API_URL;
   let databaseUrl;
   try { databaseUrl = new URL(status.DB_URL); } catch { /* fail closed below */ }
@@ -197,6 +249,7 @@ async function checkLocalServices() {
     || databaseUrl.port !== dbPort || !status.ANON_KEY || !status.SERVICE_ROLE_KEY) {
     throw new Error('Supabase CLI must report matching loopback API/DB endpoints and local keys.');
   }
+  if (dbOnly) return { apiUrl, anonKey: status.ANON_KEY, serviceKey: status.SERVICE_ROLE_KEY };
   const authResponse = await fetch(`${apiUrl}/auth/v1/settings`, { signal: AbortSignal.timeout(3000) });
   if (!authResponse.ok) throw new Error('Local Supabase auth settings are unavailable.');
   const authSettings = await authResponse.json();
@@ -246,7 +299,12 @@ export function buildLocalEnvironment(local, baseEnv = process.env) {
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   try {
-    const local = await checkLocalServices();
+    const dbOnly = process.argv.includes('--db-only');
+    const local = await checkLocalServices(dbOnly);
+    if (dbOnly) {
+      console.log('Local Supabase and Google OAuth: ready.');
+      process.exit(0);
+    }
     const env = buildLocalEnvironment(local);
     if (process.argv.includes('--check')) {
       console.log('Local Supabase, migrations, Redis, and environment: ready.');

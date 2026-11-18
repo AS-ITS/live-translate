@@ -10,7 +10,7 @@
     "start": "node scripts/start-local.mjs",
     "start:local": "node scripts/start-local.mjs",
     "start:production": "node server/index.js --production",
-    "db:start": "npx supabase start",
+    "db:start": "node scripts/start-local.mjs --db-only",
     "db:stop": "npx supabase stop",
     "db:reset": "npx supabase db reset",
     "db:lint": "npx supabase db lint",

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { authContainerGoogleOAuth, ensureLocalSupabase } from '../../scripts/start-local.mjs';
+
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -9,6 +11,88 @@ import { assertLocalOAuthFileSecurity, buildLocalEnvironment, cliSpawnArguments,
   projectDirectoryFromModuleUrl, readConfigPort, readLocalGoogleOAuthCredentials,
   resolveLocalSupabaseWorkdir } from '../../scripts/start-local.mjs';
 
+const desiredGoogleOAuth = { clientId: 'local-test-id', clientSecret: 'local-test-secret' };
+
+function oauthRunner({ running = true, current = desiredGoogleOAuth, afterStart = desiredGoogleOAuth,
+  failOn = '', state = running ? 'true' : 'false', inspectOutput } = {}) {
+  const calls = [];
+  let active = running;
+  let credentials = current;
+  const run = (name, args, oauth) => {
+    const operation = `${name} ${args[0]}`;
+    calls.push({ operation, args, oauth });
+    if (operation === failOn) throw new Error('Simulated CLI failure');
+    if (operation === 'docker ps') return active ? 'other_container\nsupabase_auth_live-translate' : '';
+    if (operation === 'docker inspect' && args[2] === '{{.State.Running}}') return state;
+    if (operation === 'docker inspect') return inspectOutput || JSON.stringify([
+      `GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID=${credentials.clientId}`,
+      `GOTRUE_EXTERNAL_GOOGLE_SECRET=${credentials.clientSecret}`
+    ]);
+    if (operation === 'supabase stop') { active = false; return ''; }
+    if (operation === 'supabase start') { active = true; credentials = afterStart; return ''; }
+    if (operation === 'supabase status') return JSON.stringify({ API_URL: 'http://127.0.0.1:54321' });
+    throw new Error(`Unexpected command: ${operation}`);
+  };
+  return { run, calls };
+}
+
+test('local Supabase starts on first use and verifies Auth OAuth settings', () => {
+  const mock = oauthRunner({ running: false });
+  ensureLocalSupabase('live-translate', '/local/project', desiredGoogleOAuth, mock.run);
+  assert.deepEqual(mock.calls.map((call) => call.operation), [
+    'docker ps', 'supabase start', 'docker inspect', 'supabase status'
+  ]);
+});
+
+test('local Supabase reuses matching Auth container on Windows, macOS and Linux paths', () => {
+  for (const workdir of ['C:\\Users\\me\\live-translate', '/Users/me/live-translate', '/home/me/live-translate']) {
+    const mock = oauthRunner();
+    ensureLocalSupabase('live-translate', workdir, desiredGoogleOAuth, mock.run);
+    assert.deepEqual(mock.calls.map((call) => call.operation), [
+      'docker ps', 'docker inspect', 'docker inspect', 'docker inspect', 'supabase status'
+    ]);
+    assert.deepEqual(mock.calls.at(-1).args, ['status', '-o', 'json', '--workdir', workdir]);
+  }
+});
+
+test('local Supabase safely stops and starts when Auth OAuth settings differ', () => {
+  const mock = oauthRunner({ current: { clientId: 'old-id', clientSecret: 'old-secret' } });
+  ensureLocalSupabase('live-translate', '/local/project', desiredGoogleOAuth, mock.run);
+  assert.deepEqual(mock.calls.map((call) => call.operation), [
+    'docker ps', 'docker inspect', 'docker inspect', 'supabase stop', 'supabase start',
+    'docker inspect', 'supabase status'
+  ]);
+  assert.deepEqual(mock.calls.find((call) => call.operation === 'supabase stop').args,
+    ['stop', '--workdir', '/local/project']);
+  assert.equal(mock.calls.some((call) => call.args.includes('--no-backup')), false);
+});
+
+test('local Supabase blocks startup when restart fails or new settings still differ', () => {
+  const old = { clientId: 'old-id', clientSecret: 'old-secret' };
+  const failed = oauthRunner({ current: old, failOn: 'supabase start' });
+  assert.throws(() => ensureLocalSupabase('live-translate', '/local/project', desiredGoogleOAuth, failed.run),
+    /Simulated CLI failure/u);
+  assert.equal(failed.calls.some((call) => call.operation === 'supabase status'), false);
+
+  const stale = oauthRunner({ current: old, afterStart: old });
+  assert.throws(() => ensureLocalSupabase('live-translate', '/local/project', desiredGoogleOAuth, stale.run),
+    /still differ after startup/u);
+  assert.equal(stale.calls.some((call) => call.operation === 'supabase status'), false);
+});
+
+test('local Supabase fails closed when Auth settings or state cannot be compared', () => {
+  assert.throws(() => authContainerGoogleOAuth('not-json'), /could not be inspected/u);
+  assert.throws(() => authContainerGoogleOAuth(JSON.stringify(['GOOGLE_CLIENT_ID=wrong-key'])),
+    /could not be compared/u);
+  assert.throws(() => authContainerGoogleOAuth(JSON.stringify([
+    'GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID=first', 'GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID=second',
+    'GOTRUE_EXTERNAL_GOOGLE_SECRET=secret'
+  ])), /ambiguous/u);
+  const unknown = oauthRunner({ state: 'unknown' });
+  assert.throws(() => ensureLocalSupabase('live-translate', '/local/project', desiredGoogleOAuth, unknown.run),
+    /state could not be verified/u);
+  assert.equal(unknown.calls.some((call) => call.operation === 'supabase start'), false);
+});
 test('local OAuth credentials load only from a mode-600 env file', (t) => {
   const directory = mkdtempSync(join(fileURLToPath(new URL('../../test-results/', import.meta.url)), 'local-oauth-'));
   const path = join(directory, '.env.local');

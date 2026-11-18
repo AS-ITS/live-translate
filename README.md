@@ -64,7 +64,7 @@ Copy-Item supabase/.env.example supabase/.env.local
 WEBRTC_SIGNALING_REDIS_URL=redis://127.0.0.1:6379
 ```
 
-`npm run start` 會從本機 Supabase 取得 URL／金鑰並設定 Redis URL，不會使用根目錄 `.env` 作為這些值的來源；手動啟動方式見 [本機開發指南](docs/development.md#方式-b手動-dev-server)。請勿使用他人的 Supabase、Google OAuth 憑證或正式環境 Secret。
+`npm run start` 會從本機 Supabase 取得 URL／金鑰並設定 Redis URL，不會使用根目錄 `.env` 作為這些值的來源。`npm run start`、`npm run start -- --check` 與 `npm run db:start` 都會讀取 `supabase/.env.local`，檢查執行中的 Auth 容器 Google OAuth 設定；設定一致時沿用服務，不一致時透過 Supabase CLI 停止並重新啟動本機服務，保留資料。若無法驗證重啟後的設定，啟動會中止。`npm run db:start` 只檢查本機 Supabase 與 OAuth，不會啟動應用程式；手動啟動方式見 [本機開發指南](docs/development.md#方式-b手動-dev-server)。請勿使用他人的 Supabase、Google OAuth 憑證或正式環境 Secret。
 
 ### 5. 安裝專案依賴
 
